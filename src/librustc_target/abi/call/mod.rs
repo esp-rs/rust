@@ -22,6 +22,7 @@ mod x86_64;
 mod x86_win64;
 mod wasm32;
 mod wasm32_bindgen_compat;
+mod xtensa;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PassMode {
@@ -571,6 +572,7 @@ impl<'a, Ty> FnAbi<'a, Ty> {
             "wasm32" if cx.target_spec().target_os != "emscripten"
                 => wasm32_bindgen_compat::compute_abi_info(self),
             "wasm32" | "asmjs" => wasm32::compute_abi_info(cx, self),
+            "xtensa" => xtensa::compute_abi_info(self, 32),
             a => return Err(format!("unrecognized arch \"{}\" in target specification", a))
         }
 

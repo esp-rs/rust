@@ -129,8 +129,7 @@ pub fn initialize_available_targets() {
                  LLVMInitializeXtensaTargetInfo,
                  LLVMInitializeXtensaTarget,
                  LLVMInitializeXtensaTargetMC,
-                 LLVMInitializeXtensaAsmPrinter
+                 LLVMInitializeXtensaAsmPrinter,
                  LLVMInitializeXtensaAsmParser);
-                 );
 
 }
