@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, Instant};
 
+use build_helper::t;
+
 use crate::config::Config;
 use crate::builder::Builder;
 
@@ -207,7 +209,7 @@ pub fn symlink_dir(config: &Config, src: &Path, dest: &Path) -> io::Result<()> {
             let h = CreateFileW(path.as_ptr(),
                                 GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                0 as *mut _,
+                                ptr::null_mut(),
                                 OPEN_EXISTING,
                                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
                                 ptr::null_mut());
@@ -324,6 +326,8 @@ pub enum CiEnv {
     Travis,
     /// The AppVeyor environment, for Windows builds.
     AppVeyor,
+    /// The Azure Pipelines environment, for Linux (including Docker), Windows, and macOS builds.
+    AzurePipelines,
 }
 
 impl CiEnv {
@@ -333,6 +337,8 @@ impl CiEnv {
             CiEnv::Travis
         } else if env::var("APPVEYOR").ok().map_or(false, |e| &*e == "True") {
             CiEnv::AppVeyor
+        } else if env::var("TF_BUILD").ok().map_or(false, |e| &*e == "True") {
+            CiEnv::AzurePipelines
         } else {
             CiEnv::None
         }
@@ -348,5 +354,21 @@ impl CiEnv {
             // compiling through the Makefile. Very strange.
             cmd.env("TERM", "xterm").args(&["--color", "always"]);
         }
+    }
+}
+
+pub fn forcing_clang_based_tests() -> bool {
+    if let Some(var) = env::var_os("RUSTBUILD_FORCE_CLANG_BASED_TESTS") {
+        match &var.to_string_lossy().to_lowercase()[..] {
+            "1" | "yes" | "on" => true,
+            "0" | "no" | "off" => false,
+            other => {
+                // Let's make sure typos don't go unnoticed
+                panic!("Unrecognized option '{}' set in \
+                        RUSTBUILD_FORCE_CLANG_BASED_TESTS", other)
+            }
+        }
+    } else {
+        false
     }
 }

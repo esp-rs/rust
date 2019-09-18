@@ -1,12 +1,16 @@
 #![deny(rust_2018_idioms)]
+#![deny(internal)]
+#![deny(unused_lifetimes)]
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/")]
 
 #![feature(bind_by_move_pattern_guards)]
 #![feature(rustc_private)]
+#![feature(arbitrary_self_types)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
+#![feature(in_band_lifetimes)]
 #![feature(nll)]
 #![feature(set_stdio)]
 #![feature(test)]
@@ -16,6 +20,7 @@
 #![feature(const_fn)]
 #![feature(drain_filter)]
 #![feature(inner_deref)]
+#![feature(never_type)]
 
 #![recursion_limit="256"]
 
@@ -23,22 +28,19 @@ extern crate getopts;
 extern crate env_logger;
 extern crate rustc;
 extern crate rustc_data_structures;
-extern crate rustc_codegen_utils;
 extern crate rustc_driver;
 extern crate rustc_resolve;
 extern crate rustc_lint;
+extern crate rustc_interface;
 extern crate rustc_metadata;
 extern crate rustc_target;
 extern crate rustc_typeck;
-extern crate rustc_interface;
 extern crate serialize;
 extern crate syntax;
 extern crate syntax_pos;
 extern crate test as testing;
 #[macro_use] extern crate log;
 extern crate rustc_errors as errors;
-
-extern crate serialize as rustc_serialize; // used by deriving
 
 use std::default::Default;
 use std::env;
@@ -55,6 +57,7 @@ mod externalfiles;
 mod clean;
 mod config;
 mod core;
+mod docfs;
 mod doctree;
 mod fold;
 pub mod html {
@@ -91,11 +94,9 @@ pub fn main() {
     rustc_driver::set_sigpipe_handler();
     env_logger::init();
     let res = std::thread::Builder::new().stack_size(thread_stack_size).spawn(move || {
-        syntax::with_globals(move || {
-            get_args().map(|args| main_args(&args)).unwrap_or(1)
-        })
+        get_args().map(|args| main_args(&args)).unwrap_or(1)
     }).unwrap().join().unwrap_or(rustc_driver::EXIT_FAILURE);
-    process::exit(res as i32);
+    process::exit(res);
 }
 
 fn get_args() -> Option<Vec<String>> {
@@ -348,6 +349,11 @@ fn opts() -> Vec<RustcOptGroup> {
                       "generate-redirect-pages",
                       "Generate extra pages to support legacy URLs and tool links")
         }),
+        unstable("show-coverage", |o| {
+            o.optflag("",
+                      "show-coverage",
+                      "calculate percentage of public items with documentation")
+        }),
     ]
 }
 
@@ -359,7 +365,7 @@ fn usage(argv0: &str) {
     println!("{}", options.usage(&format!("{} [options] <input>", argv0)));
 }
 
-fn main_args(args: &[String]) -> isize {
+fn main_args(args: &[String]) -> i32 {
     let mut options = getopts::Options::new();
     for option in opts() {
         (option.apply)(&mut options);
@@ -374,7 +380,12 @@ fn main_args(args: &[String]) -> isize {
         Ok(opts) => opts,
         Err(code) => return code,
     };
+    rustc_interface::interface::default_thread_pool(options.edition, move || {
+        main_options(options)
+    })
+}
 
+fn main_options(options: config::Options) -> i32 {
     let diag = core::new_handler(options.error_format,
                                  None,
                                  options.debugging_options.treat_err_as_bug,
@@ -383,7 +394,10 @@ fn main_args(args: &[String]) -> isize {
     match (options.should_test, options.markdown_input()) {
         (true, true) => return markdown::test(options, &diag),
         (true, false) => return test::run(options),
-        (false, true) => return markdown::render(options.input, options.render_options, &diag),
+        (false, true) => return markdown::render(options.input,
+                                                 options.render_options,
+                                                 &diag,
+                                                 options.edition),
         (false, false) => {}
     }
 
@@ -391,11 +405,19 @@ fn main_args(args: &[String]) -> isize {
     // but we can't crates the Handler ahead of time because it's not Send
     let diag_opts = (options.error_format,
                      options.debugging_options.treat_err_as_bug,
-                     options.debugging_options.ui_testing);
+                     options.debugging_options.ui_testing,
+                     options.edition);
+    let show_coverage = options.show_coverage;
     rust_input(options, move |out| {
+        if show_coverage {
+            // if we ran coverage, bail early, we don't need to also generate docs at this point
+            // (also we didn't load in any of the useful passes)
+            return rustc_driver::EXIT_SUCCESS;
+        }
+
         let Output { krate, passes, renderinfo, renderopts } = out;
         info!("going to format");
-        let (error_format, treat_err_as_bug, ui_testing) = diag_opts;
+        let (error_format, treat_err_as_bug, ui_testing, edition) = diag_opts;
         let diag = core::new_handler(error_format, None, treat_err_as_bug, ui_testing);
         match html::render::run(
             krate,
@@ -403,6 +425,7 @@ fn main_args(args: &[String]) -> isize {
             passes.into_iter().collect(),
             renderinfo,
             &diag,
+            edition,
         ) {
             Ok(_) => rustc_driver::EXIT_SUCCESS,
             Err(e) => {
@@ -429,7 +452,7 @@ where R: 'static + Send,
 
     let (tx, rx) = channel();
 
-    let result = rustc_driver::monitor(move || syntax::with_globals(move || {
+    let result = rustc_driver::report_ices_to_stderr_if_any(move || {
         let crate_name = options.crate_name.clone();
         let crate_version = options.crate_version.clone();
         let (mut krate, renderinfo, renderopts, passes) = core::run_core(options);
@@ -448,7 +471,7 @@ where R: 'static + Send,
             renderopts,
             passes: passes
         })).unwrap();
-    }));
+    });
 
     match result {
         Ok(()) => rx.recv().unwrap(),

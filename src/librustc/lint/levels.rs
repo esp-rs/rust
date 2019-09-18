@@ -14,7 +14,7 @@ use syntax::ast;
 use syntax::attr;
 use syntax::feature_gate;
 use syntax::source_map::MultiSpan;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 
 pub struct LintLevelSets {
     list: Vec<LintSet>,
@@ -157,6 +157,7 @@ pub struct LintLevelsBuilder<'a> {
 
 pub struct BuilderPush {
     prev: u32,
+    pub(super) changed: bool,
 }
 
 impl<'a> LintLevelsBuilder<'a> {
@@ -190,10 +191,10 @@ impl<'a> LintLevelsBuilder<'a> {
         let store = self.sess.lint_store.borrow();
         let sess = self.sess;
         let bad_attr = |span| {
-            struct_span_err!(sess, span, E0452, "malformed lint attribute")
+            struct_span_err!(sess, span, E0452, "malformed lint attribute input")
         };
         for attr in attrs {
-            let level = match Level::from_str(&attr.name().as_str()) {
+            let level = match Level::from_symbol(attr.name_or_empty()) {
                 None => continue,
                 Some(lvl) => lvl,
             };
@@ -220,7 +221,7 @@ impl<'a> LintLevelsBuilder<'a> {
                 match item.node {
                     ast::MetaItemKind::Word => {}  // actual lint names handled later
                     ast::MetaItemKind::NameValue(ref name_value) => {
-                        if item.ident == "reason" {
+                        if item.path == sym::reason {
                             // found reason, reslice meta list to exclude it
                             metas = &metas[0..metas.len()-1];
                             // FIXME (#55112): issue unused-attributes lint if we thereby
@@ -229,7 +230,7 @@ impl<'a> LintLevelsBuilder<'a> {
                                 if !self.sess.features_untracked().lint_reasons {
                                     feature_gate::emit_feature_err(
                                         &self.sess.parse_sess,
-                                        "lint_reasons",
+                                        sym::lint_reasons,
                                         item.span,
                                         feature_gate::GateIssue::Language,
                                         "lint reasons are experimental"
@@ -237,58 +238,67 @@ impl<'a> LintLevelsBuilder<'a> {
                                 }
                                 reason = Some(rationale);
                             } else {
-                                let mut err = bad_attr(name_value.span);
-                                err.help("reason must be a string literal");
-                                err.emit();
+                                bad_attr(name_value.span)
+                                    .span_label(name_value.span, "reason must be a string literal")
+                                    .emit();
                             }
                         } else {
-                            let mut err = bad_attr(item.span);
-                            err.emit();
+                            bad_attr(item.span)
+                                .span_label(item.span, "bad attribute argument")
+                                .emit();
                         }
                     },
                     ast::MetaItemKind::List(_) => {
-                        let mut err = bad_attr(item.span);
-                        err.emit();
+                        bad_attr(item.span)
+                            .span_label(item.span, "bad attribute argument")
+                            .emit();
                     }
                 }
             }
 
             for li in metas {
-                let word = match li.word() {
-                    Some(word) => word,
-                    None => {
-                        let mut err = bad_attr(li.span);
+                let meta_item = match li.meta_item() {
+                    Some(meta_item) if meta_item.is_word() => meta_item,
+                    _ => {
+                        let sp = li.span();
+                        let mut err = bad_attr(sp);
+                        let mut add_label = true;
                         if let Some(item) = li.meta_item() {
                             if let ast::MetaItemKind::NameValue(_) = item.node {
-                                if item.ident == "reason" {
-                                    err.help("reason in lint attribute must come last");
+                                if item.path == sym::reason {
+                                    err.span_label(sp, "reason in lint attribute must come last");
+                                    add_label = false;
                                 }
                             }
+                        }
+                        if add_label {
+                            err.span_label(sp, "bad attribute argument");
                         }
                         err.emit();
                         continue;
                     }
                 };
-                let tool_name = if let Some(lint_tool) = word.is_scoped() {
-                    if !attr::is_known_lint_tool(lint_tool) {
+                let tool_name = if meta_item.path.segments.len() > 1 {
+                    let tool_ident = meta_item.path.segments[0].ident;
+                    if !attr::is_known_lint_tool(tool_ident) {
                         span_err!(
                             sess,
-                            lint_tool.span,
+                            tool_ident.span,
                             E0710,
                             "an unknown tool name found in scoped lint: `{}`",
-                            word.ident
+                            meta_item.path
                         );
                         continue;
                     }
 
-                    Some(lint_tool.as_str())
+                    Some(tool_ident.as_str())
                 } else {
                     None
                 };
-                let name = word.name();
+                let name = meta_item.path.segments.last().expect("empty lint name").ident.name;
                 match store.check_lint_name(&name.as_str(), tool_name) {
                     CheckLintNameResult::Ok(ids) => {
-                        let src = LintSource::Node(name, li.span, reason);
+                        let src = LintSource::Node(name, li.span(), reason);
                         for id in ids {
                             specs.insert(*id, (level, src));
                         }
@@ -299,7 +309,7 @@ impl<'a> LintLevelsBuilder<'a> {
                             Ok(ids) => {
                                 let complete_name = &format!("{}::{}", tool_name.unwrap(), name);
                                 let src = LintSource::Node(
-                                    Symbol::intern(complete_name), li.span, reason
+                                    Symbol::intern(complete_name), li.span(), reason
                                 );
                                 for id in ids {
                                     specs.insert(*id, (level, src));
@@ -316,23 +326,22 @@ impl<'a> LintLevelsBuilder<'a> {
                                      Also `cfg_attr(cargo-clippy)` won't be necessary anymore",
                                     name
                                 );
-                                let mut err = lint::struct_lint_level(
+                                lint::struct_lint_level(
                                     self.sess,
                                     lint,
                                     lvl,
                                     src,
-                                    Some(li.span.into()),
+                                    Some(li.span().into()),
                                     &msg,
-                                );
-                                err.span_suggestion(
-                                    li.span,
+                                ).span_suggestion(
+                                    li.span(),
                                     "change it to",
                                     new_lint_name.to_string(),
                                     Applicability::MachineApplicable,
                                 ).emit();
 
                                 let src = LintSource::Node(
-                                    Symbol::intern(&new_lint_name), li.span, reason
+                                    Symbol::intern(&new_lint_name), li.span(), reason
                                 );
                                 for id in ids {
                                     specs.insert(*id, (level, src));
@@ -359,11 +368,11 @@ impl<'a> LintLevelsBuilder<'a> {
                                                               lint,
                                                               level,
                                                               src,
-                                                              Some(li.span.into()),
+                                                              Some(li.span().into()),
                                                               &msg);
                         if let Some(new_name) = renamed {
                             err.span_suggestion(
-                                li.span,
+                                li.span(),
                                 "use the new name",
                                 new_name,
                                 Applicability::MachineApplicable
@@ -382,12 +391,12 @@ impl<'a> LintLevelsBuilder<'a> {
                                                 lint,
                                                 level,
                                                 src,
-                                                Some(li.span.into()),
+                                                Some(li.span().into()),
                                                 &msg);
 
                         if let Some(suggestion) = suggestion {
                             db.span_suggestion(
-                                li.span,
+                                li.span(),
                                 "did you mean",
                                 suggestion.to_string(),
                                 Applicability::MachineApplicable,
@@ -454,6 +463,7 @@ impl<'a> LintLevelsBuilder<'a> {
 
         BuilderPush {
             prev: prev,
+            changed: prev != self.cur,
         }
     }
 
@@ -511,11 +521,6 @@ impl LintLevelMap {
         self.id_to_set.get(&id).map(|idx| {
             self.sets.get_lint_level(lint, *idx, None, session)
         })
-    }
-
-    /// Returns if this `id` has lint level information.
-    pub fn lint_level_set(&self, id: HirId) -> Option<u32> {
-        self.id_to_set.get(&id).cloned()
     }
 }
 

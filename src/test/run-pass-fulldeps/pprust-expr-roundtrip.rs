@@ -1,22 +1,20 @@
 // ignore-cross-compile
 
-
 // The general idea of this test is to enumerate all "interesting" expressions and check that
-// `parse(print(e)) == e` for all `e`.  Here's what's interesting, for the purposes of this test:
+// `parse(print(e)) == e` for all `e`. Here's what's interesting, for the purposes of this test:
 //
-//  1. The test focuses on expression nesting, because interactions between different expression
-//     types are harder to test manually than single expression types in isolation.
+// 1. The test focuses on expression nesting, because interactions between different expression
+//    types are harder to test manually than single expression types in isolation.
 //
-//  2. The test only considers expressions of at most two nontrivial nodes.  So it will check `x +
-//     x` and `x + (x - x)` but not `(x * x) + (x - x)`.  The assumption here is that the correct
-//     handling of an expression might depend on the expression's parent, but doesn't depend on its
-//     siblings or any more distant ancestors.
+// 2. The test only considers expressions of at most two nontrivial nodes. So it will check `x +
+//    x` and `x + (x - x)` but not `(x * x) + (x - x)`. The assumption here is that the correct
+//    handling of an expression might depend on the expression's parent, but doesn't depend on its
+//    siblings or any more distant ancestors.
 //
-// 3. The test only checks certain expression kinds.  The assumption is that similar expression
-//    types, such as `if` and `while` or `+` and `-`,  will be handled identically in the printer
-//    and parser.  So if all combinations of exprs involving `if` work correctly, then combinations
+// 3. The test only checks certain expression kinds. The assumption is that similar expression
+//    types, such as `if` and `while` or `+` and `-`, will be handled identically in the printer
+//    and parser. So if all combinations of exprs involving `if` work correctly, then combinations
 //    using `while`, `if let`, and so on will likely work as well.
-
 
 #![feature(rustc_private)]
 
@@ -62,7 +60,7 @@ fn make_x() -> P<Expr> {
 /// Iterate over exprs of depth up to `depth`. The goal is to explore all "interesting"
 /// combinations of expression nesting. For example, we explore combinations using `if`, but not
 /// `while` or `match`, since those should print and parse in much the same way as `if`.
-fn iter_exprs(depth: usize, f: &mut FnMut(P<Expr>)) {
+fn iter_exprs(depth: usize, f: &mut dyn FnMut(P<Expr>)) {
     if depth == 0 {
         f(make_x());
         return;
@@ -70,7 +68,7 @@ fn iter_exprs(depth: usize, f: &mut FnMut(P<Expr>)) {
 
     let mut g = |e| f(expr(e));
 
-    for kind in 0 .. 16 {
+    for kind in 0..=19 {
         match kind {
             0 => iter_exprs(depth - 1, &mut |e| g(ExprKind::Box(e))),
             1 => iter_exprs(depth - 1, &mut |e| g(ExprKind::Call(e, vec![]))),
@@ -81,25 +79,26 @@ fn iter_exprs(depth: usize, f: &mut FnMut(P<Expr>)) {
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::MethodCall(
                             seg.clone(), vec![make_x(), e])));
             },
-            3 => {
-                let op = Spanned { span: DUMMY_SP, node: BinOpKind::Add };
+            3..=8 => {
+                let op = Spanned {
+                    span: DUMMY_SP,
+                    node: match kind {
+                        3 => BinOpKind::Add,
+                        4 => BinOpKind::Mul,
+                        5 => BinOpKind::Shl,
+                        6 => BinOpKind::And,
+                        7 => BinOpKind::Or,
+                        8 => BinOpKind::Lt,
+                        _ => unreachable!(),
+                    }
+                };
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Binary(op, e, make_x())));
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Binary(op, make_x(), e)));
             },
-            4 => {
-                let op = Spanned { span: DUMMY_SP, node: BinOpKind::Mul };
-                iter_exprs(depth - 1, &mut |e| g(ExprKind::Binary(op, e, make_x())));
-                iter_exprs(depth - 1, &mut |e| g(ExprKind::Binary(op, make_x(), e)));
-            },
-            5 => {
-                let op = Spanned { span: DUMMY_SP, node: BinOpKind::Shl };
-                iter_exprs(depth - 1, &mut |e| g(ExprKind::Binary(op, e, make_x())));
-                iter_exprs(depth - 1, &mut |e| g(ExprKind::Binary(op, make_x(), e)));
-            },
-            6 => {
+            9 => {
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Unary(UnOp::Deref, e)));
             },
-            7 => {
+            10 => {
                 let block = P(Block {
                     stmts: Vec::new(),
                     id: DUMMY_NODE_ID,
@@ -108,7 +107,7 @@ fn iter_exprs(depth: usize, f: &mut FnMut(P<Expr>)) {
                 });
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::If(e, block.clone(), None)));
             },
-            8 => {
+            11 => {
                 let decl = P(FnDecl {
                     inputs: vec![],
                     output: FunctionRetTy::Default(DUMMY_SP),
@@ -122,32 +121,40 @@ fn iter_exprs(depth: usize, f: &mut FnMut(P<Expr>)) {
                                           e,
                                           DUMMY_SP)));
             },
-            9 => {
+            12 => {
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Assign(e, make_x())));
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Assign(make_x(), e)));
             },
-            10 => {
+            13 => {
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Field(e, Ident::from_str("f"))));
             },
-            11 => {
+            14 => {
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Range(
                             Some(e), Some(make_x()), RangeLimits::HalfOpen)));
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Range(
                             Some(make_x()), Some(e), RangeLimits::HalfOpen)));
             },
-            12 => {
+            15 => {
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::AddrOf(Mutability::Immutable, e)));
             },
-            13 => {
+            16 => {
                 g(ExprKind::Ret(None));
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Ret(Some(e))));
             },
-            14 => {
+            17 => {
                 let path = Path::from_ident(Ident::from_str("S"));
                 g(ExprKind::Struct(path, vec![], Some(make_x())));
             },
-            15 => {
+            18 => {
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Try(e)));
+            },
+            19 => {
+                let ps = vec![P(Pat {
+                    id: DUMMY_NODE_ID,
+                    node: PatKind::Wild,
+                    span: DUMMY_SP,
+                })];
+                iter_exprs(depth - 1, &mut |e| g(ExprKind::Let(ps.clone(), e)))
             },
             _ => panic!("bad counter value in iter_exprs"),
         }
@@ -155,9 +162,9 @@ fn iter_exprs(depth: usize, f: &mut FnMut(P<Expr>)) {
 }
 
 
-// Folders for manipulating the placement of `Paren` nodes.  See below for why this is needed.
+// Folders for manipulating the placement of `Paren` nodes. See below for why this is needed.
 
-/// MutVisitor that removes all `ExprKind::Paren` nodes.
+/// `MutVisitor` that removes all `ExprKind::Paren` nodes.
 struct RemoveParens;
 
 impl MutVisitor for RemoveParens {
@@ -171,7 +178,7 @@ impl MutVisitor for RemoveParens {
 }
 
 
-/// MutVisitor that inserts `ExprKind::Paren` nodes around every `Expr`.
+/// `MutVisitor` that inserts `ExprKind::Paren` nodes around every `Expr`.
 struct AddParens;
 
 impl MutVisitor for AddParens {
@@ -189,7 +196,7 @@ impl MutVisitor for AddParens {
 }
 
 fn main() {
-    syntax::with_globals(|| run());
+    syntax::with_default_globals(|| run());
 }
 
 fn run() {
@@ -205,8 +212,8 @@ fn run() {
 
         // We want to know if `parsed` is structurally identical to `e`, ignoring trivial
         // differences like placement of `Paren`s or the exact ranges of node spans.
-        // Unfortunately, there is no easy way to make this comparison.  Instead, we add `Paren`s
-        // everywhere we can, then pretty-print.  This should give an unambiguous representation of
+        // Unfortunately, there is no easy way to make this comparison. Instead, we add `Paren`s
+        // everywhere we can, then pretty-print. This should give an unambiguous representation of
         // each `Expr`, and it bypasses nearly all of the parenthesization logic, so we aren't
         // relying on the correctness of the very thing we're testing.
         RemoveParens.visit_expr(&mut e);

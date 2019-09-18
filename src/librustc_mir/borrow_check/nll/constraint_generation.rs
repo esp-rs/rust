@@ -6,19 +6,19 @@ use crate::borrow_check::nll::region_infer::values::LivenessValues;
 use rustc::infer::InferCtxt;
 use rustc::mir::visit::TyContext;
 use rustc::mir::visit::Visitor;
-use rustc::mir::{BasicBlock, BasicBlockData, Location, Mir, Place, PlaceBase, Rvalue};
+use rustc::mir::{BasicBlock, BasicBlockData, Location, Body, Place, PlaceBase, Rvalue};
 use rustc::mir::{SourceInfo, Statement, Terminator};
 use rustc::mir::UserTypeProjection;
 use rustc::ty::fold::TypeFoldable;
-use rustc::ty::{self, ClosureSubsts, GeneratorSubsts, RegionVid};
+use rustc::ty::{self, ClosureSubsts, GeneratorSubsts, RegionVid, Ty};
 use rustc::ty::subst::SubstsRef;
 
-pub(super) fn generate_constraints<'cx, 'gcx, 'tcx>(
-    infcx: &InferCtxt<'cx, 'gcx, 'tcx>,
+pub(super) fn generate_constraints<'cx, 'tcx>(
+    infcx: &InferCtxt<'cx, 'tcx>,
     liveness_constraints: &mut LivenessValues<RegionVid>,
     all_facts: &mut Option<AllFacts>,
     location_table: &LocationTable,
-    mir: &Mir<'tcx>,
+    body: &Body<'tcx>,
     borrow_set: &BorrowSet<'tcx>,
 ) {
     let mut cg = ConstraintGeneration {
@@ -29,21 +29,21 @@ pub(super) fn generate_constraints<'cx, 'gcx, 'tcx>(
         all_facts,
     };
 
-    for (bb, data) in mir.basic_blocks().iter_enumerated() {
+    for (bb, data) in body.basic_blocks().iter_enumerated() {
         cg.visit_basic_block_data(bb, data);
     }
 }
 
 /// 'cg = the duration of the constraint generation process itself.
-struct ConstraintGeneration<'cg, 'cx: 'cg, 'gcx: 'tcx, 'tcx: 'cx> {
-    infcx: &'cg InferCtxt<'cx, 'gcx, 'tcx>,
+struct ConstraintGeneration<'cg, 'cx, 'tcx> {
+    infcx: &'cg InferCtxt<'cx, 'tcx>,
     all_facts: &'cg mut Option<AllFacts>,
     location_table: &'cg LocationTable,
     liveness_constraints: &'cg mut LivenessValues<RegionVid>,
     borrow_set: &'cg BorrowSet<'tcx>,
 }
 
-impl<'cg, 'cx, 'gcx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'gcx, 'tcx> {
+impl<'cg, 'cx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'tcx> {
     fn visit_basic_block_data(&mut self, bb: BasicBlock, data: &BasicBlockData<'tcx>) {
         self.super_basic_block_data(bb, data);
     }
@@ -64,7 +64,7 @@ impl<'cg, 'cx, 'gcx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'gcx
 
     /// We sometimes have `ty` within an rvalue, or within a
     /// call. Make them live at the location where they appear.
-    fn visit_ty(&mut self, ty: &ty::Ty<'tcx>, ty_context: TyContext) {
+    fn visit_ty(&mut self, ty: Ty<'tcx>, ty_context: TyContext) {
         match ty_context {
             TyContext::ReturnTy(SourceInfo { span, .. })
             | TyContext::YieldTy(SourceInfo { span, .. })
@@ -77,7 +77,7 @@ impl<'cg, 'cx, 'gcx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'gcx
                 );
             }
             TyContext::Location(location) => {
-                self.add_regular_live_constraint(*ty, location);
+                self.add_regular_live_constraint(ty, location);
             }
         }
 
@@ -100,7 +100,6 @@ impl<'cg, 'cx, 'gcx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'gcx
 
     fn visit_statement(
         &mut self,
-        block: BasicBlock,
         statement: &Statement<'tcx>,
         location: Location,
     ) {
@@ -117,12 +116,11 @@ impl<'cg, 'cx, 'gcx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'gcx
             ));
         }
 
-        self.super_statement(block, statement, location);
+        self.super_statement(statement, location);
     }
 
     fn visit_assign(
         &mut self,
-        block: BasicBlock,
         place: &Place<'tcx>,
         rvalue: &Rvalue<'tcx>,
         location: Location,
@@ -141,12 +139,11 @@ impl<'cg, 'cx, 'gcx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'gcx
             }
         }
 
-        self.super_assign(block, place, rvalue, location);
+        self.super_assign(place, rvalue, location);
     }
 
     fn visit_terminator(
         &mut self,
-        block: BasicBlock,
         terminator: &Terminator<'tcx>,
         location: Location,
     ) {
@@ -167,20 +164,20 @@ impl<'cg, 'cx, 'gcx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'gcx
             }
         }
 
-        self.super_terminator(block, terminator, location);
+        self.super_terminator(terminator, location);
     }
 
     fn visit_ascribe_user_ty(
         &mut self,
         _place: &Place<'tcx>,
         _variance: &ty::Variance,
-        _user_ty: &UserTypeProjection<'tcx>,
+        _user_ty: &UserTypeProjection,
         _location: Location,
     ) {
     }
 }
 
-impl<'cx, 'cg, 'gcx, 'tcx> ConstraintGeneration<'cx, 'cg, 'gcx, 'tcx> {
+impl<'cx, 'cg, 'tcx> ConstraintGeneration<'cx, 'cg, 'tcx> {
     /// Some variable with type `live_ty` is "regular live" at
     /// `location` -- i.e., it may be used later. This means that all
     /// regions appearing in the type `live_ty` must be live at

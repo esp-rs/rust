@@ -1,7 +1,7 @@
 // aux-build:lint_stability.rs
 // aux-build:inherited_stability.rs
 // aux-build:stability_cfg1.rs
-// aux-build:stability_cfg2.rs
+// aux-build:stability-cfg2.rs
 
 #![allow(deprecated)]
 #![allow(dead_code)]
@@ -88,7 +88,7 @@ mod cross_crate {
         struct S1<T: TraitWithAssociatedTypes>(T::TypeUnstable);
         //~^ ERROR use of unstable library feature
         struct S2<T: TraitWithAssociatedTypes>(T::TypeDeprecated);
-        type A = TraitWithAssociatedTypes<
+        type A = dyn TraitWithAssociatedTypes<
             TypeUnstable = u8, //~ ERROR use of unstable library feature
             TypeDeprecated = u16,
         >;
@@ -161,7 +161,7 @@ mod cross_crate {
         <Foo as Trait>::trait_stable(&foo);
     }
 
-    fn test_method_object(foo: &Trait) {
+    fn test_method_object(foo: &dyn Trait) {
         foo.trait_deprecated();
         foo.trait_deprecated_text();
         foo.trait_stable();
@@ -414,7 +414,7 @@ mod this_crate {
         <Foo as Trait>::trait_stable(&foo);
     }
 
-    fn test_method_object(foo: &Trait) {
+    fn test_method_object(foo: &dyn Trait) {
         foo.trait_deprecated();
         foo.trait_deprecated_text();
         foo.trait_unstable();

@@ -10,9 +10,12 @@
 // ignore-pretty issue #37195
 // ignore-cloudabi spawning processes is not supported
 // ignore-emscripten spawning processes is not supported
+// normalize-stderr-test ".*\n" -> ""
+// ignore-sgx no processes
 
-// note that above `-opt-bisect-limit=0` is used to basically disable
-// optimizations
+// Note that above `-opt-bisect-limit=0` is used to basically disable
+// optimizations. It creates tons of output on stderr, hence we normalize
+// that away entirely.
 
 use std::env;
 
@@ -30,7 +33,6 @@ macro_rules! dump_and_die {
                     all(target_os = "linux", target_arch = "arm"),
                     target_os = "freebsd",
                     target_os = "dragonfly",
-                    target_os = "bitrig",
                     target_os = "openbsd")) {
             // skip these platforms as this support isn't implemented yet.
         } else {

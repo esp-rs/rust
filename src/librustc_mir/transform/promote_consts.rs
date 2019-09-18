@@ -44,8 +44,8 @@ pub enum TempState {
 impl TempState {
     pub fn is_promotable(&self) -> bool {
         debug!("is_promotable: self={:?}", self);
-        if let TempState::Defined { uses, .. } = *self {
-            uses > 0
+        if let TempState::Defined { .. } = *self {
+            true
         } else {
             false
         }
@@ -71,18 +71,23 @@ pub enum Candidate {
 struct TempCollector<'tcx> {
     temps: IndexVec<Local, TempState>,
     span: Span,
-    mir: &'tcx Mir<'tcx>,
+    body: &'tcx Body<'tcx>,
 }
 
 impl<'tcx> Visitor<'tcx> for TempCollector<'tcx> {
     fn visit_local(&mut self,
                    &index: &Local,
-                   context: PlaceContext<'tcx>,
+                   context: PlaceContext,
                    location: Location) {
         debug!("visit_local: index={:?} context={:?} location={:?}", index, context, location);
-        // We're only interested in temporaries
-        if self.mir.local_kind(index) != LocalKind::Temp {
-            return;
+        // We're only interested in temporaries and the return place
+        match self.body.local_kind(index) {
+            | LocalKind::Temp
+            | LocalKind::ReturnPointer
+            => {},
+            | LocalKind::Arg
+            | LocalKind::Var
+            => return,
         }
 
         // Ignore drops, if the temp gets promoted,
@@ -101,7 +106,6 @@ impl<'tcx> Visitor<'tcx> for TempCollector<'tcx> {
         if *temp == TempState::Undefined {
             match context {
                 PlaceContext::MutatingUse(MutatingUseContext::Store) |
-                PlaceContext::MutatingUse(MutatingUseContext::AsmOutput) |
                 PlaceContext::MutatingUse(MutatingUseContext::Call) => {
                     *temp = TempState::Defined {
                         location,
@@ -130,12 +134,12 @@ impl<'tcx> Visitor<'tcx> for TempCollector<'tcx> {
     }
 }
 
-pub fn collect_temps(mir: &Mir<'_>,
+pub fn collect_temps(body: &Body<'_>,
                      rpo: &mut ReversePostorder<'_, '_>) -> IndexVec<Local, TempState> {
     let mut collector = TempCollector {
-        temps: IndexVec::from_elem(TempState::Undefined, &mir.local_decls),
-        span: mir.span,
-        mir,
+        temps: IndexVec::from_elem(TempState::Undefined, &body.local_decls),
+        span: body.span,
+        body,
     };
     for (bb, data) in rpo {
         collector.visit_basic_block_data(bb, data);
@@ -143,15 +147,15 @@ pub fn collect_temps(mir: &Mir<'_>,
     collector.temps
 }
 
-struct Promoter<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    source: &'a mut Mir<'tcx>,
-    promoted: Mir<'tcx>,
+struct Promoter<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    source: &'a mut Body<'tcx>,
+    promoted: Body<'tcx>,
     temps: &'a mut IndexVec<Local, TempState>,
 
     /// If true, all nested temps are also kept in the
     /// source MIR, not moved to the promoted MIR.
-    keep_original: bool
+    keep_original: bool,
 }
 
 impl<'a, 'tcx> Promoter<'a, 'tcx> {
@@ -178,7 +182,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                 span,
                 scope: OUTERMOST_SOURCE_SCOPE
             },
-            kind: StatementKind::Assign(Place::Base(PlaceBase::Local(dest)), box rvalue)
+            kind: StatementKind::Assign(Place::from(dest), box rvalue)
         });
     }
 
@@ -269,7 +273,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                             args,
                             cleanup: None,
                             destination: Some(
-                                (Place::Base(PlaceBase::Local(new_temp)), new_target)
+                                (Place::from(new_temp), new_target)
                             ),
                             from_hir_call,
                         },
@@ -292,9 +296,10 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
             let promoted_id = Promoted::new(self.source.promoted.len());
             let mut promoted_place = |ty, span| {
                 promoted.span = span;
-                promoted.local_decls[RETURN_PLACE] =
-                    LocalDecl::new_return_place(ty, span);
-                Place::Base(PlaceBase::Promoted(box (promoted_id, ty)))
+                promoted.local_decls[RETURN_PLACE] = LocalDecl::new_return_place(ty, span);
+                Place::Base(
+                    PlaceBase::Static(box Static{ kind: StaticKind::Promoted(promoted_id), ty })
+                )
             };
             let (blocks, local_decls) = self.source.basic_blocks_and_local_decls_mut();
             match candidate {
@@ -309,7 +314,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                                 place = &mut proj.base;
                             };
 
-                            let ty = place.ty(local_decls, self.tcx).to_ty(self.tcx);
+                            let ty = place.ty(local_decls, self.tcx).ty;
                             let span = statement.source_info.span;
 
                             Operand::Move(mem::replace(place, promoted_place(ty, span)))
@@ -356,7 +361,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
 impl<'a, 'tcx> MutVisitor<'tcx> for Promoter<'a, 'tcx> {
     fn visit_local(&mut self,
                    local: &mut Local,
-                   _: PlaceContext<'tcx>,
+                   _: PlaceContext,
                    _: Location) {
         if self.source.local_kind(*local) == LocalKind::Temp {
             *local = self.promote_temp(*local);
@@ -364,17 +369,19 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Promoter<'a, 'tcx> {
     }
 }
 
-pub fn promote_candidates<'a, 'tcx>(mir: &mut Mir<'tcx>,
-                                    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                    mut temps: IndexVec<Local, TempState>,
-                                    candidates: Vec<Candidate>) {
+pub fn promote_candidates<'tcx>(
+    body: &mut Body<'tcx>,
+    tcx: TyCtxt<'tcx>,
+    mut temps: IndexVec<Local, TempState>,
+    candidates: Vec<Candidate>,
+) {
     // Visit candidates in reverse, in case they're nested.
     debug!("promote_candidates({:?})", candidates);
 
     for candidate in candidates.into_iter().rev() {
         match candidate {
             Candidate::Ref(Location { block, statement_index }) => {
-                match mir[block].statements[statement_index].kind {
+                match body[block].statements[statement_index].kind {
                     StatementKind::Assign(Place::Base(PlaceBase::Local(local)), _) => {
                         if temps[local] == TempState::PromotedOut {
                             // Already promoted.
@@ -388,29 +395,29 @@ pub fn promote_candidates<'a, 'tcx>(mir: &mut Mir<'tcx>,
         }
 
 
-        // Declare return place local so that `Mir::new` doesn't complain.
+        // Declare return place local so that `mir::Body::new` doesn't complain.
         let initial_locals = iter::once(
-            LocalDecl::new_return_place(tcx.types.never, mir.span)
+            LocalDecl::new_return_place(tcx.types.never, body.span)
         ).collect();
 
         let promoter = Promoter {
-            promoted: Mir::new(
+            promoted: Body::new(
                 IndexVec::new(),
                 // FIXME: maybe try to filter this to avoid blowing up
                 // memory usage?
-                mir.source_scopes.clone(),
-                mir.source_scope_local_data.clone(),
+                body.source_scopes.clone(),
+                body.source_scope_local_data.clone(),
                 IndexVec::new(),
                 None,
                 initial_locals,
                 IndexVec::new(),
                 0,
                 vec![],
-                mir.span,
+                body.span,
                 vec![],
             ),
             tcx,
-            source: mir,
+            source: body,
             temps: &mut temps,
             keep_original: false
         };
@@ -419,7 +426,7 @@ pub fn promote_candidates<'a, 'tcx>(mir: &mut Mir<'tcx>,
 
     // Eliminate assignments to, and drops of promoted temps.
     let promoted = |index: Local| temps[index] == TempState::PromotedOut;
-    for block in mir.basic_blocks_mut() {
+    for block in body.basic_blocks_mut() {
         block.statements.retain(|statement| {
             match statement.kind {
                 StatementKind::Assign(Place::Base(PlaceBase::Local(index)), _) |

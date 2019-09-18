@@ -2,7 +2,7 @@ use crate::os::windows::prelude::*;
 
 use crate::ffi::OsString;
 use crate::fmt;
-use crate::io::{self, Error, SeekFrom};
+use crate::io::{self, Error, SeekFrom, IoSlice, IoSliceMut};
 use crate::mem;
 use crate::path::{Path, PathBuf};
 use crate::ptr;
@@ -74,7 +74,7 @@ pub struct FilePermissions { attrs: c::DWORD }
 pub struct DirBuilder;
 
 impl fmt::Debug for ReadDir {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // This will only be called from std::fs::ReadDir, which will add a "ReadDir()" frame.
         // Thus the result will be e g 'ReadDir("C:\")'
         fmt::Debug::fmt(&*self.root, f)
@@ -191,7 +191,11 @@ impl OpenOptions {
     pub fn access_mode(&mut self, access_mode: u32) { self.access_mode = Some(access_mode); }
     pub fn share_mode(&mut self, share_mode: u32) { self.share_mode = share_mode; }
     pub fn attributes(&mut self, attrs: u32) { self.attributes = attrs; }
-    pub fn security_qos_flags(&mut self, flags: u32) { self.security_qos_flags = flags; }
+    pub fn security_qos_flags(&mut self, flags: u32) {
+        // We have to set `SECURITY_SQOS_PRESENT` here, because one of the valid flags we can
+        // receive is `SECURITY_ANONYMOUS = 0x0`, which we can't check for later on.
+        self.security_qos_flags = flags | c::SECURITY_SQOS_PRESENT;
+    }
     pub fn security_attributes(&mut self, attrs: c::LPSECURITY_ATTRIBUTES) {
         self.security_attributes = attrs as usize;
     }
@@ -239,7 +243,6 @@ impl OpenOptions {
         self.custom_flags |
         self.attributes |
         self.security_qos_flags |
-        if self.security_qos_flags != 0 { c::SECURITY_SQOS_PRESENT } else { 0 } |
         if self.create_new { c::FILE_FLAG_OPEN_REPARSE_POINT } else { 0 }
     }
 }
@@ -311,12 +314,20 @@ impl File {
         self.handle.read(buf)
     }
 
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        self.handle.read_vectored(bufs)
+    }
+
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         self.handle.read_at(buf, offset)
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.handle.write(buf)
+    }
+
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        self.handle.write_vectored(bufs)
     }
 
     pub fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<usize> {
@@ -432,7 +443,7 @@ impl FromInner<c::HANDLE> for File {
 }
 
 impl fmt::Debug for File {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // FIXME(#24570): add more info here (e.g., mode)
         let mut b = f.debug_struct("File");
         b.field("handle", &self.handle.raw());

@@ -22,7 +22,7 @@
 
 #![allow(missing_debug_implementations)]
 
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod unix;
         pub use self::unix::*;
@@ -35,6 +35,9 @@ cfg_if! {
     } else if #[cfg(target_os = "redox")] {
         mod redox;
         pub use self::redox::*;
+    } else if #[cfg(target_os = "wasi")] {
+        mod wasi;
+        pub use self::wasi::*;
     } else if #[cfg(target_arch = "wasm32")] {
         mod wasm;
         pub use self::wasm::*;
@@ -51,7 +54,7 @@ cfg_if! {
 // Windows when we're compiling for Linux.
 
 #[cfg(rustdoc)]
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(any(unix, target_os = "redox"))] {
         // On unix we'll document what's already available
         #[stable(feature = "rust1", since = "1.0.0")]
@@ -74,7 +77,7 @@ cfg_if! {
 }
 
 #[cfg(rustdoc)]
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(windows)] {
         // On windows we'll just be documenting what's already available
         #[allow(missing_docs)]

@@ -34,8 +34,7 @@
 #[cfg(not(test))]
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[cfg_attr(not(stage0), allow_internal_unstable(box_syntax))]
-#[cfg_attr(stage0, allow_internal_unstable)]
+#[allow_internal_unstable(box_syntax)]
 macro_rules! vec {
     ($elem:expr; $n:expr) => (
         $crate::vec::from_elem($elem, $n)
@@ -43,7 +42,7 @@ macro_rules! vec {
     ($($x:expr),*) => (
         <[_]>::into_vec(box [$($x),*])
     );
-    ($($x:expr,)*) => (vec![$($x),*])
+    ($($x:expr,)*) => ($crate::vec![$($x),*])
 }
 
 // HACK(japaric): with cfg(test) the inherent `[T]::into_vec` method, which is

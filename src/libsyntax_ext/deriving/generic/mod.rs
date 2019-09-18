@@ -191,7 +191,7 @@ use syntax::ext::build::AstBuilder;
 use syntax::source_map::{self, respan};
 use syntax::util::map_in_place::MapInPlace;
 use syntax::ptr::P;
-use syntax::symbol::{Symbol, keywords};
+use syntax::symbol::{Symbol, kw, sym};
 use syntax::parse::ParseSess;
 use syntax_pos::{DUMMY_SP, Span};
 
@@ -339,14 +339,15 @@ pub fn combine_substructure<'a>(f: CombineSubstructureFunc<'a>)
 /// This method helps to extract all the type parameters referenced from a
 /// type. For a type parameter `<T>`, it looks for either a `TyPath` that
 /// is not global and starts with `T`, or a `TyQPath`.
-fn find_type_parameters(ty: &ast::Ty,
-                        ty_param_names: &[ast::Name],
-                        span: Span,
-                        cx: &ExtCtxt<'_>)
-                        -> Vec<P<ast::Ty>> {
+fn find_type_parameters(
+    ty: &ast::Ty,
+    ty_param_names: &[ast::Name],
+    span: Span,
+    cx: &ExtCtxt<'_>,
+) -> Vec<P<ast::Ty>> {
     use syntax::visit;
 
-    struct Visitor<'a, 'b: 'a> {
+    struct Visitor<'a, 'b> {
         cx: &'a ExtCtxt<'b>,
         span: Span,
         ty_param_names: &'a [ast::Name],
@@ -426,7 +427,7 @@ impl<'a> TraitDef<'a> {
                     }
                 };
                 let is_always_copy =
-                    attr::contains_name(&item.attrs, "rustc_copy_clone_marker") &&
+                    attr::contains_name(&item.attrs, sym::rustc_copy_clone_marker) &&
                     has_no_type_params;
                 let use_temporaries = is_packed && is_always_copy;
 
@@ -464,10 +465,8 @@ impl<'a> TraitDef<'a> {
                 attrs.extend(item.attrs
                     .iter()
                     .filter(|a| {
-                        match &*a.name().as_str() {
-                            "allow" | "warn" | "deny" | "forbid" | "stable" | "unstable" => true,
-                            _ => false,
-                        }
+                        [sym::allow, sym::warn, sym::deny, sym::forbid, sym::stable, sym::unstable]
+                            .contains(&a.name_or_empty())
                     })
                     .cloned());
                 push(Annotatable::Item(P(ast::Item { attrs: attrs, ..(*newitem).clone() })))
@@ -668,14 +667,13 @@ impl<'a> TraitDef<'a> {
         let self_type = cx.ty_path(path);
 
         let attr = cx.attribute(self.span,
-                                cx.meta_word(self.span,
-                                             Symbol::intern("automatically_derived")));
+                                cx.meta_word(self.span, sym::automatically_derived));
         // Just mark it now since we know that it'll end up used downstream
         attr::mark_used(&attr);
         let opt_trait_ref = Some(trait_ref);
         let unused_qual = {
             let word = cx.meta_list_item_word(self.span, Symbol::intern("unused_qualifications"));
-            cx.attribute(self.span, cx.meta_list(self.span, Symbol::intern("allow"), vec![word]))
+            cx.attribute(self.span, cx.meta_list(self.span, sym::allow, vec![word]))
         };
 
         let mut a = vec![attr, unused_qual];
@@ -688,7 +686,7 @@ impl<'a> TraitDef<'a> {
         };
 
         cx.item(self.span,
-                keywords::Invalid.ident(),
+                Ident::invalid(),
                 a,
                 ast::ItemKind::Impl(unsafety,
                                     ast::ImplPolarity::Positive,
@@ -925,14 +923,13 @@ impl<'a> MethodDef<'a> {
                      arg_types: Vec<(Ident, P<ast::Ty>)>,
                      body: P<Expr>)
                      -> ast::ImplItem {
-
-        // create the generics that aren't for Self
+        // Create the generics that aren't for `Self`.
         let fn_generics = self.generics.to_generics(cx, trait_.span, type_ident, generics);
 
         let args = {
             let self_args = explicit_self.map(|explicit_self| {
-                ast::Arg::from_self(explicit_self,
-                                    keywords::SelfLower.ident().with_span_pos(trait_.span))
+                let ident = Ident::with_empty_ctxt(kw::SelfLower).with_span_pos(trait_.span);
+                ast::Arg::from_self(ThinVec::default(), explicit_self, ident)
             });
             let nonself_args = arg_types.into_iter()
                 .map(|(name, ty)| cx.arg(trait_.span, name, ty));
@@ -1542,6 +1539,7 @@ impl<'a> TraitDef<'a> {
             }
         }
 
+        let is_tuple = if let ast::VariantData::Tuple(..) = struct_def { true } else { false };
         match (just_spans.is_empty(), named_idents.is_empty()) {
             (false, false) => {
                 cx.span_bug(self.span,
@@ -1550,9 +1548,10 @@ impl<'a> TraitDef<'a> {
             }
             // named fields
             (_, false) => Named(named_idents),
-            // empty structs
-            _ if struct_def.is_struct() => Named(named_idents),
-            _ => Unnamed(just_spans, struct_def.is_tuple()),
+            // unnamed fields
+            (false, _) => Unnamed(just_spans, is_tuple),
+            // empty
+            _ => Named(Vec::new()),
         }
     }
 

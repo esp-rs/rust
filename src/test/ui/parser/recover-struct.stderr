@@ -1,9 +1,9 @@
 error: expected `:`, found `Bad`
-  --> $DIR/recover-struct.rs:6:9
+  --> $DIR/recover-struct.rs:4:9
    |
 LL |         Very
    |             - expected `:`
-LL |         Bad //~ ERROR found `Bad`
+LL |         Bad
    |         ^^^ unexpected token
 
 error: aborting due to previous error

@@ -1,28 +1,25 @@
-error[E0596]: cannot borrow immutable indexed content as mutable
+error[E0596]: cannot borrow data in a `&` reference as mutable
   --> $DIR/index-mut-help.rs:11:5
    |
-LL |     map["peter"].clear();           //~ ERROR
+LL |     map["peter"].clear();
    |     ^^^^^^^^^^^^ cannot borrow as mutable
    |
    = help: trait `IndexMut` is required to modify indexed content, but it is not implemented for `std::collections::HashMap<&str, std::string::String>`
 
-error[E0594]: cannot assign to immutable indexed content
+error[E0594]: cannot assign to data in a `&` reference
   --> $DIR/index-mut-help.rs:12:5
    |
-LL |     map["peter"] = "0".to_string(); //~ ERROR
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot borrow as mutable
-   |
-   = help: trait `IndexMut` is required to modify indexed content, but it is not implemented for `std::collections::HashMap<&str, std::string::String>`
+LL |     map["peter"] = "0".to_string();
+   |     ^^^^^^^^^^^^ cannot assign
 
-error[E0596]: cannot borrow immutable indexed content as mutable
-  --> $DIR/index-mut-help.rs:13:18
+error[E0596]: cannot borrow data in a `&` reference as mutable
+  --> $DIR/index-mut-help.rs:13:13
    |
-LL |     let _ = &mut map["peter"];      //~ ERROR
-   |                  ^^^^^^^^^^^^ cannot borrow as mutable
+LL |     let _ = &mut map["peter"];
+   |             ^^^^^^^^^^^^^^^^^ cannot borrow as mutable
    |
    = help: trait `IndexMut` is required to modify indexed content, but it is not implemented for `std::collections::HashMap<&str, std::string::String>`
 
 error: aborting due to 3 previous errors
 
-Some errors occurred: E0594, E0596.
-For more information about an error, try `rustc --explain E0594`.
+For more information about this error, try `rustc --explain E0596`.

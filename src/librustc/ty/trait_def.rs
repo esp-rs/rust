@@ -10,10 +10,13 @@ use crate::ty::{Ty, TyCtxt};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
                                            StableHasherResult};
-use rustc_data_structures::sync::Lrc;
+use rustc_macros::HashStable;
 
 /// A trait's definition with type information.
+#[derive(HashStable)]
 pub struct TraitDef {
+    // We already have the def_path_hash below, no need to hash it twice
+    #[stable_hasher(ignore)]
     pub def_id: DefId,
 
     pub unsafety: hir::Unsafety,
@@ -43,7 +46,7 @@ pub struct TraitImpls {
     non_blanket_impls: FxHashMap<fast_reject::SimplifiedType, Vec<DefId>>,
 }
 
-impl<'a, 'gcx, 'tcx> TraitDef {
+impl<'tcx> TraitDef {
     pub fn new(def_id: DefId,
                unsafety: hir::Unsafety,
                paren_sugar: bool,
@@ -61,14 +64,16 @@ impl<'a, 'gcx, 'tcx> TraitDef {
         }
     }
 
-    pub fn ancestors(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                     of_impl: DefId)
-                     -> specialization_graph::Ancestors {
+    pub fn ancestors(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        of_impl: DefId,
+    ) -> specialization_graph::Ancestors<'tcx> {
         specialization_graph::ancestors(tcx, self.def_id, of_impl)
     }
 }
 
-impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
+impl<'tcx> TyCtxt<'tcx> {
     pub fn for_each_impl<F: FnMut(DefId)>(self, def_id: DefId, mut f: F) {
         let impls = self.trait_impls_of(def_id);
 
@@ -145,9 +150,10 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 }
 
 // Query provider for `trait_impls_of`.
-pub(super) fn trait_impls_of_provider<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                                trait_id: DefId)
-                                                -> Lrc<TraitImpls> {
+pub(super) fn trait_impls_of_provider(
+    tcx: TyCtxt<'_>,
+    trait_id: DefId,
+) -> &TraitImpls {
     let mut impls = TraitImpls::default();
 
     {
@@ -179,12 +185,12 @@ pub(super) fn trait_impls_of_provider<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             }
         }
 
-        for &node_id in tcx.hir().trait_impls(trait_id) {
-            add_impl(tcx.hir().local_def_id(node_id));
+        for &hir_id in tcx.hir().trait_impls(trait_id) {
+            add_impl(tcx.hir().local_def_id_from_hir_id(hir_id));
         }
     }
 
-    Lrc::new(impls)
+    tcx.arena.alloc(impls)
 }
 
 impl<'a> HashStable<StableHashingContext<'a>> for TraitImpls {

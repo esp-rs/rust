@@ -1,5 +1,5 @@
-use cmp::Ordering;
-use ops::Try;
+use crate::cmp::Ordering;
+use crate::ops::Try;
 
 use super::super::LoopState;
 use super::super::{Chain, Cycle, Copied, Cloned, Enumerate, Filter, FilterMap, Fuse};
@@ -356,7 +356,7 @@ pub trait Iterator {
     ///
     /// ```
     /// let a = [0, 1, 2, 3, 4, 5];
-    /// let mut iter = a.into_iter().step_by(2);
+    /// let mut iter = a.iter().step_by(2);
     ///
     /// assert_eq!(iter.next(), Some(&0));
     /// assert_eq!(iter.next(), Some(&2));
@@ -531,7 +531,7 @@ pub trait Iterator {
     /// ```
     /// let a = [1, 2, 3];
     ///
-    /// let mut iter = a.into_iter().map(|x| 2 * x);
+    /// let mut iter = a.iter().map(|x| 2 * x);
     ///
     /// assert_eq!(iter.next(), Some(2));
     /// assert_eq!(iter.next(), Some(4));
@@ -620,7 +620,7 @@ pub trait Iterator {
     /// ```
     /// let a = [0i32, 1, 2];
     ///
-    /// let mut iter = a.into_iter().filter(|x| x.is_positive());
+    /// let mut iter = a.iter().filter(|x| x.is_positive());
     ///
     /// assert_eq!(iter.next(), Some(&1));
     /// assert_eq!(iter.next(), Some(&2));
@@ -634,7 +634,7 @@ pub trait Iterator {
     /// ```
     /// let a = [0, 1, 2];
     ///
-    /// let mut iter = a.into_iter().filter(|x| **x > 1); // need two *s!
+    /// let mut iter = a.iter().filter(|x| **x > 1); // need two *s!
     ///
     /// assert_eq!(iter.next(), Some(&2));
     /// assert_eq!(iter.next(), None);
@@ -646,7 +646,7 @@ pub trait Iterator {
     /// ```
     /// let a = [0, 1, 2];
     ///
-    /// let mut iter = a.into_iter().filter(|&x| *x > 1); // both & and *
+    /// let mut iter = a.iter().filter(|&x| *x > 1); // both & and *
     ///
     /// assert_eq!(iter.next(), Some(&2));
     /// assert_eq!(iter.next(), None);
@@ -657,7 +657,7 @@ pub trait Iterator {
     /// ```
     /// let a = [0, 1, 2];
     ///
-    /// let mut iter = a.into_iter().filter(|&&x| x > 1); // two &s
+    /// let mut iter = a.iter().filter(|&&x| x > 1); // two &s
     ///
     /// assert_eq!(iter.next(), Some(&2));
     /// assert_eq!(iter.next(), None);
@@ -837,7 +837,7 @@ pub trait Iterator {
     /// ```
     /// let a = [-1i32, 0, 1];
     ///
-    /// let mut iter = a.into_iter().skip_while(|x| x.is_negative());
+    /// let mut iter = a.iter().skip_while(|x| x.is_negative());
     ///
     /// assert_eq!(iter.next(), Some(&0));
     /// assert_eq!(iter.next(), Some(&1));
@@ -851,7 +851,7 @@ pub trait Iterator {
     /// ```
     /// let a = [-1, 0, 1];
     ///
-    /// let mut iter = a.into_iter().skip_while(|x| **x < 0); // need two *s!
+    /// let mut iter = a.iter().skip_while(|x| **x < 0); // need two *s!
     ///
     /// assert_eq!(iter.next(), Some(&0));
     /// assert_eq!(iter.next(), Some(&1));
@@ -863,7 +863,7 @@ pub trait Iterator {
     /// ```
     /// let a = [-1, 0, 1, -2];
     ///
-    /// let mut iter = a.into_iter().skip_while(|x| **x < 0);
+    /// let mut iter = a.iter().skip_while(|x| **x < 0);
     ///
     /// assert_eq!(iter.next(), Some(&0));
     /// assert_eq!(iter.next(), Some(&1));
@@ -898,7 +898,7 @@ pub trait Iterator {
     /// ```
     /// let a = [-1i32, 0, 1];
     ///
-    /// let mut iter = a.into_iter().take_while(|x| x.is_negative());
+    /// let mut iter = a.iter().take_while(|x| x.is_negative());
     ///
     /// assert_eq!(iter.next(), Some(&-1));
     /// assert_eq!(iter.next(), None);
@@ -911,7 +911,7 @@ pub trait Iterator {
     /// ```
     /// let a = [-1, 0, 1];
     ///
-    /// let mut iter = a.into_iter().take_while(|x| **x < 0); // need two *s!
+    /// let mut iter = a.iter().take_while(|x| **x < 0); // need two *s!
     ///
     /// assert_eq!(iter.next(), Some(&-1));
     /// assert_eq!(iter.next(), None);
@@ -922,7 +922,7 @@ pub trait Iterator {
     /// ```
     /// let a = [-1, 0, 1, -2];
     ///
-    /// let mut iter = a.into_iter().take_while(|x| **x < 0);
+    /// let mut iter = a.iter().take_while(|x| **x < 0);
     ///
     /// assert_eq!(iter.next(), Some(&-1));
     ///
@@ -937,7 +937,7 @@ pub trait Iterator {
     ///
     /// ```
     /// let a = [1, 2, 3, 4];
-    /// let mut iter = a.into_iter();
+    /// let mut iter = a.iter();
     ///
     /// let result: Vec<i32> = iter.by_ref()
     ///                            .take_while(|n| **n != 3)
@@ -964,6 +964,7 @@ pub trait Iterator {
     /// Creates an iterator that skips the first `n` elements.
     ///
     /// After they have been consumed, the rest of the elements are yielded.
+    /// Rather than overriding this method directly, instead override the `nth` method.
     ///
     /// # Examples
     ///
@@ -1321,7 +1322,7 @@ pub trait Iterator {
     /// ```
     /// let a = [1, 2, 3];
     ///
-    /// let iter = a.into_iter();
+    /// let iter = a.iter();
     ///
     /// let sum: i32 = iter.take(5).fold(0, |acc, i| acc + i );
     ///
@@ -1334,7 +1335,7 @@ pub trait Iterator {
     /// // let's try that again
     /// let a = [1, 2, 3];
     ///
-    /// let mut iter = a.into_iter();
+    /// let mut iter = a.iter();
     ///
     /// // instead, we add in a .by_ref()
     /// let sum: i32 = iter.by_ref().take(2).fold(0, |acc, i| acc + i );
@@ -1479,7 +1480,7 @@ pub trait Iterator {
     /// let a = [1, 2, 3];
     ///
     /// let (even, odd): (Vec<i32>, Vec<i32>) = a
-    ///     .into_iter()
+    ///     .iter()
     ///     .partition(|&n| n % 2 == 0);
     ///
     /// assert_eq!(even, vec![2]);
@@ -1494,13 +1495,13 @@ pub trait Iterator {
         let mut left: B = Default::default();
         let mut right: B = Default::default();
 
-        for x in self {
+        self.for_each(|x| {
             if f(&x) {
                 left.extend(Some(x))
             } else {
                 right.extend(Some(x))
             }
-        }
+        });
 
         (left, right)
     }
@@ -2008,12 +2009,7 @@ pub trait Iterator {
     #[stable(feature = "rust1", since = "1.0.0")]
     fn max(self) -> Option<Self::Item> where Self: Sized, Self::Item: Ord
     {
-        select_fold1(self,
-                     |_| (),
-                     // switch to y even if it is only equal, to preserve
-                     // stability.
-                     |_, x, _, y| *x <= *y)
-            .map(|(_, x)| x)
+        self.max_by(Ord::cmp)
     }
 
     /// Returns the minimum element of an iterator.
@@ -2038,12 +2034,7 @@ pub trait Iterator {
     #[stable(feature = "rust1", since = "1.0.0")]
     fn min(self) -> Option<Self::Item> where Self: Sized, Self::Item: Ord
     {
-        select_fold1(self,
-                     |_| (),
-                     // only switch to y if it is strictly smaller, to
-                     // preserve stability.
-                     |_, x, _, y| *x > *y)
-            .map(|(_, x)| x)
+        self.min_by(Ord::cmp)
     }
 
     /// Returns the element that gives the maximum value from the
@@ -2062,15 +2053,11 @@ pub trait Iterator {
     /// ```
     #[inline]
     #[stable(feature = "iter_cmp_by_key", since = "1.6.0")]
-    fn max_by_key<B: Ord, F>(self, f: F) -> Option<Self::Item>
+    fn max_by_key<B: Ord, F>(self, mut f: F) -> Option<Self::Item>
         where Self: Sized, F: FnMut(&Self::Item) -> B,
     {
-        select_fold1(self,
-                     f,
-                     // switch to y even if it is only equal, to preserve
-                     // stability.
-                     |x_p, _, y_p, _| x_p <= y_p)
-            .map(|(_, x)| x)
+        // switch to y even if it is only equal, to preserve stability.
+        select_fold1(self.map(|x| (f(&x), x)), |(x_p, _), (y_p, _)| x_p <= y_p).map(|(_, x)| x)
     }
 
     /// Returns the element that gives the maximum value with respect to the
@@ -2092,12 +2079,8 @@ pub trait Iterator {
     fn max_by<F>(self, mut compare: F) -> Option<Self::Item>
         where Self: Sized, F: FnMut(&Self::Item, &Self::Item) -> Ordering,
     {
-        select_fold1(self,
-                     |_| (),
-                     // switch to y even if it is only equal, to preserve
-                     // stability.
-                     |_, x, _, y| Ordering::Greater != compare(x, y))
-            .map(|(_, x)| x)
+        // switch to y even if it is only equal, to preserve stability.
+        select_fold1(self, |x, y| compare(x, y) != Ordering::Greater)
     }
 
     /// Returns the element that gives the minimum value from the
@@ -2115,15 +2098,11 @@ pub trait Iterator {
     /// assert_eq!(*a.iter().min_by_key(|x| x.abs()).unwrap(), 0);
     /// ```
     #[stable(feature = "iter_cmp_by_key", since = "1.6.0")]
-    fn min_by_key<B: Ord, F>(self, f: F) -> Option<Self::Item>
+    fn min_by_key<B: Ord, F>(self, mut f: F) -> Option<Self::Item>
         where Self: Sized, F: FnMut(&Self::Item) -> B,
     {
-        select_fold1(self,
-                     f,
-                     // only switch to y if it is strictly smaller, to
-                     // preserve stability.
-                     |x_p, _, y_p, _| x_p > y_p)
-            .map(|(_, x)| x)
+        // only switch to y if it is strictly smaller, to preserve stability.
+        select_fold1(self.map(|x| (f(&x), x)), |(x_p, _), (y_p, _)| x_p > y_p).map(|(_, x)| x)
     }
 
     /// Returns the element that gives the minimum value with respect to the
@@ -2145,12 +2124,8 @@ pub trait Iterator {
     fn min_by<F>(self, mut compare: F) -> Option<Self::Item>
         where Self: Sized, F: FnMut(&Self::Item, &Self::Item) -> Ordering,
     {
-        select_fold1(self,
-                     |_| (),
-                     // switch to y even if it is strictly smaller, to
-                     // preserve stability.
-                     |_, x, _, y| Ordering::Greater == compare(x, y))
-            .map(|(_, x)| x)
+        // only switch to y if it is strictly smaller, to preserve stability.
+        select_fold1(self, |x, y| compare(x, y) == Ordering::Greater)
     }
 
 
@@ -2232,8 +2207,6 @@ pub trait Iterator {
     /// Basic usage:
     ///
     /// ```
-    /// #![feature(iter_copied)]
-    ///
     /// let a = [1, 2, 3];
     ///
     /// let v_cloned: Vec<_> = a.iter().copied().collect();
@@ -2244,7 +2217,7 @@ pub trait Iterator {
     /// assert_eq!(v_cloned, vec![1, 2, 3]);
     /// assert_eq!(v_map, vec![1, 2, 3]);
     /// ```
-    #[unstable(feature = "iter_copied", issue = "57127")]
+    #[stable(feature = "iter_copied", since = "1.36.0")]
     fn copied<'a, T: 'a>(self) -> Copied<Self>
         where Self: Sized + Iterator<Item=&'a T>, T: Copy
     {
@@ -2461,145 +2434,61 @@ pub trait Iterator {
     /// Determines if the elements of this `Iterator` are unequal to those of
     /// another.
     #[stable(feature = "iter_order", since = "1.5.0")]
-    fn ne<I>(mut self, other: I) -> bool where
+    fn ne<I>(self, other: I) -> bool where
         I: IntoIterator,
         Self::Item: PartialEq<I::Item>,
         Self: Sized,
     {
-        let mut other = other.into_iter();
-
-        loop {
-            let x = match self.next() {
-                None => return other.next().is_some(),
-                Some(val) => val,
-            };
-
-            let y = match other.next() {
-                None => return true,
-                Some(val) => val,
-            };
-
-            if x != y { return true }
-        }
+        !self.eq(other)
     }
 
     /// Determines if the elements of this `Iterator` are lexicographically
     /// less than those of another.
     #[stable(feature = "iter_order", since = "1.5.0")]
-    fn lt<I>(mut self, other: I) -> bool where
+    fn lt<I>(self, other: I) -> bool where
         I: IntoIterator,
         Self::Item: PartialOrd<I::Item>,
         Self: Sized,
     {
-        let mut other = other.into_iter();
-
-        loop {
-            let x = match self.next() {
-                None => return other.next().is_some(),
-                Some(val) => val,
-            };
-
-            let y = match other.next() {
-                None => return false,
-                Some(val) => val,
-            };
-
-            match x.partial_cmp(&y) {
-                Some(Ordering::Less) => return true,
-                Some(Ordering::Equal) => (),
-                Some(Ordering::Greater) => return false,
-                None => return false,
-            }
-        }
+        self.partial_cmp(other) == Some(Ordering::Less)
     }
 
     /// Determines if the elements of this `Iterator` are lexicographically
     /// less or equal to those of another.
     #[stable(feature = "iter_order", since = "1.5.0")]
-    fn le<I>(mut self, other: I) -> bool where
+    fn le<I>(self, other: I) -> bool where
         I: IntoIterator,
         Self::Item: PartialOrd<I::Item>,
         Self: Sized,
     {
-        let mut other = other.into_iter();
-
-        loop {
-            let x = match self.next() {
-                None => { other.next(); return true; },
-                Some(val) => val,
-            };
-
-            let y = match other.next() {
-                None => return false,
-                Some(val) => val,
-            };
-
-            match x.partial_cmp(&y) {
-                Some(Ordering::Less) => return true,
-                Some(Ordering::Equal) => (),
-                Some(Ordering::Greater) => return false,
-                None => return false,
-            }
+        match self.partial_cmp(other) {
+            Some(Ordering::Less) | Some(Ordering::Equal) => true,
+            _ => false,
         }
     }
 
     /// Determines if the elements of this `Iterator` are lexicographically
     /// greater than those of another.
     #[stable(feature = "iter_order", since = "1.5.0")]
-    fn gt<I>(mut self, other: I) -> bool where
+    fn gt<I>(self, other: I) -> bool where
         I: IntoIterator,
         Self::Item: PartialOrd<I::Item>,
         Self: Sized,
     {
-        let mut other = other.into_iter();
-
-        loop {
-            let x = match self.next() {
-                None => { other.next(); return false; },
-                Some(val) => val,
-            };
-
-            let y = match other.next() {
-                None => return true,
-                Some(val) => val,
-            };
-
-            match x.partial_cmp(&y) {
-                Some(Ordering::Less) => return false,
-                Some(Ordering::Equal) => (),
-                Some(Ordering::Greater) => return true,
-                None => return false,
-            }
-        }
+        self.partial_cmp(other) == Some(Ordering::Greater)
     }
 
     /// Determines if the elements of this `Iterator` are lexicographically
     /// greater than or equal to those of another.
     #[stable(feature = "iter_order", since = "1.5.0")]
-    fn ge<I>(mut self, other: I) -> bool where
+    fn ge<I>(self, other: I) -> bool where
         I: IntoIterator,
         Self::Item: PartialOrd<I::Item>,
         Self: Sized,
     {
-        let mut other = other.into_iter();
-
-        loop {
-            let x = match self.next() {
-                None => return other.next().is_none(),
-                Some(val) => val,
-            };
-
-            let y = match other.next() {
-                None => return true,
-                Some(val) => val,
-            };
-
-            match x.partial_cmp(&y) {
-                Some(Ordering::Less) => return false,
-                Some(Ordering::Equal) => (),
-                Some(Ordering::Greater) => return true,
-                None => return false,
-            }
+        match self.partial_cmp(other) {
+            Some(Ordering::Greater) | Some(Ordering::Equal) => true,
+            _ => false,
         }
     }
 
@@ -2693,34 +2582,23 @@ pub trait Iterator {
     }
 }
 
-/// Select an element from an iterator based on the given "projection"
-/// and "comparison" function.
+/// Select an element from an iterator based on the given "comparison"
+/// function.
 ///
 /// This is an idiosyncratic helper to try to factor out the
 /// commonalities of {max,min}{,_by}. In particular, this avoids
 /// having to implement optimizations several times.
 #[inline]
-fn select_fold1<I, B, FProj, FCmp>(mut it: I,
-                                   mut f_proj: FProj,
-                                   mut f_cmp: FCmp) -> Option<(B, I::Item)>
-    where I: Iterator,
-          FProj: FnMut(&I::Item) -> B,
-          FCmp: FnMut(&B, &I::Item, &B, &I::Item) -> bool
+fn select_fold1<I, F>(mut it: I, mut f: F) -> Option<I::Item>
+    where
+        I: Iterator,
+        F: FnMut(&I::Item, &I::Item) -> bool,
 {
     // start with the first element as our selection. This avoids
     // having to use `Option`s inside the loop, translating to a
     // sizeable performance gain (6x in one case).
     it.next().map(|first| {
-        let first_p = f_proj(&first);
-
-        it.fold((first_p, first), |(sel_p, sel), x| {
-            let x_p = f_proj(&x);
-            if f_cmp(&sel_p, &sel, &x_p, &x) {
-                (x_p, x)
-            } else {
-                (sel_p, sel)
-            }
-        })
+        it.fold(first, |sel, x| if f(&sel, &x) { x } else { sel })
     })
 }
 

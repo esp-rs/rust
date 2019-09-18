@@ -19,8 +19,6 @@
 
 #![deny(rust_2018_idioms)]
 
-#![feature(allocator_api)]
-#![feature(alloc)]
 #![feature(core_intrinsics)]
 #![feature(lang_items)]
 #![feature(libc)]
@@ -40,10 +38,7 @@ use core::mem;
 use core::raw;
 use core::panic::BoxMeUp;
 
-#[macro_use]
-mod macros;
-
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(target_os = "emscripten")] {
         #[path = "emcc.rs"]
         mod imp;

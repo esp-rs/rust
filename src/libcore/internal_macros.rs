@@ -37,21 +37,21 @@ macro_rules! forward_ref_binop {
         }
 
         #[$attr]
-        impl<'a> $imp<&'a $u> for $t {
+        impl $imp<&$u> for $t {
             type Output = <$t as $imp<$u>>::Output;
 
             #[inline]
-            fn $method(self, other: &'a $u) -> <$t as $imp<$u>>::Output {
+            fn $method(self, other: &$u) -> <$t as $imp<$u>>::Output {
                 $imp::$method(self, *other)
             }
         }
 
         #[$attr]
-        impl<'a, 'b> $imp<&'a $u> for &'b $t {
+        impl $imp<&$u> for &$t {
             type Output = <$t as $imp<$u>>::Output;
 
             #[inline]
-            fn $method(self, other: &'a $u) -> <$t as $imp<$u>>::Output {
+            fn $method(self, other: &$u) -> <$t as $imp<$u>>::Output {
                 $imp::$method(*self, *other)
             }
         }
@@ -67,9 +67,9 @@ macro_rules! forward_ref_op_assign {
     };
     (impl $imp:ident, $method:ident for $t:ty, $u:ty, #[$attr:meta]) => {
         #[$attr]
-        impl<'a> $imp<&'a $u> for $t {
+        impl $imp<&$u> for $t {
             #[inline]
-            fn $method(&mut self, other: &'a $u) {
+            fn $method(&mut self, other: &$u) {
                 $imp::$method(self, *other);
             }
         }
@@ -81,9 +81,7 @@ macro_rules! forward_ref_op_assign {
 macro_rules! impl_fn_for_zst {
     ($(
         $( #[$attr: meta] )*
-        // FIXME: when libcore is in the 2018 edition, use `?` repetition in
-        // $( <$( $li : lifetime ),+> )?
-        struct $Name: ident impl$( <$( $lifetime : lifetime ),+> )* Fn =
+        struct $Name: ident impl$( <$( $lifetime : lifetime ),+> )? Fn =
             |$( $arg: ident: $ArgTy: ty ),*| -> $ReturnTy: ty
             $body: block;
     )+) => {
@@ -91,14 +89,14 @@ macro_rules! impl_fn_for_zst {
             $( #[$attr] )*
             struct $Name;
 
-            impl $( <$( $lifetime ),+> )* Fn<($( $ArgTy, )*)> for $Name {
+            impl $( <$( $lifetime ),+> )? Fn<($( $ArgTy, )*)> for $Name {
                 #[inline]
                 extern "rust-call" fn call(&self, ($( $arg, )*): ($( $ArgTy, )*)) -> $ReturnTy {
                     $body
                 }
             }
 
-            impl $( <$( $lifetime ),+> )* FnMut<($( $ArgTy, )*)> for $Name {
+            impl $( <$( $lifetime ),+> )? FnMut<($( $ArgTy, )*)> for $Name {
                 #[inline]
                 extern "rust-call" fn call_mut(
                     &mut self,
@@ -108,7 +106,7 @@ macro_rules! impl_fn_for_zst {
                 }
             }
 
-            impl $( <$( $lifetime ),+> )* FnOnce<($( $ArgTy, )*)> for $Name {
+            impl $( <$( $lifetime ),+> )? FnOnce<($( $ArgTy, )*)> for $Name {
                 type Output = $ReturnTy;
 
                 #[inline]

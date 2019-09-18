@@ -4,16 +4,6 @@
 //! heap allocation in Rust. Boxes provide ownership for this allocation, and
 //! drop their contents when they go out of scope.
 //!
-//! For non-zero-sized values, a [`Box`] will use the [`Global`] allocator for
-//! its allocation. It is valid to convert both ways between a [`Box`] and a
-//! raw pointer allocated with the [`Global`] allocator, given that the
-//! [`Layout`] used with the allocator is correct for the type. More precisely,
-//! a `value: *mut T` that has been allocated with the [`Global`] allocator
-//! with `Layout::for_value(&*value)` may be converted into a box using
-//! `Box::<T>::from_raw(value)`. Conversely, the memory backing a `value: *mut
-//! T` obtained from `Box::<T>::into_raw` may be deallocated using the
-//! [`Global`] allocator with `Layout::for_value(&*value)`.
-//!
 //! # Examples
 //!
 //! Move a value from the stack to the heap by creating a [`Box`]:
@@ -61,8 +51,23 @@
 //! for a `Cons`. By introducing a `Box`, which has a defined size, we know how
 //! big `Cons` needs to be.
 //!
+//! # Memory layout
+//!
+//! For non-zero-sized values, a [`Box`] will use the [`Global`] allocator for
+//! its allocation. It is valid to convert both ways between a [`Box`] and a
+//! raw pointer allocated with the [`Global`] allocator, given that the
+//! [`Layout`] used with the allocator is correct for the type. More precisely,
+//! a `value: *mut T` that has been allocated with the [`Global`] allocator
+//! with `Layout::for_value(&*value)` may be converted into a box using
+//! `Box::<T>::from_raw(value)`. Conversely, the memory backing a `value: *mut
+//! T` obtained from `Box::<T>::into_raw` may be deallocated using the
+//! [`Global`] allocator with `Layout::for_value(&*value)`.
+//!
+//!
 //! [dereferencing]: ../../std/ops/trait.Deref.html
 //! [`Box`]: struct.Box.html
+//! [`Global`]: ../alloc/struct.Global.html
+//! [`Layout`]: ../alloc/struct.Layout.html
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -81,7 +86,7 @@ use core::ops::{
     CoerceUnsized, DispatchFromDyn, Deref, DerefMut, Receiver, Generator, GeneratorState
 };
 use core::ptr::{self, NonNull, Unique};
-use core::task::{Waker, Poll};
+use core::task::{Context, Poll};
 
 use crate::vec::Vec;
 use crate::raw_vec::RawVec;
@@ -125,24 +130,38 @@ impl<T: ?Sized> Box<T> {
     ///
     /// After calling this function, the raw pointer is owned by the
     /// resulting `Box`. Specifically, the `Box` destructor will call
-    /// the destructor of `T` and free the allocated memory. Since the
-    /// way `Box` allocates and releases memory is unspecified, the
-    /// only valid pointer to pass to this function is the one taken
-    /// from another `Box` via the [`Box::into_raw`] function.
+    /// the destructor of `T` and free the allocated memory. For this
+    /// to be safe, the memory must have been allocated in accordance
+    /// with the [memory layout] used by `Box` .
+    ///
+    /// # Safety
     ///
     /// This function is unsafe because improper use may lead to
     /// memory problems. For example, a double-free may occur if the
     /// function is called twice on the same raw pointer.
     ///
-    /// [`Box::into_raw`]: struct.Box.html#method.into_raw
-    ///
     /// # Examples
-    ///
+    /// Recreate a `Box` which was previously converted to a raw pointer
+    /// using [`Box::into_raw`]:
     /// ```
     /// let x = Box::new(5);
     /// let ptr = Box::into_raw(x);
     /// let x = unsafe { Box::from_raw(ptr) };
     /// ```
+    /// Manually create a `Box` from scratch by using the global allocator:
+    /// ```
+    /// use std::alloc::{alloc, Layout};
+    ///
+    /// unsafe {
+    ///     let ptr = alloc(Layout::new::<i32>()) as *mut i32;
+    ///     *ptr = 5;
+    ///     let x = Box::from_raw(ptr);
+    /// }
+    /// ```
+    ///
+    /// [memory layout]: index.html#memory-layout
+    /// [`Layout`]: ../alloc/struct.Layout.html
+    /// [`Box::into_raw`]: struct.Box.html#method.into_raw
     #[stable(feature = "box_raw", since = "1.4.0")]
     #[inline]
     pub unsafe fn from_raw(raw: *mut T) -> Self {
@@ -155,22 +174,40 @@ impl<T: ?Sized> Box<T> {
     ///
     /// After calling this function, the caller is responsible for the
     /// memory previously managed by the `Box`. In particular, the
-    /// caller should properly destroy `T` and release the memory. The
-    /// proper way to do so is to convert the raw pointer back into a
-    /// `Box` with the [`Box::from_raw`] function.
+    /// caller should properly destroy `T` and release the memory, taking
+    /// into account the [memory layout] used by `Box`. The easiest way to
+    /// do this is to convert the raw pointer back into a `Box` with the
+    /// [`Box::from_raw`] function, allowing the `Box` destructor to perform
+    /// the cleanup.
     ///
     /// Note: this is an associated function, which means that you have
     /// to call it as `Box::into_raw(b)` instead of `b.into_raw()`. This
     /// is so that there is no conflict with a method on the inner type.
     ///
-    /// [`Box::from_raw`]: struct.Box.html#method.from_raw
-    ///
     /// # Examples
-    ///
+    /// Converting the raw pointer back into a `Box` with [`Box::from_raw`]
+    /// for automatic cleanup:
     /// ```
-    /// let x = Box::new(5);
+    /// let x = Box::new(String::from("Hello"));
     /// let ptr = Box::into_raw(x);
+    /// let x = unsafe { Box::from_raw(ptr) };
     /// ```
+    /// Manual cleanup by explicitly running the destructor and deallocating
+    /// the memory:
+    /// ```
+    /// use std::alloc::{dealloc, Layout};
+    /// use std::ptr;
+    ///
+    /// let x = Box::new(String::from("Hello"));
+    /// let p = Box::into_raw(x);
+    /// unsafe {
+    ///     ptr::drop_in_place(p);
+    ///     dealloc(p as *mut u8, Layout::new::<String>());
+    /// }
+    /// ```
+    ///
+    /// [memory layout]: index.html#memory-layout
+    /// [`Box::from_raw`]: struct.Box.html#method.from_raw
     #[stable(feature = "box_raw", since = "1.4.0")]
     #[inline]
     pub fn into_raw(b: Box<T>) -> *mut T {
@@ -182,7 +219,7 @@ impl<T: ?Sized> Box<T> {
     /// After calling this function, the caller is responsible for the
     /// memory previously managed by the `Box`. In particular, the
     /// caller should properly destroy `T` and release the memory. The
-    /// proper way to do so is to convert the `NonNull<T>` pointer
+    /// easiest way to do so is to convert the `NonNull<T>` pointer
     /// into a raw pointer and back into a `Box` with the [`Box::from_raw`]
     /// function.
     ///
@@ -201,6 +238,10 @@ impl<T: ?Sized> Box<T> {
     /// fn main() {
     ///     let x = Box::new(5);
     ///     let ptr = Box::into_raw_non_null(x);
+    ///
+    ///     // Clean up the memory by converting the NonNull pointer back
+    ///     // into a Box and letting the Box be dropped.
+    ///     let x = unsafe { Box::from_raw(ptr.as_ptr()) };
     /// }
     /// ```
     #[unstable(feature = "box_into_raw_non_null", issue = "47336")]
@@ -212,15 +253,16 @@ impl<T: ?Sized> Box<T> {
     #[unstable(feature = "ptr_internals", issue = "0", reason = "use into_raw_non_null instead")]
     #[inline]
     #[doc(hidden)]
-    pub fn into_unique(mut b: Box<T>) -> Unique<T> {
+    pub fn into_unique(b: Box<T>) -> Unique<T> {
+        let mut unique = b.0;
+        mem::forget(b);
         // Box is kind-of a library type, but recognized as a "unique pointer" by
         // Stacked Borrows.  This function here corresponds to "reborrowing to
         // a raw pointer", but there is no actual reborrow here -- so
         // without some care, the pointer we are returning here still carries
-        // the `Uniq` tag.  We round-trip through a mutable reference to avoid that.
-        let unique = unsafe { b.0.as_mut() as *mut T };
-        mem::forget(b);
-        unsafe { Unique::new_unchecked(unique) }
+        // the tag of `b`, with `Unique` permission.
+        // We round-trip through a mutable reference to avoid that.
+        unsafe { Unique::new_unchecked(unique.as_mut() as *mut T) }
     }
 
     /// Consumes and leaks the `Box`, returning a mutable reference,
@@ -353,11 +395,10 @@ impl<T: Clone> Clone for Box<T> {
 #[stable(feature = "box_slice_clone", since = "1.3.0")]
 impl Clone for Box<str> {
     fn clone(&self) -> Self {
-        let len = self.len();
-        let buf = RawVec::with_capacity(len);
+        // this makes a copy of the data
+        let buf: Box<[u8]> = self.as_bytes().into();
         unsafe {
-            ptr::copy_nonoverlapping(self.as_ptr(), buf.ptr(), len);
-            from_boxed_utf8_unchecked(buf.into_box())
+            from_boxed_utf8_unchecked(buf)
         }
     }
 }
@@ -489,7 +530,7 @@ impl<T: ?Sized> From<Box<T>> for Pin<Box<T>> {
 }
 
 #[stable(feature = "box_from_slice", since = "1.17.0")]
-impl<'a, T: Copy> From<&'a [T]> for Box<[T]> {
+impl<T: Copy> From<&[T]> for Box<[T]> {
     /// Converts a `&[T]` into a `Box<[T]>`
     ///
     /// This conversion allocates on the heap
@@ -503,15 +544,18 @@ impl<'a, T: Copy> From<&'a [T]> for Box<[T]> {
     ///
     /// println!("{:?}", boxed_slice);
     /// ```
-    fn from(slice: &'a [T]) -> Box<[T]> {
-        let mut boxed = unsafe { RawVec::with_capacity(slice.len()).into_box() };
-        boxed.copy_from_slice(slice);
-        boxed
+    fn from(slice: &[T]) -> Box<[T]> {
+        let len = slice.len();
+        let buf = RawVec::with_capacity(len);
+        unsafe {
+            ptr::copy_nonoverlapping(slice.as_ptr(), buf.ptr(), len);
+            buf.into_box()
+        }
     }
 }
 
 #[stable(feature = "box_from_slice", since = "1.17.0")]
-impl<'a> From<&'a str> for Box<str> {
+impl From<&str> for Box<str> {
     /// Converts a `&str` into a `Box<str>`
     ///
     /// This conversion allocates on the heap
@@ -523,7 +567,7 @@ impl<'a> From<&'a str> for Box<str> {
     /// println!("{}", boxed);
     /// ```
     #[inline]
-    fn from(s: &'a str) -> Box<str> {
+    fn from(s: &str) -> Box<str> {
         unsafe { from_boxed_utf8_unchecked(Box::from(s.as_bytes())) }
     }
 }
@@ -677,6 +721,9 @@ impl<I: DoubleEndedIterator + ?Sized> DoubleEndedIterator for Box<I> {
     fn next_back(&mut self) -> Option<I::Item> {
         (**self).next_back()
     }
+    fn nth_back(&mut self, n: usize) -> Option<I::Item> {
+        (**self).nth_back(n)
+    }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<I: ExactSizeIterator + ?Sized> ExactSizeIterator for Box<I> {
@@ -691,82 +738,26 @@ impl<I: ExactSizeIterator + ?Sized> ExactSizeIterator for Box<I> {
 #[stable(feature = "fused", since = "1.26.0")]
 impl<I: FusedIterator + ?Sized> FusedIterator for Box<I> {}
 
+#[stable(feature = "boxed_closure_impls", since = "1.35.0")]
+impl<A, F: FnOnce<A> + ?Sized> FnOnce<A> for Box<F> {
+    type Output = <F as FnOnce<A>>::Output;
 
-/// `FnBox` is a version of the `FnOnce` intended for use with boxed
-/// closure objects. The idea is that where one would normally store a
-/// `Box<dyn FnOnce()>` in a data structure, you should use
-/// `Box<dyn FnBox()>`. The two traits behave essentially the same, except
-/// that a `FnBox` closure can only be called if it is boxed. (Note
-/// that `FnBox` may be deprecated in the future if `Box<dyn FnOnce()>`
-/// closures become directly usable.)
-///
-/// # Examples
-///
-/// Here is a snippet of code which creates a hashmap full of boxed
-/// once closures and then removes them one by one, calling each
-/// closure as it is removed. Note that the type of the closures
-/// stored in the map is `Box<dyn FnBox() -> i32>` and not `Box<dyn FnOnce()
-/// -> i32>`.
-///
-/// ```
-/// #![feature(fnbox)]
-///
-/// use std::boxed::FnBox;
-/// use std::collections::HashMap;
-///
-/// fn make_map() -> HashMap<i32, Box<dyn FnBox() -> i32>> {
-///     let mut map: HashMap<i32, Box<dyn FnBox() -> i32>> = HashMap::new();
-///     map.insert(1, Box::new(|| 22));
-///     map.insert(2, Box::new(|| 44));
-///     map
-/// }
-///
-/// fn main() {
-///     let mut map = make_map();
-///     for i in &[1, 2] {
-///         let f = map.remove(&i).unwrap();
-///         assert_eq!(f(), i * 22);
-///     }
-/// }
-/// ```
-#[rustc_paren_sugar]
-#[unstable(feature = "fnbox",
-           reason = "will be deprecated if and when `Box<FnOnce>` becomes usable", issue = "28796")]
-pub trait FnBox<A> {
-    type Output;
-
-    fn call_box(self: Box<Self>, args: A) -> Self::Output;
-}
-
-#[unstable(feature = "fnbox",
-           reason = "will be deprecated if and when `Box<FnOnce>` becomes usable", issue = "28796")]
-impl<A, F> FnBox<A> for F
-    where F: FnOnce<A>
-{
-    type Output = F::Output;
-
-    fn call_box(self: Box<F>, args: A) -> F::Output {
-        self.call_once(args)
+    extern "rust-call" fn call_once(self, args: A) -> Self::Output {
+        <F as FnOnce<A>>::call_once(*self, args)
     }
 }
 
-#[unstable(feature = "fnbox",
-           reason = "will be deprecated if and when `Box<FnOnce>` becomes usable", issue = "28796")]
-impl<A, R> FnOnce<A> for Box<dyn FnBox<A, Output = R> + '_> {
-    type Output = R;
-
-    extern "rust-call" fn call_once(self, args: A) -> R {
-        self.call_box(args)
+#[stable(feature = "boxed_closure_impls", since = "1.35.0")]
+impl<A, F: FnMut<A> + ?Sized> FnMut<A> for Box<F> {
+    extern "rust-call" fn call_mut(&mut self, args: A) -> Self::Output {
+        <F as FnMut<A>>::call_mut(self, args)
     }
 }
 
-#[unstable(feature = "fnbox",
-           reason = "will be deprecated if and when `Box<FnOnce>` becomes usable", issue = "28796")]
-impl<A, R> FnOnce<A> for Box<dyn FnBox<A, Output = R> + Send + '_> {
-    type Output = R;
-
-    extern "rust-call" fn call_once(self, args: A) -> R {
-        self.call_box(args)
+#[stable(feature = "boxed_closure_impls", since = "1.35.0")]
+impl<A, F: Fn<A> + ?Sized> Fn<A> for Box<F> {
+    extern "rust-call" fn call(&self, args: A) -> Self::Output {
+        <F as Fn<A>>::call(self, args)
     }
 }
 
@@ -907,11 +898,11 @@ impl<G: ?Sized + Generator> Generator for Pin<Box<G>> {
     }
 }
 
-#[unstable(feature = "futures_api", issue = "50547")]
+#[stable(feature = "futures_api", since = "1.36.0")]
 impl<F: ?Sized + Future + Unpin> Future for Box<F> {
     type Output = F::Output;
 
-    fn poll(mut self: Pin<&mut Self>, waker: &Waker) -> Poll<Self::Output> {
-        F::poll(Pin::new(&mut *self), waker)
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        F::poll(Pin::new(&mut *self), cx)
     }
 }

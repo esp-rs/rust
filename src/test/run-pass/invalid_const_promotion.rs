@@ -1,6 +1,7 @@
 #![allow(unused_mut)]
 // ignore-wasm32
 // ignore-emscripten
+// ignore-sgx no processes
 
 // compile-flags: -C debug_assertions=yes
 
@@ -25,7 +26,6 @@ fn foo() {
 #[cfg(unix)]
 fn check_status(status: std::process::ExitStatus)
 {
-    use libc;
     use std::os::unix::process::ExitStatusExt;
 
     assert!(status.signal() == Some(libc::SIGILL)

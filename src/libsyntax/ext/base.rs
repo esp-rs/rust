@@ -1,22 +1,21 @@
-pub use SyntaxExtension::*;
-
-use crate::ast::{self, Attribute, Name, PatKind, MetaItem};
+use crate::ast::{self, Attribute, Name, PatKind};
 use crate::attr::HasAttrs;
 use crate::source_map::{SourceMap, Spanned, respan};
 use crate::edition::Edition;
 use crate::ext::expand::{self, AstFragment, Invocation};
-use crate::ext::hygiene::{self, Mark, SyntaxContext, Transparency};
+use crate::ext::hygiene::{Mark, SyntaxContext, Transparency};
 use crate::mut_visit::{self, MutVisitor};
 use crate::parse::{self, parser, DirectoryOwnership};
 use crate::parse::token;
 use crate::ptr::P;
-use crate::symbol::{keywords, Ident, Symbol};
-use crate::ThinVec;
+use crate::symbol::{kw, sym, Ident, Symbol};
+use crate::{ThinVec, MACRO_ARGUMENTS};
 use crate::tokenstream::{self, TokenStream};
 
 use errors::{DiagnosticBuilder, DiagnosticId};
 use smallvec::{smallvec, SmallVec};
 use syntax_pos::{Span, MultiSpan, DUMMY_SP};
+use syntax_pos::hygiene::{ExpnInfo, ExpnFormat};
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::{self, Lrc};
@@ -137,29 +136,6 @@ impl Annotatable {
     }
 }
 
-// A more flexible ItemDecorator.
-pub trait MultiItemDecorator {
-    fn expand(&self,
-              ecx: &mut ExtCtxt<'_>,
-              sp: Span,
-              meta_item: &ast::MetaItem,
-              item: &Annotatable,
-              push: &mut dyn FnMut(Annotatable));
-}
-
-impl<F> MultiItemDecorator for F
-    where F : Fn(&mut ExtCtxt<'_>, Span, &ast::MetaItem, &Annotatable, &mut dyn FnMut(Annotatable))
-{
-    fn expand(&self,
-              ecx: &mut ExtCtxt<'_>,
-              sp: Span,
-              meta_item: &ast::MetaItem,
-              item: &Annotatable,
-              push: &mut dyn FnMut(Annotatable)) {
-        (*self)(ecx, sp, meta_item, item, push)
-    }
-}
-
 // `meta_item` is the annotation, and `item` is the item being modified.
 // FIXME Decorators should follow the same pattern too.
 pub trait MultiItemModifier {
@@ -265,10 +241,13 @@ impl<F> TTMacroExpander for F
 
         impl MutVisitor for AvoidInterpolatedIdents {
             fn visit_tt(&mut self, tt: &mut tokenstream::TokenTree) {
-                if let tokenstream::TokenTree::Token(_, token::Interpolated(nt)) = tt {
-                    if let token::NtIdent(ident, is_raw) = **nt {
-                        *tt = tokenstream::TokenTree::Token(ident.span,
-                                                            token::Ident(ident, is_raw));
+                if let tokenstream::TokenTree::Token(token) = tt {
+                    if let token::Interpolated(nt) = &token.kind {
+                        if let token::NtIdent(ident, is_raw) = **nt {
+                            *tt = tokenstream::TokenTree::token(
+                                token::Ident(ident.name, is_raw), ident.span
+                            );
+                        }
                     }
                 }
                 mut_visit::noop_visit_tt(tt, self)
@@ -282,34 +261,6 @@ impl<F> TTMacroExpander for F
         let input: Vec<_> =
             input.trees().map(|mut tt| { AvoidInterpolatedIdents.visit_tt(&mut tt); tt }).collect();
         (*self)(ecx, span, &input)
-    }
-}
-
-pub trait IdentMacroExpander {
-    fn expand<'cx>(&self,
-                   cx: &'cx mut ExtCtxt<'_>,
-                   sp: Span,
-                   ident: ast::Ident,
-                   token_tree: Vec<tokenstream::TokenTree>)
-                   -> Box<dyn MacResult+'cx>;
-}
-
-pub type IdentMacroExpanderFn =
-    for<'cx> fn(&'cx mut ExtCtxt<'_>, Span, ast::Ident, Vec<tokenstream::TokenTree>)
-                -> Box<dyn MacResult+'cx>;
-
-impl<F> IdentMacroExpander for F
-    where F : for<'cx> Fn(&'cx mut ExtCtxt<'_>, Span, ast::Ident,
-                          Vec<tokenstream::TokenTree>) -> Box<dyn MacResult+'cx>
-{
-    fn expand<'cx>(&self,
-                   cx: &'cx mut ExtCtxt<'_>,
-                   sp: Span,
-                   ident: ast::Ident,
-                   token_tree: Vec<tokenstream::TokenTree>)
-                   -> Box<dyn MacResult+'cx>
-    {
-        (*self)(cx, sp, ident, token_tree)
     }
 }
 
@@ -567,9 +518,6 @@ impl MacResult for DummyResult {
     }
 }
 
-pub type BuiltinDeriveFn =
-    for<'cx> fn(&'cx mut ExtCtxt<'_>, Span, &MetaItem, &Annotatable, &mut dyn FnMut(Annotatable));
-
 /// Represents different kinds of macro invocations that can be resolved.
 #[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
 pub enum MacroKind {
@@ -601,131 +549,144 @@ impl MacroKind {
     }
 }
 
-/// An enum representing the different kinds of syntax extensions.
-pub enum SyntaxExtension {
-    /// A trivial "extension" that does nothing, only keeps the attribute and marks it as known.
-    NonMacroAttr { mark_used: bool },
+/// A syntax extension kind.
+pub enum SyntaxExtensionKind {
+    /// A token-based function-like macro.
+    Bang(
+        /// An expander with signature TokenStream -> TokenStream.
+        Box<dyn ProcMacro + sync::Sync + sync::Send>,
+    ),
 
-    /// A syntax extension that is attached to an item and creates new items
-    /// based upon it.
-    ///
-    /// `#[derive(...)]` is a `MultiItemDecorator`.
-    ///
-    /// Prefer ProcMacro or MultiModifier since they are more flexible.
-    MultiDecorator(Box<dyn MultiItemDecorator + sync::Sync + sync::Send>),
+    /// An AST-based function-like macro.
+    LegacyBang(
+        /// An expander with signature TokenStream -> AST.
+        Box<dyn TTMacroExpander + sync::Sync + sync::Send>,
+    ),
 
-    /// A syntax extension that is attached to an item and modifies it
-    /// in-place. Also allows decoration, i.e., creating new items.
-    MultiModifier(Box<dyn MultiItemModifier + sync::Sync + sync::Send>),
+    /// A token-based attribute macro.
+    Attr(
+        /// An expander with signature (TokenStream, TokenStream) -> TokenStream.
+        /// The first TokenSteam is the attribute itself, the second is the annotated item.
+        /// The produced TokenSteam replaces the input TokenSteam.
+        Box<dyn AttrProcMacro + sync::Sync + sync::Send>,
+    ),
 
-    /// A function-like procedural macro. TokenStream -> TokenStream.
-    ProcMacro {
-        expander: Box<dyn ProcMacro + sync::Sync + sync::Send>,
-        /// Whitelist of unstable features that are treated as stable inside this macro
-        allow_internal_unstable: Option<Lrc<[Symbol]>>,
-        edition: Edition,
+    /// An AST-based attribute macro.
+    LegacyAttr(
+        /// An expander with signature (AST, AST) -> AST.
+        /// The first AST fragment is the attribute itself, the second is the annotated item.
+        /// The produced AST fragment replaces the input AST fragment.
+        Box<dyn MultiItemModifier + sync::Sync + sync::Send>,
+    ),
+
+    /// A trivial attribute "macro" that does nothing,
+    /// only keeps the attribute and marks it as inert,
+    /// thus making it ineligible for further expansion.
+    NonMacroAttr {
+        /// Suppresses the `unused_attributes` lint for this attribute.
+        mark_used: bool,
     },
 
-    /// An attribute-like procedural macro. TokenStream, TokenStream -> TokenStream.
-    /// The first TokenSteam is the attribute, the second is the annotated item.
-    /// Allows modification of the input items and adding new items, similar to
-    /// MultiModifier, but uses TokenStreams, rather than AST nodes.
-    AttrProcMacro(Box<dyn AttrProcMacro + sync::Sync + sync::Send>, Edition),
+    /// A token-based derive macro.
+    Derive(
+        /// An expander with signature TokenStream -> TokenStream (not yet).
+        /// The produced TokenSteam is appended to the input TokenSteam.
+        Box<dyn MultiItemModifier + sync::Sync + sync::Send>,
+    ),
 
-    /// A normal, function-like syntax extension.
-    ///
-    /// `bytes!` is a `NormalTT`.
-    NormalTT {
-        expander: Box<dyn TTMacroExpander + sync::Sync + sync::Send>,
-        def_info: Option<(ast::NodeId, Span)>,
-        /// Whether the contents of the macro can
-        /// directly use `#[unstable]` things.
-        ///
-        /// Only allows things that require a feature gate in the given whitelist
-        allow_internal_unstable: Option<Lrc<[Symbol]>>,
-        /// Whether the contents of the macro can use `unsafe`
-        /// without triggering the `unsafe_code` lint.
-        allow_internal_unsafe: bool,
-        /// Enables the macro helper hack (`ident!(...)` -> `$crate::ident!(...)`)
-        /// for a given macro.
-        local_inner_macros: bool,
-        /// The macro's feature name if it is unstable, and the stability feature
-        unstable_feature: Option<(Symbol, u32)>,
-        /// Edition of the crate in which the macro is defined
-        edition: Edition,
-    },
+    /// An AST-based derive macro.
+    LegacyDerive(
+        /// An expander with signature AST -> AST.
+        /// The produced AST fragment is appended to the input AST fragment.
+        Box<dyn MultiItemModifier + sync::Sync + sync::Send>,
+    ),
+}
 
-    /// A function-like syntax extension that has an extra ident before
-    /// the block.
-    IdentTT {
-        expander: Box<dyn IdentMacroExpander + sync::Sync + sync::Send>,
-        span: Option<Span>,
-        allow_internal_unstable: Option<Lrc<[Symbol]>>,
-    },
+/// A struct representing a macro definition in "lowered" form ready for expansion.
+pub struct SyntaxExtension {
+    /// A syntax extension kind.
+    pub kind: SyntaxExtensionKind,
+    /// Some info about the macro's definition point.
+    pub def_info: Option<(ast::NodeId, Span)>,
+    /// Hygienic properties of spans produced by this macro by default.
+    pub default_transparency: Transparency,
+    /// Whitelist of unstable features that are treated as stable inside this macro.
+    pub allow_internal_unstable: Option<Lrc<[Symbol]>>,
+    /// Suppresses the `unsafe_code` lint for code produced by this macro.
+    pub allow_internal_unsafe: bool,
+    /// Enables the macro helper hack (`ident!(...)` -> `$crate::ident!(...)`) for this macro.
+    pub local_inner_macros: bool,
+    /// The macro's feature name and tracking issue number if it is unstable.
+    pub unstable_feature: Option<(Symbol, u32)>,
+    /// Names of helper attributes registered by this macro.
+    pub helper_attrs: Vec<Symbol>,
+    /// Edition of the crate in which this macro is defined.
+    pub edition: Edition,
+}
 
-    /// An attribute-like procedural macro. TokenStream -> TokenStream.
-    /// The input is the annotated item.
-    /// Allows generating code to implement a Trait for a given struct
-    /// or enum item.
-    ProcMacroDerive(Box<dyn MultiItemModifier + sync::Sync + sync::Send>,
-                    Vec<Symbol> /* inert attribute names */, Edition),
-
-    /// An attribute-like procedural macro that derives a builtin trait.
-    BuiltinDerive(BuiltinDeriveFn),
-
-    /// A declarative macro, e.g., `macro m() {}`.
-    DeclMacro {
-        expander: Box<dyn TTMacroExpander + sync::Sync + sync::Send>,
-        def_info: Option<(ast::NodeId, Span)>,
-        is_transparent: bool,
-        edition: Edition,
+impl SyntaxExtensionKind {
+    /// When a syntax extension is constructed,
+    /// its transparency can often be inferred from its kind.
+    fn default_transparency(&self) -> Transparency {
+        match self {
+            SyntaxExtensionKind::Bang(..) |
+            SyntaxExtensionKind::Attr(..) |
+            SyntaxExtensionKind::Derive(..) |
+            SyntaxExtensionKind::NonMacroAttr { .. } => Transparency::Opaque,
+            SyntaxExtensionKind::LegacyBang(..) |
+            SyntaxExtensionKind::LegacyAttr(..) |
+            SyntaxExtensionKind::LegacyDerive(..) => Transparency::SemiTransparent,
+        }
     }
 }
 
 impl SyntaxExtension {
     /// Returns which kind of macro calls this syntax extension.
-    pub fn kind(&self) -> MacroKind {
-        match *self {
-            SyntaxExtension::DeclMacro { .. } |
-            SyntaxExtension::NormalTT { .. } |
-            SyntaxExtension::IdentTT { .. } |
-            SyntaxExtension::ProcMacro { .. } =>
-                MacroKind::Bang,
-            SyntaxExtension::NonMacroAttr { .. } |
-            SyntaxExtension::MultiDecorator(..) |
-            SyntaxExtension::MultiModifier(..) |
-            SyntaxExtension::AttrProcMacro(..) =>
-                MacroKind::Attr,
-            SyntaxExtension::ProcMacroDerive(..) |
-            SyntaxExtension::BuiltinDerive(..) =>
-                MacroKind::Derive,
+    pub fn macro_kind(&self) -> MacroKind {
+        match self.kind {
+            SyntaxExtensionKind::Bang(..) |
+            SyntaxExtensionKind::LegacyBang(..) => MacroKind::Bang,
+            SyntaxExtensionKind::Attr(..) |
+            SyntaxExtensionKind::LegacyAttr(..) |
+            SyntaxExtensionKind::NonMacroAttr { .. } => MacroKind::Attr,
+            SyntaxExtensionKind::Derive(..) |
+            SyntaxExtensionKind::LegacyDerive(..) => MacroKind::Derive,
         }
     }
 
-    pub fn default_transparency(&self) -> Transparency {
-        match *self {
-            SyntaxExtension::ProcMacro { .. } |
-            SyntaxExtension::AttrProcMacro(..) |
-            SyntaxExtension::ProcMacroDerive(..) |
-            SyntaxExtension::DeclMacro { is_transparent: false, .. } => Transparency::Opaque,
-            SyntaxExtension::DeclMacro { is_transparent: true, .. } => Transparency::Transparent,
-            _ => Transparency::SemiTransparent,
+    /// Constructs a syntax extension with default properties.
+    pub fn default(kind: SyntaxExtensionKind, edition: Edition) -> SyntaxExtension {
+        SyntaxExtension {
+            def_info: None,
+            default_transparency: kind.default_transparency(),
+            allow_internal_unstable: None,
+            allow_internal_unsafe: false,
+            local_inner_macros: false,
+            unstable_feature: None,
+            helper_attrs: Vec::new(),
+            edition,
+            kind,
         }
     }
 
-    pub fn edition(&self) -> Edition {
-        match *self {
-            SyntaxExtension::NormalTT { edition, .. } |
-            SyntaxExtension::DeclMacro { edition, .. } |
-            SyntaxExtension::ProcMacro { edition, .. } |
-            SyntaxExtension::AttrProcMacro(.., edition) |
-            SyntaxExtension::ProcMacroDerive(.., edition) => edition,
-            // Unstable legacy stuff
-            SyntaxExtension::NonMacroAttr { .. } |
-            SyntaxExtension::IdentTT { .. } |
-            SyntaxExtension::MultiDecorator(..) |
-            SyntaxExtension::MultiModifier(..) |
-            SyntaxExtension::BuiltinDerive(..) => hygiene::default_edition(),
+    fn expn_format(&self, symbol: Symbol) -> ExpnFormat {
+        match self.kind {
+            SyntaxExtensionKind::Bang(..) |
+            SyntaxExtensionKind::LegacyBang(..) => ExpnFormat::MacroBang(symbol),
+            _ => ExpnFormat::MacroAttribute(symbol),
+        }
+    }
+
+    pub fn expn_info(&self, call_site: Span, format: &str) -> ExpnInfo {
+        ExpnInfo {
+            call_site,
+            format: self.expn_format(Symbol::intern(format)),
+            def_site: self.def_info.map(|(_, span)| span),
+            default_transparency: self.default_transparency,
+            allow_internal_unstable: self.allow_internal_unstable.clone(),
+            allow_internal_unsafe: self.allow_internal_unsafe,
+            local_inner_macros: self.local_inner_macros,
+            edition: self.edition,
         }
     }
 }
@@ -734,6 +695,7 @@ pub type NamedSyntaxExtension = (Name, SyntaxExtension);
 
 pub trait Resolver {
     fn next_node_id(&mut self) -> ast::NodeId;
+
     fn get_module_scope(&mut self, id: ast::NodeId) -> Mark;
 
     fn resolve_dollar_crates(&mut self, fragment: &AstFragment);
@@ -762,30 +724,6 @@ impl Determinacy {
     pub fn determined(determined: bool) -> Determinacy {
         if determined { Determinacy::Determined } else { Determinacy::Undetermined }
     }
-}
-
-pub struct DummyResolver;
-
-impl Resolver for DummyResolver {
-    fn next_node_id(&mut self) -> ast::NodeId { ast::DUMMY_NODE_ID }
-    fn get_module_scope(&mut self, _id: ast::NodeId) -> Mark { Mark::root() }
-
-    fn resolve_dollar_crates(&mut self, _fragment: &AstFragment) {}
-    fn visit_ast_fragment_with_placeholders(&mut self, _invoc: Mark, _fragment: &AstFragment,
-                                            _derives: &[Mark]) {}
-    fn add_builtin(&mut self, _ident: ast::Ident, _ext: Lrc<SyntaxExtension>) {}
-
-    fn resolve_imports(&mut self) {}
-    fn resolve_macro_invocation(&mut self, _invoc: &Invocation, _invoc_id: Mark, _force: bool)
-                                -> Result<Option<Lrc<SyntaxExtension>>, Determinacy> {
-        Err(Determinacy::Determined)
-    }
-    fn resolve_macro_path(&mut self, _path: &ast::Path, _kind: MacroKind, _invoc_id: Mark,
-                          _derives_in_scope: Vec<ast::Path>, _force: bool)
-                          -> Result<Lrc<SyntaxExtension>, Determinacy> {
-        Err(Determinacy::Determined)
-    }
-    fn check_unused_macros(&self) {}
 }
 
 #[derive(Clone)]
@@ -848,7 +786,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     pub fn new_parser_from_tts(&self, tts: &[tokenstream::TokenTree]) -> parser::Parser<'a> {
-        parse::stream_to_parser(self.parse_sess, tts.iter().cloned().collect())
+        parse::stream_to_parser(self.parse_sess, tts.iter().cloned().collect(), MACRO_ARGUMENTS)
     }
     pub fn source_map(&self) -> &'a SourceMap { self.parse_sess.source_map() }
     pub fn parse_sess(&self) -> &'a parse::ParseSess { self.parse_sess }
@@ -870,8 +808,8 @@ impl<'a> ExtCtxt<'a> {
         let mut ctxt = self.backtrace();
         let mut last_macro = None;
         loop {
-            if ctxt.outer().expn_info().map_or(None, |info| {
-                if info.format.name() == "include" {
+            if ctxt.outer_expn_info().map_or(None, |info| {
+                if info.format.name() == sym::include {
                     // Stop going up the backtrace once include! is encountered
                     return None;
                 }
@@ -967,10 +905,10 @@ impl<'a> ExtCtxt<'a> {
     pub fn ident_of(&self, st: &str) -> ast::Ident {
         ast::Ident::from_str(st)
     }
-    pub fn std_path(&self, components: &[&str]) -> Vec<ast::Ident> {
+    pub fn std_path(&self, components: &[Symbol]) -> Vec<ast::Ident> {
         let def_site = DUMMY_SP.apply_mark(self.current_expansion.mark);
-        iter::once(Ident::new(keywords::DollarCrate.name(), def_site))
-            .chain(components.iter().map(|s| self.ident_of(s)))
+        iter::once(Ident::new(kw::DollarCrate, def_site))
+            .chain(components.iter().map(|&s| Ident::with_empty_ctxt(s)))
             .collect()
     }
     pub fn name_of(&self, st: &str) -> ast::Name {
@@ -998,6 +936,7 @@ pub fn expr_to_spanned_string<'a>(
     Err(match expr.node {
         ast::ExprKind::Lit(ref l) => match l.node {
             ast::LitKind::Str(s, style) => return Ok(respan(expr.span, (s, style))),
+            ast::LitKind::Err(_) => None,
             _ => Some(cx.struct_span_err(l.span, err_msg))
         },
         ast::ExprKind::Err => None,

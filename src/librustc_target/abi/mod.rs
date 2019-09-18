@@ -7,6 +7,7 @@ use std::fmt;
 use std::ops::{Add, Deref, Sub, Mul, AddAssign, Range, RangeInclusive};
 
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
+use syntax_pos::symbol::{sym, Symbol};
 
 pub mod call;
 
@@ -135,7 +136,7 @@ impl TargetDataLayout {
                     }
                     if bits >= i128_align_src && bits <= 128 {
                         // Default alignment for i128 is decided by taking the alignment of
-                        // largest-sized i{64...128}.
+                        // largest-sized i{64..=128}.
                         i128_align_src = bits;
                         dl.i128_align = a;
                     }
@@ -552,6 +553,13 @@ impl FloatTy {
         }
     }
 
+    pub fn to_symbol(self) -> Symbol {
+        match self {
+            FloatTy::F32 => sym::f32,
+            FloatTy::F64 => sym::f64,
+        }
+    }
+
     pub fn bit_width(self) -> usize {
         match self {
             FloatTy::F32 => 32,
@@ -575,7 +583,7 @@ pub enum Primitive {
     Pointer
 }
 
-impl<'a, 'tcx> Primitive {
+impl Primitive {
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         let dl = cx.data_layout();
 
@@ -691,7 +699,16 @@ pub enum FieldPlacement {
         offsets: Vec<Size>,
 
         /// Maps source order field indices to memory order indices,
-        /// depending how fields were permuted.
+        /// depending on how the fields were reordered (if at all).
+        /// This is a permutation, with both the source order and the
+        /// memory order using the same (0..n) index ranges.
+        ///
+        /// Note that during computation of `memory_index`, sometimes
+        /// it is easier to operate on the inverse mapping (that is,
+        /// from memory order to source order), and that is usually
+        /// named `inverse_memory_index`.
+        ///
+        // FIXME(eddyb) build a better abstraction for permutations, if possible.
         // FIXME(camlorn) also consider small vector  optimization here.
         memory_index: Vec<u32>
     }
@@ -828,29 +845,36 @@ pub enum Variants {
         index: VariantIdx,
     },
 
-    /// General-case enums: for each case there is a struct, and they all have
-    /// all space reserved for the tag, and their first field starts
-    /// at a non-0 offset, after where the tag would go.
-    Tagged {
-        tag: Scalar,
+    /// Enum-likes with more than one inhabited variant: for each case there is
+    /// a struct, and they all have space reserved for the discriminant.
+    /// For enums this is the sole field of the layout.
+    Multiple {
+        discr: Scalar,
+        discr_kind: DiscriminantKind,
+        discr_index: usize,
         variants: IndexVec<VariantIdx, LayoutDetails>,
     },
+}
 
-    /// Multiple cases distinguished by a niche (values invalid for a type):
+#[derive(PartialEq, Eq, Hash, Debug)]
+pub enum DiscriminantKind {
+    /// Integer tag holding the discriminant value itself.
+    Tag,
+
+    /// Niche (values invalid for a type) encoding the discriminant:
     /// the variant `dataful_variant` contains a niche at an arbitrary
-    /// offset (field 0 of the enum), which for a variant with discriminant
-    /// `d` is set to `(d - niche_variants.start).wrapping_add(niche_start)`.
+    /// offset (field `discr_index` of the enum), which for a variant with
+    /// discriminant `d` is set to
+    /// `(d - niche_variants.start).wrapping_add(niche_start)`.
     ///
     /// For example, `Option<(usize, &T)>`  is represented such that
     /// `None` has a null pointer for the second tuple field, and
     /// `Some` is the identity function (with a non-null reference).
-    NicheFilling {
+    Niche {
         dataful_variant: VariantIdx,
         niche_variants: RangeInclusive<VariantIdx>,
-        niche: Scalar,
         niche_start: u128,
-        variants: IndexVec<VariantIdx, LayoutDetails>,
-    }
+    },
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -903,6 +927,28 @@ pub trait LayoutOf {
     fn layout_of(&self, ty: Self::Ty) -> Self::TyLayout;
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum PointerKind {
+    /// Most general case, we know no restrictions to tell LLVM.
+    Shared,
+
+    /// `&T` where `T` contains no `UnsafeCell`, is `noalias` and `readonly`.
+    Frozen,
+
+    /// `&mut T`, when we know `noalias` is safe for LLVM.
+    UniqueBorrowed,
+
+    /// `Box<T>`, unlike `UniqueBorrowed`, it also has `noalias` on returns.
+    UniqueOwned
+}
+
+#[derive(Copy, Clone)]
+pub struct PointeeInfo {
+    pub size: Size,
+    pub align: Align,
+    pub safe: Option<PointerKind>,
+}
+
 pub trait TyLayoutMethods<'a, C: LayoutOf<Ty = Self>>: Sized {
     fn for_variant(
         this: TyLayout<'a, Self>,
@@ -910,6 +956,11 @@ pub trait TyLayoutMethods<'a, C: LayoutOf<Ty = Self>>: Sized {
         variant_index: VariantIdx,
     ) -> TyLayout<'a, Self>;
     fn field(this: TyLayout<'a, Self>, cx: &C, i: usize) -> C::TyLayout;
+    fn pointee_info_at(
+        this: TyLayout<'a, Self>,
+        cx: &C,
+        offset: Size,
+    ) -> Option<PointeeInfo>;
 }
 
 impl<'a, Ty> TyLayout<'a, Ty> {
@@ -920,6 +971,10 @@ impl<'a, Ty> TyLayout<'a, Ty> {
     pub fn field<C>(self, cx: &C, i: usize) -> C::TyLayout
     where Ty: TyLayoutMethods<'a, C>, C: LayoutOf<Ty = Ty> {
         Ty::field(self, cx, i)
+    }
+    pub fn pointee_info_at<C>(self, cx: &C, offset: Size) -> Option<PointeeInfo>
+    where Ty: TyLayoutMethods<'a, C>, C: LayoutOf<Ty = Ty> {
+        Ty::pointee_info_at(self, cx, offset)
     }
 }
 

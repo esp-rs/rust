@@ -1,5 +1,6 @@
-use crate::ty::subst::SubstsRef;
-use crate::ty::{self, Ty, TypeFlags, TypeFoldable};
+use crate::ty::subst::{SubstsRef, UnpackedKind};
+use crate::ty::{self, Ty, TypeFlags, TypeFoldable, InferConst};
+use crate::mir::interpret::ConstValue;
 
 #[derive(Debug)]
 pub struct FlagComputation {
@@ -21,6 +22,12 @@ impl FlagComputation {
         let mut result = FlagComputation::new();
         result.add_sty(st);
         result
+    }
+
+    pub fn for_const(c: &ty::Const<'_>) -> TypeFlags {
+        let mut result = FlagComputation::new();
+        result.add_const(c);
+        result.flags
     }
 
     fn add_flags(&mut self, flags: TypeFlags) {
@@ -172,10 +179,7 @@ impl FlagComputation {
 
             &ty::Array(tt, len) => {
                 self.add_ty(tt);
-                if let ty::LazyConst::Unevaluated(_, substs) = len {
-                    self.add_flags(TypeFlags::HAS_PROJECTION);
-                    self.add_substs(substs);
-                }
+                self.add_const(len);
             }
 
             &ty::Slice(tt) => {
@@ -191,8 +195,8 @@ impl FlagComputation {
                 self.add_ty(ty);
             }
 
-            &ty::Tuple(ref ts) => {
-                self.add_tys(&ts[..]);
+            &ty::Tuple(ref substs) => {
+                self.add_substs(substs);
             }
 
             &ty::FnDef(_, substs) => {
@@ -232,6 +236,31 @@ impl FlagComputation {
         }
     }
 
+    fn add_const(&mut self, c: &ty::Const<'_>) {
+        self.add_ty(c.ty);
+        match c.val {
+            ConstValue::Unevaluated(_, substs) => {
+                self.add_substs(substs);
+                self.add_flags(TypeFlags::HAS_NORMALIZABLE_PROJECTION | TypeFlags::HAS_PROJECTION);
+            },
+            ConstValue::Infer(infer) => {
+                self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES | TypeFlags::HAS_CT_INFER);
+                match infer {
+                    InferConst::Fresh(_) => {}
+                    InferConst::Canonical(debruijn, _) => self.add_binder(debruijn),
+                    InferConst::Var(_) => self.add_flags(TypeFlags::KEEP_IN_LOCAL_TCX),
+                }
+            }
+            ConstValue::Param(_) => {
+                self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES | TypeFlags::HAS_PARAMS);
+            }
+            ConstValue::Placeholder(_) => {
+                self.add_flags(TypeFlags::HAS_FREE_REGIONS | TypeFlags::HAS_CT_PLACEHOLDER);
+            }
+            _ => {},
+        }
+    }
+
     fn add_existential_projection(&mut self, projection: &ty::ExistentialProjection<'_>) {
         self.add_substs(projection.substs);
         self.add_ty(projection.ty);
@@ -242,12 +271,12 @@ impl FlagComputation {
     }
 
     fn add_substs(&mut self, substs: SubstsRef<'_>) {
-        for ty in substs.types() {
-            self.add_ty(ty);
-        }
-
-        for r in substs.regions() {
-            self.add_region(r);
+        for kind in substs {
+            match kind.unpack() {
+                UnpackedKind::Type(ty) => self.add_ty(ty),
+                UnpackedKind::Lifetime(lt) => self.add_region(lt),
+                UnpackedKind::Const(ct) => self.add_const(ct),
+            }
         }
     }
 }

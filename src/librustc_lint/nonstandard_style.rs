@@ -1,5 +1,5 @@
 use rustc::hir::{self, GenericParamKind, PatKind};
-use rustc::hir::def::Def;
+use rustc::hir::def::{Res, DefKind};
 use rustc::hir::intravisit::FnKind;
 use rustc::lint;
 use rustc::ty;
@@ -9,6 +9,7 @@ use lint::{EarlyLintPass, LintPass, LateLintPass};
 use syntax::ast;
 use syntax::attr;
 use syntax::errors::Applicability;
+use syntax::symbol::sym;
 use syntax_pos::{BytePos, symbol::Ident, Span};
 
 #[derive(PartialEq)]
@@ -37,6 +38,8 @@ declare_lint! {
     Warn,
     "types, variants, traits and type parameters should have camel case names"
 }
+
+declare_lint_pass!(NonCamelCaseTypes => [NON_CAMEL_CASE_TYPES]);
 
 fn char_has_case(c: char) -> bool {
     c.is_lowercase() || c.is_uppercase()
@@ -105,9 +108,6 @@ fn to_camel_case(s: &str) -> String {
         .0
 }
 
-#[derive(Copy, Clone)]
-pub struct NonCamelCaseTypes;
-
 impl NonCamelCaseTypes {
     fn check_case(&self, cx: &EarlyContext<'_>, sort: &str, ident: &Ident) {
         let name = &ident.name.as_str();
@@ -123,16 +123,6 @@ impl NonCamelCaseTypes {
                 )
                 .emit();
         }
-    }
-}
-
-impl LintPass for NonCamelCaseTypes {
-    fn name(&self) -> &'static str {
-        "NonCamelCaseTypes"
-    }
-
-    fn get_lints(&self) -> LintArray {
-        lint_array!(NON_CAMEL_CASE_TYPES)
     }
 }
 
@@ -173,8 +163,7 @@ declare_lint! {
     "variables, methods, functions, lifetime parameters and modules should have snake case names"
 }
 
-#[derive(Copy, Clone)]
-pub struct NonSnakeCase;
+declare_lint_pass!(NonSnakeCase => [NON_SNAKE_CASE]);
 
 impl NonSnakeCase {
     fn to_snake_case(mut str: &str) -> String {
@@ -256,22 +245,16 @@ impl NonSnakeCase {
     }
 }
 
-impl LintPass for NonSnakeCase {
-    fn name(&self) -> &'static str {
-        "NonSnakeCase"
-    }
-
-    fn get_lints(&self) -> LintArray {
-        lint_array!(NON_SNAKE_CASE)
-    }
-}
-
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonSnakeCase {
-    fn check_crate(&mut self, cx: &LateContext<'_, '_>, cr: &hir::Crate) {
+    fn check_mod(&mut self, cx: &LateContext<'_, '_>, _: &'tcx hir::Mod, _: Span, id: hir::HirId) {
+        if id != hir::CRATE_HIR_ID {
+            return;
+        }
+
         let crate_ident = if let Some(name) = &cx.tcx.sess.opts.crate_name {
             Some(Ident::from_str(name))
         } else {
-            attr::find_by_name(&cr.attrs, "crate_name")
+            attr::find_by_name(&cx.tcx.hir().attrs(hir::CRATE_HIR_ID), sym::crate_name)
                 .and_then(|attr| attr.meta())
                 .and_then(|meta| {
                     meta.name_value_literal().and_then(|lit| {
@@ -333,7 +316,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonSnakeCase {
             }
             FnKind::ItemFn(ident, _, header, _, attrs) => {
                 // Skip foreign-ABI #[no_mangle] functions (Issue #31924)
-                if header.abi != Abi::Rust && attr::contains_name(attrs, "no_mangle") {
+                if header.abi != Abi::Rust && attr::contains_name(attrs, sym::no_mangle) {
                     return;
                 }
                 self.check_snake_case(cx, "function", ident);
@@ -358,7 +341,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonSnakeCase {
     }
 
     fn check_pat(&mut self, cx: &LateContext<'_, '_>, p: &hir::Pat) {
-        if let &PatKind::Binding(_, _, _, ident, _) = &p.node {
+        if let &PatKind::Binding(_, _, ident, _) = &p.node {
             self.check_snake_case(cx, "variable", &ident);
         }
     }
@@ -383,8 +366,7 @@ declare_lint! {
     "static constants should have uppercase identifiers"
 }
 
-#[derive(Copy, Clone)]
-pub struct NonUpperCaseGlobals;
+declare_lint_pass!(NonUpperCaseGlobals => [NON_UPPER_CASE_GLOBALS]);
 
 impl NonUpperCaseGlobals {
     fn check_upper_case(cx: &LateContext<'_, '_>, sort: &str, ident: &Ident) {
@@ -406,20 +388,10 @@ impl NonUpperCaseGlobals {
     }
 }
 
-impl LintPass for NonUpperCaseGlobals {
-    fn name(&self) -> &'static str {
-        "NonUpperCaseGlobals"
-    }
-
-    fn get_lints(&self) -> LintArray {
-        lint_array!(NON_UPPER_CASE_GLOBALS)
-    }
-}
-
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonUpperCaseGlobals {
     fn check_item(&mut self, cx: &LateContext<'_, '_>, it: &hir::Item) {
         match it.node {
-            hir::ItemKind::Static(..) if !attr::contains_name(&it.attrs, "no_mangle") => {
+            hir::ItemKind::Static(..) if !attr::contains_name(&it.attrs, sym::no_mangle) => {
                 NonUpperCaseGlobals::check_upper_case(cx, "static variable", &it.ident);
             }
             hir::ItemKind::Const(..) => {
@@ -444,7 +416,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonUpperCaseGlobals {
     fn check_pat(&mut self, cx: &LateContext<'_, '_>, p: &hir::Pat) {
         // Lint for constants that look like binding identifiers (#7526)
         if let PatKind::Path(hir::QPath::Resolved(None, ref path)) = p.node {
-            if let Def::Const(..) = path.def {
+            if let Res::Def(DefKind::Const, _) = path.res {
                 if path.segments.len() == 1 {
                     NonUpperCaseGlobals::check_upper_case(
                         cx,
@@ -468,26 +440,4 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonUpperCaseGlobals {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{is_camel_case, to_camel_case};
-
-    #[test]
-    fn camel_case() {
-        assert!(!is_camel_case("userData"));
-        assert_eq!(to_camel_case("userData"), "UserData");
-
-        assert!(is_camel_case("X86_64"));
-
-        assert!(!is_camel_case("X86__64"));
-        assert_eq!(to_camel_case("X86__64"), "X86_64");
-
-        assert!(!is_camel_case("Abc_123"));
-        assert_eq!(to_camel_case("Abc_123"), "Abc123");
-
-        assert!(!is_camel_case("A1_b2_c3"));
-        assert_eq!(to_camel_case("A1_b2_c3"), "A1B2C3");
-
-        assert!(!is_camel_case("ONE_TWO_THREE"));
-        assert_eq!(to_camel_case("ONE_TWO_THREE"), "OneTwoThree");
-    }
-}
+mod tests;

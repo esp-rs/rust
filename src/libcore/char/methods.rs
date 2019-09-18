@@ -1,10 +1,11 @@
 //! impl char {}
 
-use slice;
-use str::from_utf8_unchecked_mut;
+use crate::slice;
+use crate::str::from_utf8_unchecked_mut;
+use crate::unicode::printable::is_printable;
+use crate::unicode::tables::{conversions, derived_property, general_category, property};
+
 use super::*;
-use unicode::printable::is_printable;
-use unicode::tables::{conversions, derived_property, general_category, property};
 
 #[lang = "char"]
 impl char {
@@ -336,16 +337,16 @@ impl char {
     /// ```
     /// // as chars
     /// let eastern = '東';
-    /// let capitol = '京';
+    /// let capital = '京';
     ///
     /// // both can be represented as three bytes
     /// assert_eq!(3, eastern.len_utf8());
-    /// assert_eq!(3, capitol.len_utf8());
+    /// assert_eq!(3, capital.len_utf8());
     ///
     /// // as a &str, these two are encoded in UTF-8
     /// let tokyo = "東京";
     ///
-    /// let len = eastern.len_utf8() + capitol.len_utf8();
+    /// let len = eastern.len_utf8() + capital.len_utf8();
     ///
     /// // we can see that they take six bytes total...
     /// assert_eq!(6, tokyo.len());
@@ -1041,8 +1042,8 @@ impl char {
 
     /// Checks if the value is an ASCII alphabetic character:
     ///
-    /// - U+0041 'A' ... U+005A 'Z', or
-    /// - U+0061 'a' ... U+007A 'z'.
+    /// - U+0041 'A' ..= U+005A 'Z', or
+    /// - U+0061 'a' ..= U+007A 'z'.
     ///
     /// # Examples
     ///
@@ -1074,7 +1075,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII uppercase character:
-    /// U+0041 'A' ... U+005A 'Z'.
+    /// U+0041 'A' ..= U+005A 'Z'.
     ///
     /// # Examples
     ///
@@ -1106,7 +1107,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII lowercase character:
-    /// U+0061 'a' ... U+007A 'z'.
+    /// U+0061 'a' ..= U+007A 'z'.
     ///
     /// # Examples
     ///
@@ -1139,9 +1140,9 @@ impl char {
 
     /// Checks if the value is an ASCII alphanumeric character:
     ///
-    /// - U+0041 'A' ... U+005A 'Z', or
-    /// - U+0061 'a' ... U+007A 'z', or
-    /// - U+0030 '0' ... U+0039 '9'.
+    /// - U+0041 'A' ..= U+005A 'Z', or
+    /// - U+0061 'a' ..= U+007A 'z', or
+    /// - U+0030 '0' ..= U+0039 '9'.
     ///
     /// # Examples
     ///
@@ -1173,7 +1174,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII decimal digit:
-    /// U+0030 '0' ... U+0039 '9'.
+    /// U+0030 '0' ..= U+0039 '9'.
     ///
     /// # Examples
     ///
@@ -1206,9 +1207,9 @@ impl char {
 
     /// Checks if the value is an ASCII hexadecimal digit:
     ///
-    /// - U+0030 '0' ... U+0039 '9', or
-    /// - U+0041 'A' ... U+0046 'F', or
-    /// - U+0061 'a' ... U+0066 'f'.
+    /// - U+0030 '0' ..= U+0039 '9', or
+    /// - U+0041 'A' ..= U+0046 'F', or
+    /// - U+0061 'a' ..= U+0066 'f'.
     ///
     /// # Examples
     ///
@@ -1241,10 +1242,10 @@ impl char {
 
     /// Checks if the value is an ASCII punctuation character:
     ///
-    /// - U+0021 ... U+002F `! " # $ % & ' ( ) * + , - . /`, or
-    /// - U+003A ... U+0040 `: ; < = > ? @`, or
-    /// - U+005B ... U+0060 ``[ \ ] ^ _ ` ``, or
-    /// - U+007B ... U+007E `{ | } ~`
+    /// - U+0021 ..= U+002F `! " # $ % & ' ( ) * + , - . /`, or
+    /// - U+003A ..= U+0040 `: ; < = > ? @`, or
+    /// - U+005B ..= U+0060 ``[ \ ] ^ _ ` ``, or
+    /// - U+007B ..= U+007E `{ | } ~`
     ///
     /// # Examples
     ///
@@ -1276,7 +1277,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII graphic character:
-    /// U+0021 '!' ... U+007E '~'.
+    /// U+0021 '!' ..= U+007E '~'.
     ///
     /// # Examples
     ///
@@ -1357,7 +1358,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII control character:
-    /// U+0000 NUL ... U+001F UNIT SEPARATOR, or U+007F DELETE.
+    /// U+0000 NUL ..= U+001F UNIT SEPARATOR, or U+007F DELETE.
     /// Note that most ASCII whitespace characters are control
     /// characters, but SPACE is not.
     ///

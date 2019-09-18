@@ -33,8 +33,7 @@ extern {
                    target_os = "fuchsia",
                    target_os = "l4re"),
                link_name = "__errno_location")]
-    #[cfg_attr(any(target_os = "bitrig",
-                   target_os = "netbsd",
+    #[cfg_attr(any(target_os = "netbsd",
                    target_os = "openbsd",
                    target_os = "android",
                    target_os = "hermit",
@@ -152,7 +151,7 @@ pub struct SplitPaths<'a> {
                     fn(&'a [u8]) -> PathBuf>,
 }
 
-pub fn split_paths(unparsed: &OsStr) -> SplitPaths {
+pub fn split_paths(unparsed: &OsStr) -> SplitPaths<'_> {
     fn bytes_to_path(b: &[u8]) -> PathBuf {
         PathBuf::from(<OsStr as OsStrExt>::from_bytes(b))
     }
@@ -191,7 +190,7 @@ pub fn join_paths<I, T>(paths: I) -> Result<OsString, JoinPathsError>
 }
 
 impl fmt::Display for JoinPathsError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         "path segment contains separator `:`".fmt(f)
     }
 }
@@ -257,7 +256,7 @@ pub fn current_exe() -> io::Result<PathBuf> {
     sysctl().or_else(|_| procfs())
 }
 
-#[cfg(any(target_os = "bitrig", target_os = "openbsd"))]
+#[cfg(target_os = "openbsd")]
 pub fn current_exe() -> io::Result<PathBuf> {
     unsafe {
         let mut mib = [libc::CTL_KERN,

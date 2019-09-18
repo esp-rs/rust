@@ -655,8 +655,9 @@ char RustPrintModulePass::ID = 0;
 INITIALIZE_PASS(RustPrintModulePass, "print-rust-module",
                 "Print rust module to stderr", false, false)
 
-extern "C" void LLVMRustPrintModule(LLVMPassManagerRef PMR, LLVMModuleRef M,
-                                    const char *Path, DemangleFn Demangle) {
+extern "C" LLVMRustResult
+LLVMRustPrintModule(LLVMPassManagerRef PMR, LLVMModuleRef M,
+                    const char *Path, DemangleFn Demangle) {
   llvm::legacy::PassManager *PM = unwrap<llvm::legacy::PassManager>(PMR);
   std::string ErrorInfo;
 
@@ -664,12 +665,18 @@ extern "C" void LLVMRustPrintModule(LLVMPassManagerRef PMR, LLVMModuleRef M,
   raw_fd_ostream OS(Path, EC, sys::fs::F_None);
   if (EC)
     ErrorInfo = EC.message();
+  if (ErrorInfo != "") {
+    LLVMRustSetLastError(ErrorInfo.c_str());
+    return LLVMRustResult::Failure;
+  }
 
   formatted_raw_ostream FOS(OS);
 
   PM->add(new RustPrintModulePass(FOS, Demangle));
 
   PM->run(*unwrap(M));
+
+  return LLVMRustResult::Success;
 }
 
 extern "C" void LLVMRustPrintPasses() {
@@ -875,8 +882,11 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
     return PrevailingType::Unknown;
   };
 #if LLVM_VERSION_GE(8, 0)
+  // We don't have a complete picture in our use of ThinLTO, just our immediate
+  // crate, so we need `ImportEnabled = false` to limit internalization.
+  // Otherwise, we sometimes lose `static` values -- see #60184.
   computeDeadSymbolsWithConstProp(Ret->Index, Ret->GUIDPreservedSymbols,
-                                  deadIsPrevailing, /* ImportEnabled = */ true);
+                                  deadIsPrevailing, /* ImportEnabled = */ false);
 #else
   computeDeadSymbols(Ret->Index, Ret->GUIDPreservedSymbols, deadIsPrevailing);
 #endif

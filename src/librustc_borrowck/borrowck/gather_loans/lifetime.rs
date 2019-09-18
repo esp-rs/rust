@@ -2,13 +2,13 @@
 //! does not exceed the lifetime of the value being borrowed.
 
 use crate::borrowck::*;
+use rustc::hir::HirId;
 use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::region;
 use rustc::ty;
 
-use syntax::ast;
 use syntax_pos::Span;
 use log::debug;
 
@@ -38,7 +38,7 @@ pub fn guarantee_lifetime<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
 ///////////////////////////////////////////////////////////////////////////
 // Private
 
-struct GuaranteeLifetimeContext<'a, 'tcx: 'a> {
+struct GuaranteeLifetimeContext<'a, 'tcx> {
     bccx: &'a BorrowckCtxt<'a, 'tcx>,
 
     // the scope of the function body for the enclosing item
@@ -51,7 +51,7 @@ struct GuaranteeLifetimeContext<'a, 'tcx: 'a> {
 }
 
 impl<'a, 'tcx> GuaranteeLifetimeContext<'a, 'tcx> {
-    fn check(&self, cmt: &mc::cmt_<'tcx>, discr_scope: Option<ast::NodeId>) -> R {
+    fn check(&self, cmt: &mc::cmt_<'tcx>, discr_scope: Option<HirId>) -> R {
         //! Main routine. Walks down `cmt` until we find the
         //! "guarantor". Reports an error if `self.loan_region` is
         //! larger than scope of `cmt`.
@@ -104,14 +104,13 @@ impl<'a, 'tcx> GuaranteeLifetimeContext<'a, 'tcx> {
             Categorization::Upvar(..) => {
                 self.bccx.tcx.mk_region(ty::ReScope(self.item_scope))
             }
-            Categorization::Local(local_id) => {
-                let hir_id = self.bccx.tcx.hir().node_to_hir_id(local_id);
+            Categorization::Local(hir_id) => {
                 self.bccx.tcx.mk_region(ty::ReScope(
                     self.bccx.region_scope_tree.var_scope(hir_id.local_id)))
             }
             Categorization::StaticItem |
             Categorization::Deref(_, mc::UnsafePtr(..)) => {
-                self.bccx.tcx.types.re_static
+                self.bccx.tcx.lifetimes.re_static
             }
             Categorization::Deref(_, mc::BorrowedPtr(_, r)) => {
                 r

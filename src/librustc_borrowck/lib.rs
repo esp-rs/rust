@@ -2,7 +2,10 @@
 
 #![allow(non_camel_case_types)]
 #![deny(rust_2018_idioms)]
+#![deny(internal)]
+#![deny(unused_lifetimes)]
 
+#![feature(in_band_lifetimes)]
 #![feature(nll)]
 
 #![recursion_limit="256"]

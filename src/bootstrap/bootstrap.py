@@ -177,7 +177,6 @@ def default_build_triple():
     # The goal here is to come up with the same triple as LLVM would,
     # at least for the subset of platforms we're willing to target.
     ostype_mapper = {
-        'Bitrig': 'unknown-bitrig',
         'Darwin': 'apple-darwin',
         'DragonFly': 'unknown-dragonfly',
         'FreeBSD': 'unknown-freebsd',
@@ -262,6 +261,10 @@ def default_build_triple():
         cputype = 'arm'
         if ostype == 'linux-android':
             ostype = 'linux-androideabi'
+        elif ostype == 'unknown-freebsd':
+            cputype = subprocess.check_output(
+                ['uname', '-p']).strip().decode(default_encoding)
+            ostype = 'unknown-freebsd'
     elif cputype == 'armv6l':
         cputype = 'arm'
         if ostype == 'linux-android':
@@ -673,9 +676,15 @@ class RustBuild(object):
 
         run(["git", "submodule", "-q", "sync", module],
             cwd=self.rust_root, verbose=self.verbose)
-        run(["git", "submodule", "update",
-            "--init", "--recursive", "--progress", module],
-            cwd=self.rust_root, verbose=self.verbose)
+        try:
+            run(["git", "submodule", "update",
+                 "--init", "--recursive", "--progress", module],
+                cwd=self.rust_root, verbose=self.verbose, exception=True)
+        except RuntimeError:
+            # Some versions of git don't support --progress.
+            run(["git", "submodule", "update",
+                 "--init", "--recursive", module],
+                cwd=self.rust_root, verbose=self.verbose)
         run(["git", "reset", "-q", "--hard"],
             cwd=module_path, verbose=self.verbose)
         run(["git", "clean", "-qdfx"],

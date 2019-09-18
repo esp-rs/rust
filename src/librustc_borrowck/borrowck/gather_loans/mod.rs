@@ -14,7 +14,6 @@ use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::region;
 use rustc::ty::{self, TyCtxt};
 
-use syntax::ast;
 use syntax_pos::Span;
 use rustc::hir;
 use log::debug;
@@ -45,6 +44,7 @@ pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
     let rvalue_promotable_map = bccx.tcx.rvalue_promotable_map(def_id);
     euv::ExprUseVisitor::new(&mut glcx,
                              bccx.tcx,
+                             def_id,
                              param_env,
                              &bccx.region_scope_tree,
                              bccx.tables,
@@ -56,7 +56,7 @@ pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
     (all_loans, move_data)
 }
 
-struct GatherLoanCtxt<'a, 'tcx: 'a> {
+struct GatherLoanCtxt<'a, 'tcx> {
     bccx: &'a BorrowckCtxt<'a, 'tcx>,
     move_data: move_data::MoveData<'tcx>,
     move_error_collector: move_error::MoveErrorCollector<'tcx>,
@@ -141,17 +141,34 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for GatherLoanCtxt<'a, 'tcx> {
               assignee_cmt: &mc::cmt_<'tcx>,
               _: euv::MutateMode)
     {
-        let node_id = self.bccx.tcx.hir().hir_to_node_id(assignment_id);
-        self.guarantee_assignment_valid(node_id,
+        self.guarantee_assignment_valid(assignment_id,
                                         assignment_span,
                                         assignee_cmt);
     }
 
-    fn decl_without_init(&mut self, id: ast::NodeId, _span: Span) {
+    fn decl_without_init(&mut self, id: hir::HirId, _span: Span) {
         let ty = self.bccx
                      .tables
-                     .node_type(self.bccx.tcx.hir().node_to_hir_id(id));
+                     .node_type(id);
         gather_moves::gather_decl(self.bccx, &self.move_data, id, ty);
+    }
+
+    fn nested_body(&mut self, body_id: hir::BodyId) {
+        debug!("nested_body(body_id={:?})", body_id);
+        // rust-lang/rust#58776: MIR and AST borrow check disagree on where
+        // certain closure errors are reported. As such migrate borrowck has to
+        // operate at the level of items, rather than bodies. Check if the
+        // contained closure had any errors and set `signalled_any_error` if it
+        // has.
+        let bccx = self.bccx;
+        if bccx.tcx.migrate_borrowck() {
+            if let SignalledError::NoErrorsSeen = bccx.signalled_any_error.get() {
+                let closure_def_id = bccx.tcx.hir().body_owner_def_id(body_id);
+                debug!("checking closure: {:?}", closure_def_id);
+
+                bccx.signalled_any_error.set(bccx.tcx.borrowck(closure_def_id).signalled_any_error);
+            }
+        }
     }
 }
 
@@ -234,11 +251,11 @@ fn check_mutability<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
-    pub fn tcx(&self) -> TyCtxt<'a, 'tcx, 'tcx> { self.bccx.tcx }
+    pub fn tcx(&self) -> TyCtxt<'tcx> { self.bccx.tcx }
 
     /// Guarantees that `cmt` is assignable, or reports an error.
     fn guarantee_assignment_valid(&mut self,
-                                  assignment_id: ast::NodeId,
+                                  assignment_id: hir::HirId,
                                   assignment_span: Span,
                                   cmt: &mc::cmt_<'tcx>) {
 
@@ -272,8 +289,7 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
                     self.mark_loan_path_as_mutated(&lp);
                 }
                 gather_moves::gather_assignment(self.bccx, &self.move_data,
-                                                self.bccx.tcx.hir().node_to_hir_id(assignment_id)
-                                                    .local_id,
+                                                assignment_id.local_id,
                                                 assignment_span,
                                                 lp);
             }
@@ -438,9 +454,8 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
 
         while let Some(current_path) = wrapped_path {
             wrapped_path = match current_path.kind {
-                LpVar(local_id) => {
+                LpVar(hir_id) => {
                     if !through_borrow {
-                        let hir_id = self.bccx.tcx.hir().node_to_hir_id(local_id);
                         self.bccx.used_mut_nodes.borrow_mut().insert(hir_id);
                     }
                     None

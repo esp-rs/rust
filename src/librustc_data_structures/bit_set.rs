@@ -5,6 +5,10 @@ use std::iter;
 use std::marker::PhantomData;
 use std::mem;
 use std::slice;
+#[cfg(test)]
+extern crate test;
+#[cfg(test)]
+use test::Bencher;
 
 pub type Word = u64;
 pub const WORD_BYTES: usize = mem::size_of::<Word>();
@@ -177,6 +181,45 @@ impl<T: Idx> BitSet<T> {
         // Note: we currently don't bother trying to make a Sparse set.
         HybridBitSet::Dense(self.to_owned())
     }
+
+    /// Set `self = self | other`. In contrast to `union` returns `true` if the set contains at
+    /// least one bit that is not in `other` (i.e. `other` is not a superset of `self`).
+    ///
+    /// This is an optimization for union of a hybrid bitset.
+    fn reverse_union_sparse(&mut self, sparse: &SparseBitSet<T>) -> bool {
+        assert!(sparse.domain_size == self.domain_size);
+        self.clear_excess_bits();
+
+        let mut not_already = false;
+        // Index of the current word not yet merged.
+        let mut current_index = 0;
+        // Mask of bits that came from the sparse set in the current word.
+        let mut new_bit_mask = 0;
+        for (word_index, mask) in sparse.iter().map(|x| word_index_and_mask(*x)) {
+            // Next bit is in a word not inspected yet.
+            if word_index > current_index {
+                self.words[current_index] |= new_bit_mask;
+                // Were there any bits in the old word that did not occur in the sparse set?
+                not_already |= (self.words[current_index] ^ new_bit_mask) != 0;
+                // Check all words we skipped for any set bit.
+                not_already |= self.words[current_index+1..word_index].iter().any(|&x| x != 0);
+                // Update next word.
+                current_index = word_index;
+                // Reset bit mask, no bits have been merged yet.
+                new_bit_mask = 0;
+            }
+            // Add bit and mark it as coming from the sparse set.
+            // self.words[word_index] |= mask;
+            new_bit_mask |= mask;
+        }
+        self.words[current_index] |= new_bit_mask;
+        // Any bits in the last inspected word that were not in the sparse set?
+        not_already |= (self.words[current_index] ^ new_bit_mask) != 0;
+        // Any bits in the tail? Note `clear_excess_bits` before.
+        not_already |= self.words[current_index+1..].iter().any(|&x| x != 0);
+
+        not_already
+    }
 }
 
 /// This is implemented by all the bitsets so that BitSet::union() can be
@@ -271,11 +314,6 @@ impl<'a, T: Idx> Iterator for BitIter<'a, T> {
             self.cur = Some((*word, WORD_BITS * i));
         }
     }
-}
-
-pub trait BitSetOperator {
-    /// Combine one bitset into another.
-    fn join<T: Idx>(&self, inout_set: &mut BitSet<T>, in_set: &BitSet<T>) -> bool;
 }
 
 #[inline]
@@ -514,10 +552,22 @@ impl<T: Idx> HybridBitSet<T> {
                         changed
                     }
                     HybridBitSet::Dense(other_dense) => {
-                        // `self` is sparse and `other` is dense. Densify
-                        // `self` and then do the bitwise union.
-                        let mut new_dense = self_sparse.to_dense();
-                        let changed = new_dense.union(other_dense);
+                        // `self` is sparse and `other` is dense. To
+                        // merge them, we have two available strategies:
+                        // * Densify `self` then merge other
+                        // * Clone other then integrate bits from `self`
+                        // The second strategy requires dedicated method
+                        // since the usual `union` returns the wrong
+                        // result. In the dedicated case the computation
+                        // is slightly faster if the bits of the sparse
+                        // bitset map to only few words of the dense
+                        // representation, i.e. indices are near each
+                        // other.
+                        //
+                        // Benchmarking seems to suggest that the second
+                        // option is worth it.
+                        let mut new_dense = other_dense.clone();
+                        let changed = new_dense.reverse_union_sparse(self_sparse);
                         *self = HybridBitSet::Dense(new_dense);
                         changed
                     }
@@ -607,8 +657,8 @@ impl<T: Idx> GrowableBitSet<T> {
         GrowableBitSet { bit_set: BitSet::new_empty(0) }
     }
 
-    pub fn with_capacity(bits: usize) -> GrowableBitSet<T> {
-        GrowableBitSet { bit_set: BitSet::new_empty(bits) }
+    pub fn with_capacity(capacity: usize) -> GrowableBitSet<T> {
+        GrowableBitSet { bit_set: BitSet::new_empty(capacity) }
     }
 
     /// Returns `true` if the set has changed.
@@ -636,7 +686,7 @@ impl<T: Idx> GrowableBitSet<T> {
 ///
 /// All operations that involve a row and/or column index will panic if the
 /// index exceeds the relevant bound.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, RustcDecodable, RustcEncodable)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     num_rows: usize,
     num_columns: usize,
@@ -656,6 +706,23 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
             words: vec![0; num_rows * words_per_row],
             marker: PhantomData,
         }
+    }
+
+    /// Creates a new matrix, with `row` used as the value for every row.
+    pub fn from_row_n(row: &BitSet<C>, num_rows: usize) -> BitMatrix<R, C> {
+        let num_columns = row.domain_size();
+        let words_per_row = num_words(num_columns);
+        assert_eq!(words_per_row, row.words().len());
+        BitMatrix {
+            num_rows,
+            num_columns,
+            words: iter::repeat(row.words()).take(num_rows).flatten().cloned().collect(),
+            marker: PhantomData,
+        }
+    }
+
+    pub fn rows(&self) -> impl Iterator<Item = R> {
+        (0..self.num_rows).map(R::new)
     }
 
     /// The range of bits for a given row.
@@ -737,6 +804,49 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         changed
     }
 
+    /// Adds the bits from `with` to the bits from row `write`, and
+    /// returns `true` if anything changed.
+    pub fn union_row_with(&mut self, with: &BitSet<C>, write: R) -> bool {
+        assert!(write.index() < self.num_rows);
+        assert_eq!(with.domain_size(), self.num_columns);
+        let (write_start, write_end) = self.range(write);
+        let mut changed = false;
+        for (read_index, write_index) in (0..with.words().len()).zip(write_start..write_end) {
+            let word = self.words[write_index];
+            let new_word = word | with.words()[read_index];
+            self.words[write_index] = new_word;
+            changed |= word != new_word;
+        }
+        changed
+    }
+
+    /// Sets every cell in `row` to true.
+    pub fn insert_all_into_row(&mut self, row: R) {
+        assert!(row.index() < self.num_rows);
+        let (start, end) = self.range(row);
+        let words = &mut self.words[..];
+        for index in start..end {
+            words[index] = !0;
+        }
+        self.clear_excess_bits(row);
+    }
+
+    /// Clear excess bits in the final word of the row.
+    fn clear_excess_bits(&mut self, row: R) {
+        let num_bits_in_final_word = self.num_columns % WORD_BITS;
+        if num_bits_in_final_word > 0 {
+            let mask = (1 << num_bits_in_final_word) - 1;
+            let (_, end) = self.range(row);
+            let final_word_idx = end - 1;
+            self.words[final_word_idx] &= mask;
+        }
+    }
+
+    /// Gets a slice of the underlying words.
+    pub fn words(&self) -> &[Word] {
+        &self.words
+    }
+
     /// Iterates through all the columns set to true in a given row of
     /// the matrix.
     pub fn iter<'a>(&'a self, row: R) -> BitIter<'a, C> {
@@ -747,6 +857,12 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
             iter: self.words[start..end].iter().enumerate(),
             marker: PhantomData,
         }
+    }
+
+    /// Returns the number of elements in `row`.
+    pub fn count(&self, row: R) -> usize {
+        let (start, end) = self.range(row);
+        self.words[start..end].iter().map(|e| e.count_ones() as usize).sum()
     }
 }
 
@@ -1057,6 +1173,7 @@ fn matrix_iter() {
     matrix.insert(2, 99);
     matrix.insert(4, 0);
     matrix.union_rows(3, 5);
+    matrix.insert_all_into_row(6);
 
     let expected = [99];
     let mut iter = expected.iter();
@@ -1068,6 +1185,7 @@ fn matrix_iter() {
 
     let expected = [22, 75];
     let mut iter = expected.iter();
+    assert_eq!(matrix.count(3), expected.len());
     for i in matrix.iter(3) {
         let j = *iter.next().unwrap();
         assert_eq!(i, j);
@@ -1076,6 +1194,7 @@ fn matrix_iter() {
 
     let expected = [0];
     let mut iter = expected.iter();
+    assert_eq!(matrix.count(4), expected.len());
     for i in matrix.iter(4) {
         let j = *iter.next().unwrap();
         assert_eq!(i, j);
@@ -1084,11 +1203,24 @@ fn matrix_iter() {
 
     let expected = [22, 75];
     let mut iter = expected.iter();
+    assert_eq!(matrix.count(5), expected.len());
     for i in matrix.iter(5) {
         let j = *iter.next().unwrap();
         assert_eq!(i, j);
     }
     assert!(iter.next().is_none());
+
+    assert_eq!(matrix.count(6), 100);
+    let mut count = 0;
+    for (idx, i) in matrix.iter(6).enumerate() {
+        assert_eq!(idx, i);
+        count += 1;
+    }
+    assert_eq!(count, 100);
+
+    if let Some(i) = matrix.iter(7).next() {
+        panic!("expected no elements in row, but contains element {:?}", i);
+    }
 }
 
 #[test]
@@ -1131,4 +1263,88 @@ fn sparse_matrix_iter() {
         assert_eq!(i, j);
     }
     assert!(iter.next().is_none());
+}
+
+/// Merge dense hybrid set into empty sparse hybrid set.
+#[bench]
+fn union_hybrid_sparse_empty_to_dense(b: &mut Bencher) {
+    let mut pre_dense: HybridBitSet<usize> = HybridBitSet::new_empty(256);
+    for i in 0..10 {
+        assert!(pre_dense.insert(i));
+    }
+    let pre_sparse: HybridBitSet<usize> = HybridBitSet::new_empty(256);
+    b.iter(|| {
+        let dense = pre_dense.clone();
+        let mut sparse = pre_sparse.clone();
+        sparse.union(&dense);
+    })
+}
+
+/// Merge dense hybrid set into full hybrid set with same indices.
+#[bench]
+fn union_hybrid_sparse_full_to_dense(b: &mut Bencher) {
+    let mut pre_dense: HybridBitSet<usize> = HybridBitSet::new_empty(256);
+    for i in 0..10 {
+        assert!(pre_dense.insert(i));
+    }
+    let mut pre_sparse: HybridBitSet<usize> = HybridBitSet::new_empty(256);
+    for i in 0..SPARSE_MAX {
+        assert!(pre_sparse.insert(i));
+    }
+    b.iter(|| {
+        let dense = pre_dense.clone();
+        let mut sparse = pre_sparse.clone();
+        sparse.union(&dense);
+    })
+}
+
+/// Merge dense hybrid set into full hybrid set with indices over the whole domain.
+#[bench]
+fn union_hybrid_sparse_domain_to_dense(b: &mut Bencher) {
+    let mut pre_dense: HybridBitSet<usize> = HybridBitSet::new_empty(SPARSE_MAX*64);
+    for i in 0..10 {
+        assert!(pre_dense.insert(i));
+    }
+    let mut pre_sparse: HybridBitSet<usize> = HybridBitSet::new_empty(SPARSE_MAX*64);
+    for i in 0..SPARSE_MAX {
+        assert!(pre_sparse.insert(i*64));
+    }
+    b.iter(|| {
+        let dense = pre_dense.clone();
+        let mut sparse = pre_sparse.clone();
+        sparse.union(&dense);
+    })
+}
+
+/// Merge dense hybrid set into empty hybrid set where the domain is very small.
+#[bench]
+fn union_hybrid_sparse_empty_small_domain(b: &mut Bencher) {
+    let mut pre_dense: HybridBitSet<usize> = HybridBitSet::new_empty(SPARSE_MAX);
+    for i in 0..SPARSE_MAX {
+        assert!(pre_dense.insert(i));
+    }
+    let pre_sparse: HybridBitSet<usize> = HybridBitSet::new_empty(SPARSE_MAX);
+    b.iter(|| {
+        let dense = pre_dense.clone();
+        let mut sparse = pre_sparse.clone();
+        sparse.union(&dense);
+    })
+}
+
+/// Merge dense hybrid set into full hybrid set where the domain is very small.
+#[bench]
+fn union_hybrid_sparse_full_small_domain(b: &mut Bencher) {
+    let mut pre_dense: HybridBitSet<usize> = HybridBitSet::new_empty(SPARSE_MAX);
+    for i in 0..SPARSE_MAX {
+        assert!(pre_dense.insert(i));
+    }
+    let mut pre_sparse: HybridBitSet<usize> = HybridBitSet::new_empty(SPARSE_MAX);
+    for i in 0..SPARSE_MAX {
+        assert!(pre_sparse.insert(i));
+    }
+    b.iter(|| {
+        let dense = pre_dense.clone();
+        let mut sparse = pre_sparse.clone();
+        sparse.union(&dense);
+    })
 }

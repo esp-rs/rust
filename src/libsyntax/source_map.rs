@@ -30,8 +30,8 @@ use errors::SourceMapper;
 /// otherwise return the call site span up to the `enclosing_sp` by
 /// following the `expn_info` chain.
 pub fn original_sp(sp: Span, enclosing_sp: Span) -> Span {
-    let call_site1 = sp.ctxt().outer().expn_info().map(|ei| ei.call_site);
-    let call_site2 = enclosing_sp.ctxt().outer().expn_info().map(|ei| ei.call_site);
+    let call_site1 = sp.ctxt().outer_expn_info().map(|ei| ei.call_site);
+    let call_site2 = enclosing_sp.ctxt().outer_expn_info().map(|ei| ei.call_site);
     match (call_site1, call_site2) {
         (None, _) => sp,
         (Some(call_site1), Some(call_site2)) if call_site1 == call_site2 => sp,
@@ -150,7 +150,7 @@ impl SourceMap {
                             -> SourceMap {
         SourceMap {
             files: Default::default(),
-            file_loader: file_loader,
+            file_loader,
             path_mapping,
         }
     }
@@ -191,6 +191,18 @@ impl SourceMap {
     /// If a file already exists in the source_map with the same id, that file is returned
     /// unmodified
     pub fn new_source_file(&self, filename: FileName, src: String) -> Lrc<SourceFile> {
+        self.try_new_source_file(filename, src)
+            .unwrap_or_else(|OffsetOverflowError| {
+                eprintln!("fatal error: rustc does not support files larger than 4GB");
+                errors::FatalError.raise()
+            })
+    }
+
+    fn try_new_source_file(
+        &self,
+        filename: FileName,
+        src: String
+    ) -> Result<Lrc<SourceFile>, OffsetOverflowError> {
         let start_pos = self.next_start_pos();
 
         // The path is used to determine the directory for loading submodules and
@@ -212,7 +224,7 @@ impl SourceMap {
                                                        was_remapped,
                                                        Some(&unmapped_path));
 
-        return match self.source_file_by_stable_id(file_id) {
+        let lrc_sf = match self.source_file_by_stable_id(file_id) {
             Some(lrc_sf) => lrc_sf,
             None => {
                 let source_file = Lrc::new(SourceFile::new(
@@ -221,7 +233,7 @@ impl SourceMap {
                     unmapped_path,
                     src,
                     Pos::from_usize(start_pos),
-                ));
+                )?);
 
                 let mut files = self.files.borrow_mut();
 
@@ -230,7 +242,8 @@ impl SourceMap {
 
                 source_file
             }
-        }
+        };
+        Ok(lrc_sf)
     }
 
     /// Allocates a new SourceFile representing a source file from an external
@@ -383,18 +396,8 @@ impl SourceMap {
         let f = (*self.files.borrow().source_files)[idx].clone();
 
         match f.lookup_line(pos) {
-            Some(line) => Ok(SourceFileAndLine { sf: f, line: line }),
+            Some(line) => Ok(SourceFileAndLine { sf: f, line }),
             None => Err(f)
-        }
-    }
-
-    pub fn lookup_char_pos_adj(&self, pos: BytePos) -> LocWithOpt {
-        let loc = self.lookup_char_pos(pos);
-        LocWithOpt {
-            filename: loc.file.name.clone(),
-            line: loc.line,
-            col: loc.col,
-            file: Some(loc.file)
         }
     }
 
@@ -438,10 +441,10 @@ impl SourceMap {
             return "no-location".to_string();
         }
 
-        let lo = self.lookup_char_pos_adj(sp.lo());
-        let hi = self.lookup_char_pos_adj(sp.hi());
+        let lo = self.lookup_char_pos(sp.lo());
+        let hi = self.lookup_char_pos(sp.hi());
         format!("{}:{}:{}: {}:{}",
-                        lo.filename,
+                        lo.file.name,
                         lo.line,
                         lo.col.to_usize() + 1,
                         hi.line,
@@ -508,7 +511,7 @@ impl SourceMap {
                               start_col,
                               end_col: hi.col });
 
-        Ok(FileLines {file: lo.file, lines: lines})
+        Ok(FileLines {file: lo.file, lines})
     }
 
     /// Extracts the source surrounding the given `Span` using the `extract_source` function. The
@@ -737,6 +740,11 @@ impl SourceMap {
         debug!("find_width_of_character_at_span: local_begin=`{:?}`, local_end=`{:?}`",
                local_begin, local_end);
 
+        if local_begin.sf.start_pos != local_end.sf.start_pos {
+            debug!("find_width_of_character_at_span: begin and end are in different files");
+            return 1;
+        }
+
         let start_index = local_begin.pos.to_usize();
         let end_index = local_end.pos.to_usize();
         debug!("find_width_of_character_at_span: start_index=`{:?}`, end_index=`{:?}`",
@@ -812,7 +820,7 @@ impl SourceMap {
         let idx = self.lookup_source_file_idx(bpos);
         let sf = (*self.files.borrow().source_files)[idx].clone();
         let offset = bpos - sf.start_pos;
-        SourceFileAndBytePos {sf: sf, pos: offset}
+        SourceFileAndBytePos {sf, pos: offset}
     }
 
     /// Converts an absolute BytePos to a CharPos relative to the source_file.

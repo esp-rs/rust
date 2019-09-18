@@ -1,7 +1,7 @@
 error[E0409]: variable `y` is bound in inconsistent ways within the same match arm
   --> $DIR/E0409.rs:5:23
    |
-LL |         (0, ref y) | (y, 0) => {} //~ ERROR E0409
+LL |         (0, ref y) | (y, 0) => {}
    |                 -     ^ bound in different ways
    |                 |
    |                 first binding
@@ -9,7 +9,7 @@ LL |         (0, ref y) | (y, 0) => {} //~ ERROR E0409
 error[E0308]: mismatched types
   --> $DIR/E0409.rs:5:23
    |
-LL |         (0, ref y) | (y, 0) => {} //~ ERROR E0409
+LL |         (0, ref y) | (y, 0) => {}
    |                       ^ expected &{integer}, found integer
    |
    = note: expected type `&{integer}`
@@ -17,5 +17,5 @@ LL |         (0, ref y) | (y, 0) => {} //~ ERROR E0409
 
 error: aborting due to 2 previous errors
 
-Some errors occurred: E0308, E0409.
+Some errors have detailed explanations: E0308, E0409.
 For more information about an error, try `rustc --explain E0308`.

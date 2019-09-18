@@ -19,7 +19,6 @@ use rustc::hir;
 use rustc::hir::intravisit;
 use rustc::hir::print as pprust;
 
-
 #[derive(Copy, Clone, Debug)]
 pub enum EntryOrExit {
     Entry,
@@ -27,8 +26,8 @@ pub enum EntryOrExit {
 }
 
 #[derive(Clone)]
-pub struct DataFlowContext<'a, 'tcx: 'a, O> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+pub struct DataFlowContext<'tcx, O> {
+    tcx: TyCtxt<'tcx>,
 
     /// a name for the analysis using this dataflow instance
     analysis_name: &'static str,
@@ -52,7 +51,6 @@ pub struct DataFlowContext<'a, 'tcx: 'a, O> {
     // `id_range`, there is a range of words equal to `words_per_id`.
     // So, to access the bits for any given id, you take a slice of
     // the full vector (see the method `compute_id_range()`).
-
     /// bits generated as we exit the cfg node. Updated by `add_gen()`.
     gens: Vec<usize>,
 
@@ -81,9 +79,9 @@ pub trait DataFlowOperator : BitwiseOperator {
     fn initial_value(&self) -> bool;
 }
 
-struct PropagationContext<'a, 'b: 'a, 'tcx: 'b, O> {
-    dfcx: &'a mut DataFlowContext<'b, 'tcx, O>,
-    changed: bool
+struct PropagationContext<'a, 'tcx, O> {
+    dfcx: &'a mut DataFlowContext<'tcx, O>,
+    changed: bool,
 }
 
 fn get_cfg_indices<'a>(id: hir::ItemLocalId,
@@ -92,14 +90,14 @@ fn get_cfg_indices<'a>(id: hir::ItemLocalId,
     index.get(&id).map_or(&[], |v| &v[..])
 }
 
-impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
+impl<'tcx, O: DataFlowOperator> DataFlowContext<'tcx, O> {
     fn has_bitset_for_local_id(&self, n: hir::ItemLocalId) -> bool {
         assert!(n != hir::DUMMY_ITEM_LOCAL_ID);
         self.local_id_to_index.contains_key(&n)
     }
 }
 
-impl<'a, 'tcx, O:DataFlowOperator> pprust::PpAnn for DataFlowContext<'a, 'tcx, O> {
+impl<'tcx, O: DataFlowOperator> pprust::PpAnn for DataFlowContext<'tcx, O> {
     fn nested(&self, state: &mut pprust::State<'_>, nested: pprust::Nested) -> io::Result<()> {
         pprust::PpAnn::nested(self.tcx.hir(), state, nested)
     }
@@ -225,13 +223,15 @@ pub enum KillFrom {
     Execution,
 }
 
-impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
-    pub fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-               analysis_name: &'static str,
-               body: Option<&hir::Body>,
-               cfg: &cfg::CFG,
-               oper: O,
-               bits_per_id: usize) -> DataFlowContext<'a, 'tcx, O> {
+impl<'tcx, O: DataFlowOperator> DataFlowContext<'tcx, O> {
+    pub fn new(
+        tcx: TyCtxt<'tcx>,
+        analysis_name: &'static str,
+        body: Option<&hir::Body>,
+        cfg: &cfg::CFG,
+        oper: O,
+        bits_per_id: usize,
+    ) -> DataFlowContext<'tcx, O> {
         let usize_bits = mem::size_of::<usize>() * 8;
         let words_per_id = (bits_per_id + usize_bits - 1) / usize_bits;
         let num_nodes = cfg.graph.all_nodes().len();
@@ -500,8 +500,8 @@ impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
     }
 }
 
-impl<'a, 'tcx, O:DataFlowOperator+Clone+'static> DataFlowContext<'a, 'tcx, O> {
-//                                ^^^^^^^^^^^^^ only needed for pretty printing
+// N.B. `Clone + 'static` only needed for pretty printing.
+impl<'tcx, O: DataFlowOperator + Clone + 'static> DataFlowContext<'tcx, O> {
     pub fn propagate(&mut self, cfg: &cfg::CFG, body: &hir::Body) {
         //! Performs the data flow analysis.
 
@@ -538,7 +538,7 @@ impl<'a, 'tcx, O:DataFlowOperator+Clone+'static> DataFlowContext<'a, 'tcx, O> {
     }
 }
 
-impl<'a, 'b, 'tcx, O:DataFlowOperator> PropagationContext<'a, 'b, 'tcx, O> {
+impl<O: DataFlowOperator> PropagationContext<'_, 'tcx, O> {
     fn walk_cfg(&mut self,
                 cfg: &cfg::CFG,
                 nodes_po: &[CFGIndex],
@@ -547,7 +547,7 @@ impl<'a, 'b, 'tcx, O:DataFlowOperator> PropagationContext<'a, 'b, 'tcx, O> {
                bits_to_string(in_out), self.dfcx.analysis_name);
         assert!(self.dfcx.bits_per_id > 0);
 
-        // Iterate over nodes in reverse postorder
+        // Iterate over nodes in reverse post-order.
         for &node_index in nodes_po.iter().rev() {
             let node = cfg.graph.node(node_index);
             debug!("DataFlowContext::walk_cfg idx={:?} id={:?} begin in_out={}",
@@ -631,9 +631,9 @@ fn bits_to_string(words: &[usize]) -> String {
 }
 
 #[inline]
-fn bitwise<Op:BitwiseOperator>(out_vec: &mut [usize],
-                               in_vec: &[usize],
-                               op: &Op) -> bool {
+fn bitwise<Op: BitwiseOperator>(out_vec: &mut [usize],
+                                in_vec: &[usize],
+                                op: &Op) -> bool {
     assert_eq!(out_vec.len(), in_vec.len());
     let mut changed = false;
     for (out_elt, in_elt) in out_vec.iter_mut().zip(in_vec) {

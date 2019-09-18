@@ -11,11 +11,11 @@
 
 use syntax::ext::base::*;
 use syntax::ext::build::AstBuilder;
-use syntax::ext::hygiene::{self, Mark, SyntaxContext};
+use syntax::ext::hygiene::{Mark, SyntaxContext};
 use syntax::ast;
 use syntax::source_map::respan;
-use syntax::symbol::Symbol;
-use syntax_pos::{DUMMY_SP, Span};
+use syntax::symbol::sym;
+use syntax_pos::Span;
 use syntax::source_map::{ExpnInfo, MacroAttribute};
 use syntax::feature_gate;
 
@@ -27,7 +27,7 @@ pub fn expand(
 ) -> Vec<Annotatable> {
     if !ecx.ecfg.enable_custom_test_frameworks() {
         feature_gate::emit_feature_err(&ecx.parse_sess,
-                                       "custom_test_frameworks",
+                                       sym::custom_test_frameworks,
                                        attr_sp,
                                        feature_gate::GateIssue::Language,
                                        feature_gate::EXPLAIN_CUSTOM_TEST_FRAMEWORKS);
@@ -37,18 +37,10 @@ pub fn expand(
 
     let sp = {
         let mark = Mark::fresh(Mark::root());
-        mark.set_expn_info(ExpnInfo {
-            call_site: DUMMY_SP,
-            def_site: None,
-            format: MacroAttribute(Symbol::intern("test_case")),
-            allow_internal_unstable: Some(vec![
-                Symbol::intern("test"),
-                Symbol::intern("rustc_attrs"),
-            ].into()),
-            allow_internal_unsafe: false,
-            local_inner_macros: false,
-            edition: hygiene::default_edition(),
-        });
+        mark.set_expn_info(ExpnInfo::with_unstable(
+            MacroAttribute(sym::test_case), attr_sp, ecx.parse_sess.edition,
+            &[sym::test, sym::rustc_attrs],
+        ));
         attr_sp.with_ctxt(SyntaxContext::empty().apply_mark(mark))
     };
 
@@ -59,7 +51,7 @@ pub fn expand(
         item.ident = item.ident.gensym();
         item.attrs.push(
             ecx.attribute(sp,
-                ecx.meta_word(sp, Symbol::intern("rustc_test_marker")))
+                ecx.meta_word(sp, sym::rustc_test_marker))
         );
         item
     });

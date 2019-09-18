@@ -190,7 +190,7 @@ impl Condvar {
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// while !*started {
     ///     started = cvar.wait(started).unwrap();
     /// }
@@ -254,7 +254,7 @@ impl Condvar {
     ///
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// let _guard = cvar.wait_until(lock.lock().unwrap(), |started| { *started }).unwrap();
     /// ```
     #[unstable(feature = "wait_until", issue = "47960")]
@@ -311,7 +311,7 @@ impl Condvar {
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// loop {
     ///     let result = cvar.wait_timeout_ms(started, 10).unwrap();
     ///     // 10 milliseconds have passed, or maybe the value changed!
@@ -384,7 +384,7 @@ impl Condvar {
     /// // wait for the thread to start up
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // as long as the value inside the `Mutex` is false, we wait
+    /// // as long as the value inside the `Mutex<bool>` is `false`, we wait
     /// loop {
     ///     let result = cvar.wait_timeout(started, Duration::from_millis(10)).unwrap();
     ///     // 10 milliseconds have passed, or maybe the value changed!
@@ -518,7 +518,7 @@ impl Condvar {
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// while !*started {
     ///     started = cvar.wait(started).unwrap();
     /// }
@@ -558,7 +558,7 @@ impl Condvar {
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// while !*started {
     ///     started = cvar.wait(started).unwrap();
     /// }
@@ -589,7 +589,7 @@ impl Condvar {
 
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Condvar {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad("Condvar { .. }")
     }
 }
@@ -705,6 +705,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn wait_timeout_wait() {
         let m = Arc::new(Mutex::new(()));
         let c = Arc::new(Condvar::new());
@@ -724,6 +725,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn wait_timeout_until_wait() {
         let m = Arc::new(Mutex::new(()));
         let c = Arc::new(Condvar::new());
@@ -748,6 +750,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn wait_timeout_until_wake() {
         let pair = Arc::new((Mutex::new(false), Condvar::new()));
         let pair_copy = pair.clone();
@@ -771,6 +774,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn wait_timeout_wake() {
         let m = Arc::new(Mutex::new(()));
         let c = Arc::new(Condvar::new());

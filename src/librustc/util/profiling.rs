@@ -1,10 +1,22 @@
-use std::collections::{BTreeMap, HashMap};
+use std::borrow::Cow;
+use std::error::Error;
 use std::fs;
-use std::io::{self, Write};
+use std::mem::{self, Discriminant};
+use std::path::Path;
+use std::process;
 use std::thread::ThreadId;
-use std::time::Instant;
+use std::u32;
 
-use crate::session::config::{Options, OptLevel};
+use crate::ty::query::QueryName;
+
+use measureme::{StringId, TimestampKind};
+
+/// MmapSerializatioSink is faster on macOS and Linux
+/// but FileSerializationSink is faster on Windows
+#[cfg(not(windows))]
+type Profiler = measureme::Profiler<measureme::MmapSerializationSink>;
+#[cfg(windows)]
+type Profiler = measureme::Profiler<measureme::FileSerializationSink>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub enum ProfileCategory {
@@ -17,459 +29,217 @@ pub enum ProfileCategory {
     Other,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProfilerEvent {
-    QueryStart { query_name: &'static str, category: ProfileCategory, time: Instant },
-    QueryEnd { query_name: &'static str, category: ProfileCategory, time: Instant },
-    GenericActivityStart { category: ProfileCategory, time: Instant },
-    GenericActivityEnd { category: ProfileCategory, time: Instant },
-    QueryCacheHit { query_name: &'static str, category: ProfileCategory },
-    QueryCount { query_name: &'static str, category: ProfileCategory, count: usize },
-    IncrementalLoadResultStart { query_name: &'static str, time: Instant },
-    IncrementalLoadResultEnd { query_name: &'static str, time: Instant },
-    QueryBlockedStart { query_name: &'static str, category: ProfileCategory, time: Instant },
-    QueryBlockedEnd { query_name: &'static str, category: ProfileCategory, time: Instant },
+bitflags! {
+    struct EventFilter: u32 {
+        const GENERIC_ACTIVITIES = 1 << 0;
+        const QUERY_PROVIDERS    = 1 << 1;
+        const QUERY_CACHE_HITS   = 1 << 2;
+        const QUERY_BLOCKED      = 1 << 3;
+        const INCR_CACHE_LOADS   = 1 << 4;
+
+        const DEFAULT = Self::GENERIC_ACTIVITIES.bits |
+                        Self::QUERY_PROVIDERS.bits |
+                        Self::QUERY_BLOCKED.bits |
+                        Self::INCR_CACHE_LOADS.bits;
+
+        // empty() and none() aren't const-fns unfortunately
+        const NONE = 0;
+        const ALL  = !Self::NONE.bits;
+    }
 }
 
-impl ProfilerEvent {
-    fn is_start_event(&self) -> bool {
-        use self::ProfilerEvent::*;
+const EVENT_FILTERS_BY_NAME: &[(&str, EventFilter)] = &[
+    ("none", EventFilter::NONE),
+    ("all", EventFilter::ALL),
+    ("generic-activity", EventFilter::GENERIC_ACTIVITIES),
+    ("query-provider", EventFilter::QUERY_PROVIDERS),
+    ("query-cache-hit", EventFilter::QUERY_CACHE_HITS),
+    ("query-blocked" , EventFilter::QUERY_BLOCKED),
+    ("incr-cache-load", EventFilter::INCR_CACHE_LOADS),
+];
 
-        match self {
-            QueryStart { .. } |
-            GenericActivityStart { .. } |
-            IncrementalLoadResultStart { .. } |
-            QueryBlockedStart { .. } => true,
-
-            QueryEnd { .. } |
-            GenericActivityEnd { .. } |
-            QueryCacheHit { .. } |
-            QueryCount { .. } |
-            IncrementalLoadResultEnd { .. } |
-            QueryBlockedEnd { .. } => false,
-        }
-    }
+fn thread_id_to_u64(tid: ThreadId) -> u64 {
+    unsafe { mem::transmute::<ThreadId, u64>(tid) }
 }
 
 pub struct SelfProfiler {
-    events: HashMap<ThreadId, Vec<ProfilerEvent>>,
-}
-
-struct CategoryResultData {
-    query_times: BTreeMap<&'static str, u64>,
-    query_cache_stats: BTreeMap<&'static str, (u64, u64)>, //(hits, total)
-}
-
-impl CategoryResultData {
-    fn new() -> CategoryResultData {
-        CategoryResultData {
-            query_times: BTreeMap::new(),
-            query_cache_stats: BTreeMap::new(),
-        }
-    }
-
-    fn total_time(&self) -> u64 {
-        self.query_times.iter().map(|(_, time)| time).sum()
-    }
-
-    fn total_cache_data(&self) -> (u64, u64) {
-        let (mut hits, mut total) = (0, 0);
-
-        for (_, (h, t)) in &self.query_cache_stats {
-            hits += h;
-            total += t;
-        }
-
-        (hits, total)
-    }
-}
-
-impl Default for CategoryResultData {
-    fn default() -> CategoryResultData {
-        CategoryResultData::new()
-    }
-}
-
-struct CalculatedResults {
-    categories: BTreeMap<ProfileCategory, CategoryResultData>,
-    crate_name: Option<String>,
-    optimization_level: OptLevel,
-    incremental: bool,
-    verbose: bool,
-}
-
-impl CalculatedResults {
-    fn new() -> CalculatedResults {
-        CalculatedResults {
-            categories: BTreeMap::new(),
-            crate_name: None,
-            optimization_level: OptLevel::No,
-            incremental: false,
-            verbose: false,
-        }
-    }
-
-    fn consolidate(mut cr1: CalculatedResults, cr2: CalculatedResults) -> CalculatedResults {
-        for (category, data) in cr2.categories {
-            let cr1_data = cr1.categories.entry(category).or_default();
-
-            for (query, time) in data.query_times {
-                *cr1_data.query_times.entry(query).or_default() += time;
-            }
-
-            for (query, (hits, total)) in data.query_cache_stats {
-                let (h, t) = cr1_data.query_cache_stats.entry(query).or_insert((0, 0));
-                *h += hits;
-                *t += total;
-            }
-        }
-
-        cr1
-    }
-
-    fn total_time(&self) -> u64 {
-        self.categories.iter().map(|(_, data)| data.total_time()).sum()
-    }
-
-    fn with_options(mut self, opts: &Options) -> CalculatedResults {
-        self.crate_name = opts.crate_name.clone();
-        self.optimization_level = opts.optimize;
-        self.incremental = opts.incremental.is_some();
-        self.verbose = opts.debugging_opts.verbose;
-
-        self
-    }
-}
-
-fn time_between_ns(start: Instant, end: Instant) -> u64 {
-    if start < end {
-        let time = end - start;
-        (time.as_secs() * 1_000_000_000) + (time.subsec_nanos() as u64)
-    } else {
-        debug!("time_between_ns: ignorning instance of end < start");
-        0
-    }
-}
-
-fn calculate_percent(numerator: u64, denominator: u64) -> f32 {
-    if denominator > 0 {
-        ((numerator as f32) / (denominator as f32)) * 100.0
-    } else {
-        0.0
-    }
+    profiler: Profiler,
+    event_filter_mask: EventFilter,
+    query_event_kind: StringId,
+    generic_activity_event_kind: StringId,
+    incremental_load_result_event_kind: StringId,
+    query_blocked_event_kind: StringId,
+    query_cache_hit_event_kind: StringId,
 }
 
 impl SelfProfiler {
-    pub fn new() -> SelfProfiler {
-        let mut profiler = SelfProfiler {
-            events: HashMap::new(),
+    pub fn new(
+        output_directory: &Path,
+        crate_name: Option<&str>,
+        event_filters: &Option<Vec<String>>
+    ) -> Result<SelfProfiler, Box<dyn Error>> {
+        fs::create_dir_all(output_directory)?;
+
+        let crate_name = crate_name.unwrap_or("unknown-crate");
+        let filename = format!("{}-{}.rustc_profile", crate_name, process::id());
+        let path = output_directory.join(&filename);
+        let profiler = Profiler::new(&path)?;
+
+        let query_event_kind = profiler.alloc_string("Query");
+        let generic_activity_event_kind = profiler.alloc_string("GenericActivity");
+        let incremental_load_result_event_kind = profiler.alloc_string("IncrementalLoadResult");
+        let query_blocked_event_kind = profiler.alloc_string("QueryBlocked");
+        let query_cache_hit_event_kind = profiler.alloc_string("QueryCacheHit");
+
+        let mut event_filter_mask = EventFilter::empty();
+
+        if let Some(ref event_filters) = *event_filters {
+            let mut unknown_events = vec![];
+            for item in event_filters {
+                if let Some(&(_, mask)) = EVENT_FILTERS_BY_NAME.iter()
+                                                               .find(|&(name, _)| name == item) {
+                    event_filter_mask |= mask;
+                } else {
+                    unknown_events.push(item.clone());
+                }
+            }
+
+            // Warn about any unknown event names
+            if unknown_events.len() > 0 {
+                unknown_events.sort();
+                unknown_events.dedup();
+
+                warn!("Unknown self-profiler events specified: {}. Available options are: {}.",
+                    unknown_events.join(", "),
+                    EVENT_FILTERS_BY_NAME.iter()
+                                         .map(|&(name, _)| name.to_string())
+                                         .collect::<Vec<_>>()
+                                         .join(", "));
+            }
+        } else {
+            event_filter_mask = EventFilter::DEFAULT;
+        }
+
+        Ok(SelfProfiler {
+            profiler,
+            event_filter_mask,
+            query_event_kind,
+            generic_activity_event_kind,
+            incremental_load_result_event_kind,
+            query_blocked_event_kind,
+            query_cache_hit_event_kind,
+        })
+    }
+
+    fn get_query_name_string_id(query_name: QueryName) -> StringId {
+        let discriminant = unsafe {
+            mem::transmute::<Discriminant<QueryName>, u64>(mem::discriminant(&query_name))
         };
 
-        profiler.start_activity(ProfileCategory::Other);
+        StringId::reserved(discriminant as u32)
+    }
 
-        profiler
+    pub fn register_query_name(&self, query_name: QueryName) {
+        let id = SelfProfiler::get_query_name_string_id(query_name);
+        self.profiler.alloc_string_with_reserved_id(id, query_name.as_str());
     }
 
     #[inline]
-    pub fn start_activity(&mut self, category: ProfileCategory) {
-        self.record(ProfilerEvent::GenericActivityStart {
-            category,
-            time: Instant::now(),
-        })
-    }
-
-    #[inline]
-    pub fn end_activity(&mut self, category: ProfileCategory) {
-        self.record(ProfilerEvent::GenericActivityEnd {
-            category,
-            time: Instant::now(),
-        })
-    }
-
-    #[inline]
-    pub fn record_computed_queries(
-        &mut self,
-        query_name: &'static str,
-        category: ProfileCategory,
-        count: usize)
-        {
-        self.record(ProfilerEvent::QueryCount {
-            query_name,
-            category,
-            count,
-        })
-    }
-
-    #[inline]
-    pub fn record_query_hit(&mut self, query_name: &'static str, category: ProfileCategory) {
-        self.record(ProfilerEvent::QueryCacheHit {
-            query_name,
-            category,
-        })
-    }
-
-    #[inline]
-    pub fn start_query(&mut self, query_name: &'static str, category: ProfileCategory) {
-        self.record(ProfilerEvent::QueryStart {
-            query_name,
-            category,
-            time: Instant::now(),
-        });
-    }
-
-    #[inline]
-    pub fn end_query(&mut self, query_name: &'static str, category: ProfileCategory) {
-        self.record(ProfilerEvent::QueryEnd {
-            query_name,
-            category,
-            time: Instant::now(),
-        })
-    }
-
-    #[inline]
-    pub fn incremental_load_result_start(&mut self, query_name: &'static str) {
-        self.record(ProfilerEvent::IncrementalLoadResultStart {
-            query_name,
-            time: Instant::now(),
-        })
-    }
-
-    #[inline]
-    pub fn incremental_load_result_end(&mut self, query_name: &'static str) {
-        self.record(ProfilerEvent::IncrementalLoadResultEnd {
-            query_name,
-            time: Instant::now(),
-        })
-    }
-
-    #[inline]
-    pub fn query_blocked_start(&mut self, query_name: &'static str, category: ProfileCategory) {
-        self.record(ProfilerEvent::QueryBlockedStart {
-            query_name,
-            category,
-            time: Instant::now(),
-        })
-    }
-
-    #[inline]
-    pub fn query_blocked_end(&mut self, query_name: &'static str, category: ProfileCategory) {
-        self.record(ProfilerEvent::QueryBlockedEnd {
-            query_name,
-            category,
-            time: Instant::now(),
-        })
-    }
-
-    #[inline]
-    fn record(&mut self, event: ProfilerEvent) {
-        let thread_id = std::thread::current().id();
-        let events = self.events.entry(thread_id).or_default();
-
-        events.push(event);
-    }
-
-    fn calculate_thread_results(events: &Vec<ProfilerEvent>) -> CalculatedResults {
-        use self::ProfilerEvent::*;
-
-        assert!(
-            events.last().map(|e| !e.is_start_event()).unwrap_or(true),
-            "there was an event running when calculate_reslts() was called"
-        );
-
-        let mut results = CalculatedResults::new();
-
-        //(event, child time to subtract)
-        let mut query_stack = Vec::new();
-
-        for event in events {
-            match event {
-                QueryStart { .. } | GenericActivityStart { .. } => {
-                    query_stack.push((event, 0));
-                },
-                QueryEnd { query_name, category, time: end_time } => {
-                    let previous_query = query_stack.pop();
-                    if let Some((QueryStart {
-                                    query_name: p_query_name,
-                                    time: start_time,
-                                    category: _ }, child_time_to_subtract)) = previous_query {
-                        assert_eq!(
-                            p_query_name,
-                            query_name,
-                            "Saw a query end but the previous query wasn't the corresponding start"
-                        );
-
-                        let time_ns = time_between_ns(*start_time, *end_time);
-                        let self_time_ns = time_ns - child_time_to_subtract;
-                        let result_data = results.categories.entry(*category).or_default();
-
-                        *result_data.query_times.entry(query_name).or_default() += self_time_ns;
-
-                        if let Some((_, child_time_to_subtract)) = query_stack.last_mut() {
-                            *child_time_to_subtract += time_ns;
-                        }
-                    } else {
-                        bug!("Saw a query end but the previous event wasn't a query start");
-                    }
-                }
-                GenericActivityEnd { category, time: end_time } => {
-                    let previous_event = query_stack.pop();
-                    if let Some((GenericActivityStart {
-                                    category: previous_category,
-                                    time: start_time }, child_time_to_subtract)) = previous_event {
-                        assert_eq!(
-                            previous_category,
-                            category,
-                            "Saw an end but the previous event wasn't the corresponding start"
-                        );
-
-                        let time_ns = time_between_ns(*start_time, *end_time);
-                        let self_time_ns = time_ns - child_time_to_subtract;
-                        let result_data = results.categories.entry(*category).or_default();
-
-                        *result_data.query_times
-                            .entry("{time spent not running queries}")
-                            .or_default() += self_time_ns;
-
-                        if let Some((_, child_time_to_subtract)) = query_stack.last_mut() {
-                            *child_time_to_subtract += time_ns;
-                        }
-                    } else {
-                        bug!("Saw an activity end but the previous event wasn't an activity start");
-                    }
-                },
-                QueryCacheHit { category, query_name } => {
-                    let result_data = results.categories.entry(*category).or_default();
-
-                    let (hits, total) =
-                        result_data.query_cache_stats.entry(query_name).or_insert((0, 0));
-                    *hits += 1;
-                    *total += 1;
-                },
-                QueryCount { category, query_name, count } => {
-                    let result_data = results.categories.entry(*category).or_default();
-
-                    let (_, totals) =
-                        result_data.query_cache_stats.entry(query_name).or_insert((0, 0));
-                    *totals += *count as u64;
-                },
-                //we don't summarize incremental load result events in the simple output mode
-                IncrementalLoadResultStart { .. } | IncrementalLoadResultEnd { .. } => { },
-                //we don't summarize parallel query blocking in the simple output mode
-                QueryBlockedStart { .. } | QueryBlockedEnd { .. } => { },
-            }
+    pub fn start_activity(
+        &self,
+        label: impl Into<Cow<'static, str>>,
+    ) {
+        if self.event_filter_mask.contains(EventFilter::GENERIC_ACTIVITIES) {
+            self.record(&label.into(), self.generic_activity_event_kind, TimestampKind::Start);
         }
-
-        //normalize the times to ms
-        for (_, data) in &mut results.categories {
-            for (_, time) in &mut data.query_times {
-                *time = *time / 1_000_000;
-            }
-        }
-
-        results
     }
 
-    fn get_results(&self, opts: &Options) -> CalculatedResults {
-        self.events
-            .iter()
-            .map(|(_, r)| SelfProfiler::calculate_thread_results(r))
-            .fold(CalculatedResults::new(), CalculatedResults::consolidate)
-            .with_options(opts)
+    #[inline]
+    pub fn end_activity(
+        &self,
+        label: impl Into<Cow<'static, str>>,
+    ) {
+        if self.event_filter_mask.contains(EventFilter::GENERIC_ACTIVITIES) {
+            self.record(&label.into(), self.generic_activity_event_kind, TimestampKind::End);
+        }
     }
 
-    pub fn print_results(&mut self, opts: &Options) {
-        self.end_activity(ProfileCategory::Other);
-
-        let results = self.get_results(opts);
-
-        let total_time = results.total_time() as f32;
-
-        let out = io::stderr();
-        let mut lock = out.lock();
-
-        let crate_name = results.crate_name.map(|n| format!(" for {}", n)).unwrap_or_default();
-
-        writeln!(lock, "Self profiling results{}:", crate_name).unwrap();
-        writeln!(lock).unwrap();
-
-        writeln!(lock, "| Phase                                     | Time (ms)      \
-                        | Time (%) | Queries        | Hits (%)")
-            .unwrap();
-        writeln!(lock, "| ----------------------------------------- | -------------- \
-                        | -------- | -------------- | --------")
-            .unwrap();
-
-        let mut categories: Vec<_> = results.categories.iter().collect();
-        categories.sort_by_cached_key(|(_, d)| d.total_time());
-
-        for (category, data) in categories.iter().rev() {
-            let (category_hits, category_total) = data.total_cache_data();
-            let category_hit_percent = calculate_percent(category_hits, category_total);
-
-            writeln!(
-                lock,
-                "| {0: <41} | {1: >14} | {2: >8.2} | {3: >14} | {4: >8}",
-                format!("{:?}", category),
-                data.total_time(),
-                ((data.total_time() as f32) / total_time) * 100.0,
-                category_total,
-                format!("{:.2}", category_hit_percent),
-            ).unwrap();
-
-            //in verbose mode, show individual query data
-            if results.verbose {
-                //don't show queries that took less than 1ms
-                let mut times: Vec<_> = data.query_times.iter().filter(|(_, t)| **t > 0).collect();
-                times.sort_by(|(_, time1), (_, time2)| time2.cmp(time1));
-
-                for (query, time) in times {
-                    let (hits, total) = data.query_cache_stats.get(query).unwrap_or(&(0, 0));
-                    let hit_percent = calculate_percent(*hits, *total);
-
-                    writeln!(
-                        lock,
-                        "| - {0: <39} | {1: >14} | {2: >8.2} | {3: >14} | {4: >8}",
-                        query,
-                        time,
-                        ((*time as f32) / total_time) * 100.0,
-                        total,
-                        format!("{:.2}", hit_percent),
-                    ).unwrap();
-                }
-            }
+    #[inline]
+    pub fn record_query_hit(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_CACHE_HITS) {
+            self.record_query(query_name, self.query_cache_hit_event_kind, TimestampKind::Instant);
         }
-
-        writeln!(lock).unwrap();
-        writeln!(lock, "Optimization level: {:?}", opts.optimize).unwrap();
-        writeln!(lock, "Incremental: {}", if results.incremental { "on" } else { "off" }).unwrap();
     }
 
-    pub fn save_results(&self, opts: &Options) {
-        let results = self.get_results(opts);
-
-        let compilation_options =
-            format!("{{ \"optimization_level\": \"{:?}\", \"incremental\": {} }}",
-                    results.optimization_level,
-                    if results.incremental { "true" } else { "false" });
-
-        let mut category_data = String::new();
-
-        for (category, data) in &results.categories {
-            let (hits, total) = data.total_cache_data();
-            let hit_percent = calculate_percent(hits, total);
-
-            category_data.push_str(&format!("{{ \"category\": \"{:?}\", \"time_ms\": {}, \
-                                                \"query_count\": {}, \"query_hits\": {} }}",
-                                            category,
-                                            data.total_time(),
-                                            total,
-                                            format!("{:.2}", hit_percent)));
+    #[inline]
+    pub fn start_query(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_PROVIDERS) {
+            self.record_query(query_name, self.query_event_kind, TimestampKind::Start);
         }
+    }
 
-        let json = format!("{{ \"category_data\": {}, \"compilation_options\": {} }}",
-                        category_data,
-                        compilation_options);
+    #[inline]
+    pub fn end_query(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_PROVIDERS) {
+            self.record_query(query_name, self.query_event_kind, TimestampKind::End);
+        }
+    }
 
-        fs::write("self_profiler_results.json", json).unwrap();
+    #[inline]
+    pub fn incremental_load_result_start(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::INCR_CACHE_LOADS) {
+            self.record_query(
+                query_name,
+                self.incremental_load_result_event_kind,
+                TimestampKind::Start
+            );
+        }
+    }
+
+    #[inline]
+    pub fn incremental_load_result_end(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::INCR_CACHE_LOADS) {
+            self.record_query(
+                query_name,
+                self.incremental_load_result_event_kind,
+                TimestampKind::End
+            );
+        }
+    }
+
+    #[inline]
+    pub fn query_blocked_start(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_BLOCKED) {
+            self.record_query(query_name, self.query_blocked_event_kind, TimestampKind::Start);
+        }
+    }
+
+    #[inline]
+    pub fn query_blocked_end(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_BLOCKED) {
+            self.record_query(query_name, self.query_blocked_event_kind, TimestampKind::End);
+        }
+    }
+
+    #[inline]
+    fn record(&self, event_id: &str, event_kind: StringId, timestamp_kind: TimestampKind) {
+        let thread_id = thread_id_to_u64(std::thread::current().id());
+
+        let event_id = self.profiler.alloc_string(event_id);
+        self.profiler.record_event(event_kind, event_id, thread_id, timestamp_kind);
+    }
+
+    #[inline]
+    fn record_query(
+        &self,
+        query_name: QueryName,
+        event_kind: StringId,
+        timestamp_kind: TimestampKind,
+    ) {
+        let dep_node_name = SelfProfiler::get_query_name_string_id(query_name);
+
+        let thread_id = thread_id_to_u64(std::thread::current().id());
+
+        self.profiler.record_event(event_kind, dep_node_name, thread_id, timestamp_kind);
     }
 }

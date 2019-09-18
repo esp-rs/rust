@@ -1,20 +1,18 @@
-error[E0594]: cannot assign to field `x.a` of immutable binding
+error[E0381]: assign to part of possibly uninitialized variable: `x`
   --> $DIR/reassignment_immutable_fields_overlapping.rs:12:5
    |
-LL |     let x: Foo;
-   |         - help: make this binding mutable: `mut x`
-LL |     x.a = 1;  //~ ERROR
-   |     ^^^^^^^ cannot mutably borrow field of immutable binding
+LL |     x.a = 1;
+   |     ^^^^^^^ use of possibly uninitialized `x`
 
-error[E0594]: cannot assign to field `x.b` of immutable binding
+error[E0594]: cannot assign to `x.b`, as `x` is not declared as mutable
   --> $DIR/reassignment_immutable_fields_overlapping.rs:13:5
    |
 LL |     let x: Foo;
-   |         - help: make this binding mutable: `mut x`
-LL |     x.a = 1;  //~ ERROR
-LL |     x.b = 22; //~ ERROR
-   |     ^^^^^^^^ cannot mutably borrow field of immutable binding
+   |         - help: consider changing this to be mutable: `mut x`
+LL |     x.a = 1;
+LL |     x.b = 22;
+   |     ^^^^^^^^ cannot assign
 
 error: aborting due to 2 previous errors
 
-For more information about this error, try `rustc --explain E0594`.
+For more information about this error, try `rustc --explain E0381`.

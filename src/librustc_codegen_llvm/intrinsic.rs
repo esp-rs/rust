@@ -20,7 +20,6 @@ use rustc::ty::layout::{self, LayoutOf, HasTyCtxt, Primitive};
 use rustc_codegen_ssa::common::{IntPredicate, TypeKind};
 use rustc::hir;
 use syntax::ast::{self, FloatTy};
-use syntax::symbol::Symbol;
 
 use rustc_codegen_ssa::traits::*;
 
@@ -56,6 +55,10 @@ fn get_simple_intrinsic(cx: &CodegenCx<'ll, '_>, name: &str) -> Option<&'ll Valu
         "fmaf64" => "llvm.fma.f64",
         "fabsf32" => "llvm.fabs.f32",
         "fabsf64" => "llvm.fabs.f64",
+        "minnumf32" => "llvm.minnum.f32",
+        "minnumf64" => "llvm.minnum.f64",
+        "maxnumf32" => "llvm.maxnum.f32",
+        "maxnumf64" => "llvm.maxnum.f64",
         "copysignf32" => "llvm.copysign.f32",
         "copysignf64" => "llvm.copysign.f64",
         "floorf32" => "llvm.floor.f32",
@@ -143,15 +146,8 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                 self.va_end(args[0].immediate())
             }
             "va_copy" => {
-                let va_list = match (tcx.lang_items().va_list(), &result.layout.ty.sty) {
-                    (Some(did), ty::Adt(def, _)) if def.did == did => args[0].immediate(),
-                    (Some(_), _)  => self.load(args[0].immediate(),
-                                               tcx.data_layout.pointer_align.abi),
-                    (None, _) => bug!("`va_list` language item must be defined")
-                };
                 let intrinsic = self.cx().get_intrinsic(&("llvm.va_copy"));
-                self.call(intrinsic, &[llresult, va_list], None);
-                return;
+                self.call(intrinsic, &[args[0].immediate(), args[1].immediate()], None)
             }
             "va_arg" => {
                 match fn_ty.ret.layout.abi {
@@ -213,8 +209,8 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
             }
             "type_name" => {
                 let tp_ty = substs.type_at(0);
-                let ty_name = Symbol::intern(&tp_ty.to_string()).as_str();
-                self.const_str_slice(ty_name)
+                let ty_name = self.tcx.type_name(tp_ty);
+                OperandRef::from_const(self, ty_name).immediate_or_packed_pair(self)
             }
             "type_id" => {
                 self.const_u64(self.tcx.type_id_hash(substs.type_at(0)))
@@ -335,7 +331,8 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
             "ctlz" | "ctlz_nonzero" | "cttz" | "cttz_nonzero" | "ctpop" | "bswap" |
             "bitreverse" | "add_with_overflow" | "sub_with_overflow" |
             "mul_with_overflow" | "overflowing_add" | "overflowing_sub" | "overflowing_mul" |
-            "unchecked_div" | "unchecked_rem" | "unchecked_shl" | "unchecked_shr" | "exact_div" |
+            "unchecked_div" | "unchecked_rem" | "unchecked_shl" | "unchecked_shr" |
+            "unchecked_add" | "unchecked_sub" | "unchecked_mul" | "exact_div" |
             "rotate_left" | "rotate_right" | "saturating_add" | "saturating_sub" => {
                 let ty = arg_tys[0];
                 match int_type_width_signed(ty, self) {
@@ -431,6 +428,27 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                                 } else {
                                     self.lshr(args[0].immediate(), args[1].immediate())
                                 },
+                            "unchecked_add" => {
+                                if signed {
+                                    self.unchecked_sadd(args[0].immediate(), args[1].immediate())
+                                } else {
+                                    self.unchecked_uadd(args[0].immediate(), args[1].immediate())
+                                }
+                            },
+                            "unchecked_sub" => {
+                                if signed {
+                                    self.unchecked_ssub(args[0].immediate(), args[1].immediate())
+                                } else {
+                                    self.unchecked_usub(args[0].immediate(), args[1].immediate())
+                                }
+                            },
+                            "unchecked_mul" => {
+                                if signed {
+                                    self.unchecked_smul(args[0].immediate(), args[1].immediate())
+                                } else {
+                                    self.unchecked_umul(args[0].immediate(), args[1].immediate())
+                                }
+                            },
                             "rotate_left" | "rotate_right" => {
                                 let is_left = name == "rotate_left";
                                 let val = args[0].immediate();
@@ -513,8 +531,7 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
 
             },
             "fadd_fast" | "fsub_fast" | "fmul_fast" | "fdiv_fast" | "frem_fast" => {
-                let sty = &arg_tys[0].sty;
-                match float_type_width(sty) {
+                match float_type_width(arg_tys[0]) {
                     Some(_width) =>
                         match name {
                             "fadd_fast" => self.fadd_fast(args[0].immediate(), args[1].immediate()),
@@ -528,7 +545,7 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                         span_invalid_monomorphization_error(
                             tcx.sess, span,
                             &format!("invalid monomorphization of `{}` intrinsic: \
-                                      expected basic float type, found `{}`", name, sty));
+                                      expected basic float type, found `{}`", name, arg_tys[0]));
                         return;
                     }
                 }
@@ -719,37 +736,12 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
         self.call(expect, &[cond, self.const_bool(expected)], None)
     }
 
-    fn va_start(&mut self, list: &'ll Value) -> &'ll Value {
-        let target = &self.cx.tcx.sess.target.target;
-        let arch = &target.arch;
-        // A pointer to the architecture specific structure is passed to this
-        // function. For pointer variants (i686, RISC-V, Windows, etc), we
-        // should do do nothing, as the address to the pointer is needed. For
-        // architectures with a architecture specific structure (`Aarch64`,
-        // `X86_64`, etc), this function should load the structure from the
-        // address provided.
-        let va_list = match &**arch {
-            _ if target.options.is_like_windows => list,
-            "aarch64" if target.target_os == "ios" => list,
-            "aarch64" | "x86_64" | "powerpc" =>
-                self.load(list, self.tcx().data_layout.pointer_align.abi),
-            _ => list,
-        };
+    fn va_start(&mut self, va_list: &'ll Value) -> &'ll Value {
         let intrinsic = self.cx().get_intrinsic("llvm.va_start");
         self.call(intrinsic, &[va_list], None)
     }
 
-    fn va_end(&mut self, list: &'ll Value) -> &'ll Value {
-        let target = &self.cx.tcx.sess.target.target;
-        let arch = &target.arch;
-        // See the comment in `va_start` for the purpose of the following.
-        let va_list = match &**arch {
-            _ if target.options.is_like_windows => list,
-            "aarch64" if target.target_os == "ios" => list,
-            "aarch64" | "x86_64" | "powerpc" =>
-                self.load(list, self.tcx().data_layout.pointer_align.abi),
-            _ => list,
-        };
+    fn va_end(&mut self, va_list: &'ll Value) -> &'ll Value {
         let intrinsic = self.cx().get_intrinsic("llvm.va_end");
         self.call(intrinsic, &[va_list], None)
     }
@@ -917,8 +909,8 @@ fn codegen_msvc_try(
     bx.store(ret, dest, i32_align);
 }
 
-// Definition of the standard "try" function for Rust using the GNU-like model
-// of exceptions (e.g., the normal semantics of LLVM's landingpad and invoke
+// Definition of the standard `try` function for Rust using the GNU-like model
+// of exceptions (e.g., the normal semantics of LLVM's `landingpad` and `invoke`
 // instructions).
 //
 // This codegen is a little surprising because we always call a shim
@@ -1393,7 +1385,7 @@ fn generic_simd_intrinsic(
     // FIXME: use:
     //  https://github.com/llvm-mirror/llvm/blob/master/include/llvm/IR/Function.h#L182
     //  https://github.com/llvm-mirror/llvm/blob/master/include/llvm/IR/Intrinsics.h#L81
-    fn llvm_vector_str(elem_ty: ty::Ty<'_>, vec_len: usize, no_pointers: usize) -> String {
+    fn llvm_vector_str(elem_ty: Ty<'_>, vec_len: usize, no_pointers: usize) -> String {
         let p0s: String = "p0".repeat(no_pointers);
         match elem_ty.sty {
             ty::Int(v) => format!("v{}{}i{}", vec_len, p0s, v.bit_width().unwrap()),
@@ -1403,7 +1395,7 @@ fn generic_simd_intrinsic(
         }
     }
 
-    fn llvm_vector_ty(cx: &CodegenCx<'ll, '_>, elem_ty: ty::Ty<'_>, vec_len: usize,
+    fn llvm_vector_ty(cx: &CodegenCx<'ll, '_>, elem_ty: Ty<'_>, vec_len: usize,
                       mut no_pointers: usize) -> &'ll Type {
         // FIXME: use cx.layout_of(ty).llvm_type() ?
         let mut elem_ty = match elem_ty.sty {
@@ -1449,7 +1441,7 @@ fn generic_simd_intrinsic(
                  in_ty, ret_ty);
 
         // This counts how many pointers
-        fn ptr_count(t: ty::Ty<'_>) -> usize {
+        fn ptr_count(t: Ty<'_>) -> usize {
             match t.sty {
                 ty::RawPtr(p) => 1 + ptr_count(p.ty),
                 _ => 0,
@@ -1457,7 +1449,7 @@ fn generic_simd_intrinsic(
         }
 
         // Non-ptr type
-        fn non_ptr(t: ty::Ty<'_>) -> ty::Ty<'_> {
+        fn non_ptr(t: Ty<'_>) -> Ty<'_> {
             match t.sty {
                 ty::RawPtr(p) => non_ptr(p.ty),
                 _ => t,
@@ -1473,8 +1465,8 @@ fn generic_simd_intrinsic(
                 require!(false, "expected element type `{}` of second argument `{}` \
                                  to be a pointer to the element type `{}` of the first \
                                  argument `{}`, found `{}` != `*_ {}`",
-                         arg_tys[1].simd_type(tcx).sty, arg_tys[1], in_elem, in_ty,
-                         arg_tys[1].simd_type(tcx).sty, in_elem);
+                         arg_tys[1].simd_type(tcx), arg_tys[1], in_elem, in_ty,
+                         arg_tys[1].simd_type(tcx), in_elem);
                 unreachable!();
             }
         };
@@ -1488,7 +1480,7 @@ fn generic_simd_intrinsic(
             _ => {
                 require!(false, "expected element type `{}` of third argument `{}` \
                                  to be a signed integer type",
-                         arg_tys[2].simd_type(tcx).sty, arg_tys[2]);
+                         arg_tys[2].simd_type(tcx), arg_tys[2]);
             }
         }
 
@@ -1548,7 +1540,7 @@ fn generic_simd_intrinsic(
                  arg_tys[2].simd_size(tcx));
 
         // This counts how many pointers
-        fn ptr_count(t: ty::Ty<'_>) -> usize {
+        fn ptr_count(t: Ty<'_>) -> usize {
             match t.sty {
                 ty::RawPtr(p) => 1 + ptr_count(p.ty),
                 _ => 0,
@@ -1556,7 +1548,7 @@ fn generic_simd_intrinsic(
         }
 
         // Non-ptr type
-        fn non_ptr(t: ty::Ty<'_>) -> ty::Ty<'_> {
+        fn non_ptr(t: Ty<'_>) -> Ty<'_> {
             match t.sty {
                 ty::RawPtr(p) => non_ptr(p.ty),
                 _ => t,
@@ -1573,8 +1565,8 @@ fn generic_simd_intrinsic(
                 require!(false, "expected element type `{}` of second argument `{}` \
                                  to be a pointer to the element type `{}` of the first \
                                  argument `{}`, found `{}` != `*mut {}`",
-                         arg_tys[1].simd_type(tcx).sty, arg_tys[1], in_elem, in_ty,
-                         arg_tys[1].simd_type(tcx).sty, in_elem);
+                         arg_tys[1].simd_type(tcx), arg_tys[1], in_elem, in_ty,
+                         arg_tys[1].simd_type(tcx), in_elem);
                 unreachable!();
             }
         };
@@ -1588,7 +1580,7 @@ fn generic_simd_intrinsic(
             _ => {
                 require!(false, "expected element type `{}` of third argument `{}` \
                                  to be a signed integer type",
-                         arg_tys[2].simd_type(tcx).sty, arg_tys[2]);
+                         arg_tys[2].simd_type(tcx), arg_tys[2]);
             }
         }
 
@@ -1904,7 +1896,7 @@ unsupported {} from `{}` with element `{}` of size `{}` to `{}`"#,
                 return_error!(
                     "expected element type `{}` of vector type `{}` \
                      to be a signed or unsigned integer type",
-                    arg_tys[0].simd_type(tcx).sty, arg_tys[0]
+                    arg_tys[0].simd_type(tcx), arg_tys[0]
                 );
             }
         };
@@ -1954,10 +1946,10 @@ fn int_type_width_signed(ty: Ty<'_>, cx: &CodegenCx<'_, '_>) -> Option<(u64, boo
     }
 }
 
-// Returns the width of a float TypeVariant
+// Returns the width of a float Ty
 // Returns None if the type is not a float
-fn float_type_width<'tcx>(sty: &ty::TyKind<'tcx>) -> Option<u64> {
-    match *sty {
+fn float_type_width(ty: Ty<'_>) -> Option<u64> {
+    match ty.sty {
         ty::Float(t) => Some(t.bit_width() as u64),
         _ => None,
     }

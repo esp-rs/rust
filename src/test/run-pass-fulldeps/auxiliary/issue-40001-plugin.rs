@@ -23,23 +23,16 @@ use syntax::{ast, source_map};
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut Registry) {
     reg.register_late_lint_pass(box MissingWhitelistedAttrPass);
-    reg.register_attribute("whitelisted_attr".to_string(), Whitelisted);
+    reg.register_attribute(Symbol::intern("whitelisted_attr"), Whitelisted);
 }
 
-declare_lint!(MISSING_WHITELISTED_ATTR, Deny,
-              "Checks for missing `whitelisted_attr` attribute");
-
-struct MissingWhitelistedAttrPass;
-
-impl LintPass for MissingWhitelistedAttrPass {
-    fn name(&self) -> &'static str {
-        "MissingWhitelistedAttrPass"
-    }
-
-    fn get_lints(&self) -> LintArray {
-        lint_array!(MISSING_WHITELISTED_ATTR)
-    }
+declare_lint! {
+    MISSING_WHITELISTED_ATTR,
+    Deny,
+    "Checks for missing `whitelisted_attr` attribute"
 }
+
+declare_lint_pass!(MissingWhitelistedAttrPass => [MISSING_WHITELISTED_ATTR]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingWhitelistedAttrPass {
     fn check_fn(&mut self,
@@ -50,12 +43,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingWhitelistedAttrPass {
                 span: source_map::Span,
                 id: hir::HirId) {
 
-        let item = match cx.tcx.hir().get_by_hir_id(id) {
+        let item = match cx.tcx.hir().get(id) {
             Node::Item(item) => item,
-            _ => cx.tcx.hir().expect_item_by_hir_id(cx.tcx.hir().get_parent_item(id)),
+            _ => cx.tcx.hir().expect_item(cx.tcx.hir().get_parent_item(id)),
         };
 
-        if !attr::contains_name(&item.attrs, "whitelisted_attr") {
+        if !attr::contains_name(&item.attrs, Symbol::intern("whitelisted_attr")) {
             cx.span_lint(MISSING_WHITELISTED_ATTR, span,
                          "Missing 'whitelisted_attr' attribute");
         }

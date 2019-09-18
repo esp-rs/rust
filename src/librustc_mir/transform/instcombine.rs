@@ -1,8 +1,9 @@
 //! Performs various peephole optimizations.
 
-use rustc::mir::{Constant, Location, Place, PlaceBase, Mir, Operand, ProjectionElem, Rvalue, Local};
+use rustc::mir::{Constant, Location, Place, PlaceBase, Body, Operand, ProjectionElem, Rvalue,
+    Local};
 use rustc::mir::visit::{MutVisitor, Visitor};
-use rustc::ty::{TyCtxt, TyKind};
+use rustc::ty::{self, TyCtxt};
 use rustc::util::nodemap::{FxHashMap, FxHashSet};
 use rustc_data_structures::indexed_vec::Idx;
 use std::mem;
@@ -11,10 +12,7 @@ use crate::transform::{MirPass, MirSource};
 pub struct InstCombine;
 
 impl MirPass for InstCombine {
-    fn run_pass<'a, 'tcx>(&self,
-                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
+    fn run_pass<'tcx>(&self, tcx: TyCtxt<'tcx>, _: MirSource<'tcx>, body: &mut Body<'tcx>) {
         // We only run when optimizing MIR (at any level).
         if tcx.sess.opts.debugging_opts.mir_opt_level == 0 {
             return
@@ -24,13 +22,13 @@ impl MirPass for InstCombine {
         // read-only so that we can do global analyses on the MIR in the process (e.g.
         // `Place::ty()`).
         let optimizations = {
-            let mut optimization_finder = OptimizationFinder::new(mir, tcx);
-            optimization_finder.visit_mir(mir);
+            let mut optimization_finder = OptimizationFinder::new(body, tcx);
+            optimization_finder.visit_body(body);
             optimization_finder.optimizations
         };
 
         // Then carry out those optimizations.
-        MutVisitor::visit_mir(&mut InstCombineVisitor { optimizations }, mir);
+        MutVisitor::visit_body(&mut InstCombineVisitor { optimizations }, body);
     }
 }
 
@@ -62,36 +60,36 @@ impl<'tcx> MutVisitor<'tcx> for InstCombineVisitor<'tcx> {
 }
 
 /// Finds optimization opportunities on the MIR.
-struct OptimizationFinder<'b, 'a, 'tcx:'a+'b> {
-    mir: &'b Mir<'tcx>,
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct OptimizationFinder<'b, 'tcx> {
+    body: &'b Body<'tcx>,
+    tcx: TyCtxt<'tcx>,
     optimizations: OptimizationList<'tcx>,
 }
 
-impl<'b, 'a, 'tcx:'b> OptimizationFinder<'b, 'a, 'tcx> {
-    fn new(mir: &'b Mir<'tcx>, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> OptimizationFinder<'b, 'a, 'tcx> {
+impl OptimizationFinder<'b, 'tcx> {
+    fn new(body: &'b Body<'tcx>, tcx: TyCtxt<'tcx>) -> OptimizationFinder<'b, 'tcx> {
         OptimizationFinder {
-            mir,
+            body,
             tcx,
             optimizations: OptimizationList::default(),
         }
     }
 }
 
-impl<'b, 'a, 'tcx> Visitor<'tcx> for OptimizationFinder<'b, 'a, 'tcx> {
+impl Visitor<'tcx> for OptimizationFinder<'b, 'tcx> {
     fn visit_rvalue(&mut self, rvalue: &Rvalue<'tcx>, location: Location) {
         if let Rvalue::Ref(_, _, Place::Projection(ref projection)) = *rvalue {
             if let ProjectionElem::Deref = projection.elem {
-                if projection.base.ty(self.mir, self.tcx).to_ty(self.tcx).is_region_ptr() {
+                if projection.base.ty(self.body, self.tcx).ty.is_region_ptr() {
                     self.optimizations.and_stars.insert(location);
                 }
             }
         }
 
         if let Rvalue::Len(ref place) = *rvalue {
-            let place_ty = place.ty(&self.mir.local_decls, self.tcx).to_ty(self.tcx);
-            if let TyKind::Array(_, len) = place_ty.sty {
-                let span = self.mir.source_info(location).span;
+            let place_ty = place.ty(&self.body.local_decls, self.tcx).ty;
+            if let ty::Array(_, len) = place_ty.sty {
+                let span = self.body.source_info(location).span;
                 let ty = self.tcx.types.usize;
                 let constant = Constant { span, ty, literal: len, user_ty: None };
                 self.optimizations.arrays_lengths.insert(location, constant);

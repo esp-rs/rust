@@ -1,17 +1,19 @@
 use rustc::ty::{self, Ty, TypeAndMut};
 use rustc::ty::layout::{self, TyLayout, Size};
+use rustc::ty::adjustment::{PointerCast};
 use syntax::ast::{FloatTy, IntTy, UintTy};
+use syntax::symbol::sym;
 
 use rustc_apfloat::ieee::{Single, Double};
+use rustc_apfloat::{Float, FloatConvert};
 use rustc::mir::interpret::{
-    Scalar, EvalResult, Pointer, PointerArithmetic, EvalErrorKind, truncate
+    Scalar, InterpResult, Pointer, PointerArithmetic, InterpError,
 };
 use rustc::mir::CastKind;
-use rustc_apfloat::Float;
 
-use super::{EvalContext, Machine, PlaceTy, OpTy, ImmTy, Immediate};
+use super::{InterpretCx, Machine, PlaceTy, OpTy, Immediate};
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
     fn type_is_fat_ptr(&self, ty: Ty<'tcx>) -> bool {
         match ty.sty {
             ty::RawPtr(ty::TypeAndMut { ty, .. }) |
@@ -26,14 +28,14 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         src: OpTy<'tcx, M::PointerTag>,
         kind: CastKind,
         dest: PlaceTy<'tcx, M::PointerTag>,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         use rustc::mir::CastKind::*;
         match kind {
-            Unsize => {
+            Pointer(PointerCast::Unsize) => {
                 self.unsize_into(src, dest)?;
             }
 
-            Misc => {
+            Misc | Pointer(PointerCast::MutToConstPointer) => {
                 let src = self.read_immediate(src)?;
 
                 if self.type_is_fat_ptr(src.layout.ty) {
@@ -53,19 +55,17 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                 } else {
                     match src.layout.variants {
                         layout::Variants::Single { index } => {
-                            if let Some(def) = src.layout.ty.ty_adt_def() {
+                            if let Some(discr) =
+                                src.layout.ty.discriminant_for_variant(*self.tcx, index)
+                            {
                                 // Cast from a univariant enum
                                 assert!(src.layout.is_zst());
-                                let discr_val = def
-                                    .discriminant_for_variant(*self.tcx, index)
-                                    .val;
                                 return self.write_scalar(
-                                    Scalar::from_uint(discr_val, dest.layout.size),
+                                    Scalar::from_uint(discr.val, dest.layout.size),
                                     dest);
                             }
                         }
-                        layout::Variants::Tagged { .. } |
-                        layout::Variants::NicheFilling { .. } => {},
+                        layout::Variants::Multiple { .. } => {},
                     }
 
                     let dest_val = self.cast_scalar(src.to_scalar()?, src.layout, dest.layout)?;
@@ -73,39 +73,38 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                 }
             }
 
-            ReifyFnPointer => {
+            Pointer(PointerCast::ReifyFnPointer) => {
                 // The src operand does not matter, just its type
                 match src.layout.ty.sty {
                     ty::FnDef(def_id, substs) => {
-                        if self.tcx.has_attr(def_id, "rustc_args_required_const") {
-                            bug!("reifying a fn ptr that requires \
-                                    const arguments");
+                        if self.tcx.has_attr(def_id, sym::rustc_args_required_const) {
+                            bug!("reifying a fn ptr that requires const arguments");
                         }
-                        let instance: EvalResult<'tcx, _> = ty::Instance::resolve(
+                        let instance: InterpResult<'tcx, _> = ty::Instance::resolve(
                             *self.tcx,
                             self.param_env,
                             def_id,
                             substs,
-                        ).ok_or_else(|| EvalErrorKind::TooGeneric.into());
-                        let fn_ptr = self.memory.create_fn_alloc(instance?).with_default_tag();
+                        ).ok_or_else(|| InterpError::TooGeneric.into());
+                        let fn_ptr = self.memory.create_fn_alloc(instance?);
                         self.write_scalar(Scalar::Ptr(fn_ptr.into()), dest)?;
                     }
-                    ref other => bug!("reify fn pointer on {:?}", other),
+                    _ => bug!("reify fn pointer on {:?}", src.layout.ty),
                 }
             }
 
-            UnsafeFnPointer => {
+            Pointer(PointerCast::UnsafeFnPointer) => {
                 let src = self.read_immediate(src)?;
                 match dest.layout.ty.sty {
                     ty::FnPtr(_) => {
                         // No change to value
                         self.write_immediate(*src, dest)?;
                     }
-                    ref other => bug!("fn to unsafe fn cast on {:?}", other),
+                    _ => bug!("fn to unsafe fn cast on {:?}", dest.layout.ty),
                 }
             }
 
-            ClosureFnPointer => {
+            Pointer(PointerCast::ClosureFnPointer(_)) => {
                 // The src operand does not matter, just its type
                 match src.layout.ty.sty {
                     ty::Closure(def_id, substs) => {
@@ -116,59 +115,56 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                             substs,
                             ty::ClosureKind::FnOnce,
                         );
-                        let fn_ptr = self.memory.create_fn_alloc(instance).with_default_tag();
+                        let fn_ptr = self.memory.create_fn_alloc(instance);
                         let val = Immediate::Scalar(Scalar::Ptr(fn_ptr.into()).into());
                         self.write_immediate(val, dest)?;
                     }
-                    ref other => bug!("closure fn pointer on {:?}", other),
+                    _ => bug!("closure fn pointer on {:?}", src.layout.ty),
                 }
             }
         }
         Ok(())
     }
 
-    pub(super) fn cast_scalar(
+    fn cast_scalar(
         &self,
         val: Scalar<M::PointerTag>,
         src_layout: TyLayout<'tcx>,
         dest_layout: TyLayout<'tcx>,
-    ) -> EvalResult<'tcx, Scalar<M::PointerTag>> {
+    ) -> InterpResult<'tcx, Scalar<M::PointerTag>> {
         use rustc::ty::TyKind::*;
         trace!("Casting {:?}: {:?} to {:?}", val, src_layout.ty, dest_layout.ty);
 
-        match val {
-            Scalar::Ptr(ptr) => self.cast_from_ptr(ptr, dest_layout.ty),
-            Scalar::Bits { bits, size } => {
-                debug_assert_eq!(size as u64, src_layout.size.bytes());
-                debug_assert_eq!(truncate(bits, Size::from_bytes(size.into())), bits,
-                    "Unexpected value of size {} before casting", size);
-
-                let res = match src_layout.ty.sty {
-                    Float(fty) => self.cast_from_float(bits, fty, dest_layout.ty)?,
-                    _ => self.cast_from_int(bits, src_layout, dest_layout)?,
-                };
-
-                // Sanity check
-                match res {
-                    Scalar::Ptr(_) => bug!("Fabricated a ptr value from an int...?"),
-                    Scalar::Bits { bits, size } => {
-                        debug_assert_eq!(size as u64, dest_layout.size.bytes());
-                        debug_assert_eq!(truncate(bits, Size::from_bytes(size.into())), bits,
-                            "Unexpected value of size {} after casting", size);
-                    }
+        match src_layout.ty.sty {
+            // Floating point
+            Float(FloatTy::F32) => self.cast_from_float(val.to_f32()?, dest_layout.ty),
+            Float(FloatTy::F64) => self.cast_from_float(val.to_f64()?, dest_layout.ty),
+            // Integer(-like), including fn ptr casts and casts from enums that
+            // are represented as integers (this excludes univariant enums, which
+            // are handled in `cast` directly).
+            _ => {
+                assert!(
+                    src_layout.ty.is_bool()       || src_layout.ty.is_char()     ||
+                    src_layout.ty.is_enum()       || src_layout.ty.is_integral() ||
+                    src_layout.ty.is_unsafe_ptr() || src_layout.ty.is_fn_ptr()   ||
+                    src_layout.ty.is_region_ptr(),
+                    "Unexpected cast from type {:?}", src_layout.ty
+                );
+                match val.to_bits_or_ptr(src_layout.size, self) {
+                    Err(ptr) => self.cast_from_ptr(ptr, dest_layout.ty),
+                    Ok(data) => self.cast_from_int(data, src_layout, dest_layout),
                 }
-                // Done
-                Ok(res)
             }
         }
     }
 
     fn cast_from_int(
         &self,
-        v: u128,
+        v: u128, // raw bits
         src_layout: TyLayout<'tcx>,
         dest_layout: TyLayout<'tcx>,
-    ) -> EvalResult<'tcx, Scalar<M::PointerTag>> {
+    ) -> InterpResult<'tcx, Scalar<M::PointerTag>> {
+        // Let's make sure v is sign-extended *if* it has a signed type.
         let signed = src_layout.abi.is_signed();
         let v = if signed {
             self.sign_extend(v, src_layout)
@@ -178,26 +174,22 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         trace!("cast_from_int: {}, {}, {}", v, src_layout.ty, dest_layout.ty);
         use rustc::ty::TyKind::*;
         match dest_layout.ty.sty {
-            Int(_) | Uint(_) => {
+            Int(_) | Uint(_) | RawPtr(_) => {
                 let v = self.truncate(v, dest_layout);
                 Ok(Scalar::from_uint(v, dest_layout.size))
             }
 
-            Float(FloatTy::F32) if signed => Ok(Scalar::from_uint(
-                Single::from_i128(v as i128).value.to_bits(),
-                Size::from_bits(32)
+            Float(FloatTy::F32) if signed => Ok(Scalar::from_f32(
+                Single::from_i128(v as i128).value
             )),
-            Float(FloatTy::F64) if signed => Ok(Scalar::from_uint(
-                Double::from_i128(v as i128).value.to_bits(),
-                Size::from_bits(64)
+            Float(FloatTy::F64) if signed => Ok(Scalar::from_f64(
+                Double::from_i128(v as i128).value
             )),
-            Float(FloatTy::F32) => Ok(Scalar::from_uint(
-                Single::from_u128(v).value.to_bits(),
-                Size::from_bits(32)
+            Float(FloatTy::F32) => Ok(Scalar::from_f32(
+                Single::from_u128(v).value
             )),
-            Float(FloatTy::F64) => Ok(Scalar::from_uint(
-                Double::from_u128(v).value.to_bits(),
-                Size::from_bits(64)
+            Float(FloatTy::F64) => Ok(Scalar::from_f64(
+                Double::from_u128(v).value
             )),
 
             Char => {
@@ -206,66 +198,41 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                 Ok(Scalar::from_uint(v, Size::from_bytes(4)))
             },
 
-            // No alignment check needed for raw pointers.
-            // But we have to truncate to target ptr size.
-            RawPtr(_) => {
-                Ok(Scalar::from_uint(
-                    self.truncate_to_ptr(v).0,
-                    self.pointer_size(),
-                ))
-            },
-
             // Casts to bool are not permitted by rustc, no need to handle them here.
             _ => err!(Unimplemented(format!("int to {:?} cast", dest_layout.ty))),
         }
     }
 
-    fn cast_from_float(
+    fn cast_from_float<F>(
         &self,
-        bits: u128,
-        fty: FloatTy,
+        f: F,
         dest_ty: Ty<'tcx>
-    ) -> EvalResult<'tcx, Scalar<M::PointerTag>> {
+    ) -> InterpResult<'tcx, Scalar<M::PointerTag>>
+    where F: Float + Into<Scalar<M::PointerTag>> + FloatConvert<Single> + FloatConvert<Double>
+    {
         use rustc::ty::TyKind::*;
-        use rustc_apfloat::FloatConvert;
         match dest_ty.sty {
             // float -> uint
             Uint(t) => {
                 let width = t.bit_width().unwrap_or_else(|| self.pointer_size().bits() as usize);
-                let v = match fty {
-                    FloatTy::F32 => Single::from_bits(bits).to_u128(width).value,
-                    FloatTy::F64 => Double::from_bits(bits).to_u128(width).value,
-                };
+                let v = f.to_u128(width).value;
                 // This should already fit the bit width
                 Ok(Scalar::from_uint(v, Size::from_bits(width as u64)))
             },
             // float -> int
             Int(t) => {
                 let width = t.bit_width().unwrap_or_else(|| self.pointer_size().bits() as usize);
-                let v = match fty {
-                    FloatTy::F32 => Single::from_bits(bits).to_i128(width).value,
-                    FloatTy::F64 => Double::from_bits(bits).to_i128(width).value,
-                };
+                let v = f.to_i128(width).value;
                 Ok(Scalar::from_int(v, Size::from_bits(width as u64)))
             },
-            // f64 -> f32
-            Float(FloatTy::F32) if fty == FloatTy::F64 => {
-                Ok(Scalar::from_uint(
-                    Single::to_bits(Double::from_bits(bits).convert(&mut false).value),
-                    Size::from_bits(32),
-                ))
-            },
-            // f32 -> f64
-            Float(FloatTy::F64) if fty == FloatTy::F32 => {
-                Ok(Scalar::from_uint(
-                    Double::to_bits(Single::from_bits(bits).convert(&mut false).value),
-                    Size::from_bits(64),
-                ))
-            },
-            // identity cast
-            Float(FloatTy:: F64) => Ok(Scalar::from_uint(bits, Size::from_bits(64))),
-            Float(FloatTy:: F32) => Ok(Scalar::from_uint(bits, Size::from_bits(32))),
-            _ => err!(Unimplemented(format!("float to {:?} cast", dest_ty))),
+            // float -> f32
+            Float(FloatTy::F32) =>
+                Ok(Scalar::from_f32(f.convert(&mut false).value)),
+            // float -> f64
+            Float(FloatTy::F64) =>
+                Ok(Scalar::from_f64(f.convert(&mut false).value)),
+            // That's it.
+            _ => bug!("invalid float to {:?} cast", dest_ty),
         }
     }
 
@@ -273,7 +240,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         &self,
         ptr: Pointer<M::PointerTag>,
         ty: Ty<'tcx>
-    ) -> EvalResult<'tcx, Scalar<M::PointerTag>> {
+    ) -> InterpResult<'tcx, Scalar<M::PointerTag>> {
         use rustc::ty::TyKind::*;
         match ty.sty {
             // Casting to a reference or fn pointer is not permitted by rustc,
@@ -293,7 +260,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         // The pointee types
         sty: Ty<'tcx>,
         dty: Ty<'tcx>,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         // A<Struct> -> A<Trait> conversion
         let (src_pointee_ty, dest_pointee_ty) = self.tcx.struct_lockstep_tails(sty, dty);
 
@@ -331,7 +298,8 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         &mut self,
         src: OpTy<'tcx, M::PointerTag>,
         dest: PlaceTy<'tcx, M::PointerTag>,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
+        trace!("Unsizing {:?} into {:?}", src, dest);
         match (&src.layout.ty.sty, &dest.layout.ty.sty) {
             (&ty::Ref(_, s, _), &ty::Ref(_, d, _)) |
             (&ty::Ref(_, s, _), &ty::RawPtr(TypeAndMut { ty: d, .. })) |
@@ -361,20 +329,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                     if dst_field.layout.is_zst() {
                         continue;
                     }
-                    let src_field = match src.try_as_mplace() {
-                        Ok(mplace) => {
-                            let src_field = self.mplace_field(mplace, i as u64)?;
-                            src_field.into()
-                        }
-                        Err(..) => {
-                            let src_field_layout = src.layout.field(self, i)?;
-                            // this must be a field covering the entire thing
-                            assert_eq!(src.layout.fields.offset(i).bytes(), 0);
-                            assert_eq!(src_field_layout.size, src.layout.size);
-                            // just sawp out the layout
-                            OpTy::from(ImmTy { imm: src.to_immediate(), layout: src_field_layout })
-                        }
-                    };
+                    let src_field = self.operand_field(src, i as u64)?;
                     if src_field.layout.ty == dst_field.layout.ty {
                         self.copy_op(src_field, dst_field)?;
                     } else {

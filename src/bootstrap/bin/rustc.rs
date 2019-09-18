@@ -89,11 +89,30 @@ fn main() {
 
     let mut cmd = Command::new(rustc);
     cmd.args(&args)
-        .arg("--cfg")
-        .arg(format!("stage{}", stage))
         .env(bootstrap::util::dylib_path_var(),
              env::join_paths(&dylib_path).unwrap());
     let mut maybe_crate = None;
+
+    // Get the name of the crate we're compiling, if any.
+    let maybe_crate_name = args.windows(2)
+        .find(|a| &*a[0] == "--crate-name")
+        .map(|crate_name| &*crate_name[1]);
+
+    if let Some(current_crate) = maybe_crate_name {
+        if let Some(target) = env::var_os("RUSTC_TIME") {
+            if target == "all" ||
+               target.into_string().unwrap().split(",").any(|c| c.trim() == current_crate)
+            {
+                cmd.arg("-Ztime");
+            }
+        }
+    }
+
+    // Non-zero stages must all be treated uniformly to avoid problems when attempting to uplift
+    // compiler libraries and such from stage 1 to 2.
+    if stage == "0" {
+        cmd.arg("--cfg").arg("bootstrap");
+    }
 
     // Print backtrace in case of ICE
     if env::var("RUSTC_BACKTRACE_ON_ICE").is_ok() && env::var("RUST_BACKTRACE").is_err() {
@@ -102,12 +121,22 @@ fn main() {
 
     cmd.env("RUSTC_BREAK_ON_ICE", "1");
 
+    if let Ok(debuginfo_level) = env::var("RUSTC_DEBUGINFO_LEVEL") {
+        cmd.arg(format!("-Cdebuginfo={}", debuginfo_level));
+    }
+
     if let Some(target) = target {
         // The stage0 compiler has a special sysroot distinct from what we
         // actually downloaded, so we just always pass the `--sysroot` option.
         cmd.arg("--sysroot").arg(&sysroot);
 
         cmd.arg("-Zexternal-macro-backtrace");
+
+        // Link crates to the proc macro crate for the target, but use a host proc macro crate
+        // to actually run the macros
+        if env::var_os("RUST_DUAL_PROC_MACROS").is_some() {
+            cmd.arg("-Zdual-proc-macros");
+        }
 
         // When we build Rust dylibs they're all intended for intermediate
         // usage, so make sure we pass the -Cprefer-dynamic flag instead of
@@ -116,8 +145,8 @@ fn main() {
             cmd.arg("-Cprefer-dynamic");
         }
 
-        // Help the libc crate compile by assisting it in finding the MUSL
-        // native libraries.
+        // Help the libc crate compile by assisting it in finding various
+        // sysroot native libraries.
         if let Some(s) = env::var_os("MUSL_ROOT") {
             if target.contains("musl") {
                 let mut root = OsString::from("native=");
@@ -126,16 +155,19 @@ fn main() {
                 cmd.arg("-L").arg(&root);
             }
         }
+        if let Some(s) = env::var_os("WASI_ROOT") {
+            let mut root = OsString::from("native=");
+            root.push(&s);
+            root.push("/lib/wasm32-wasi");
+            cmd.arg("-L").arg(&root);
+        }
 
         // Override linker if necessary.
         if let Ok(target_linker) = env::var("RUSTC_TARGET_LINKER") {
             cmd.arg(format!("-Clinker={}", target_linker));
         }
 
-        let crate_name = args.windows(2)
-            .find(|a| &*a[0] == "--crate-name")
-            .unwrap();
-        let crate_name = &*crate_name[1];
+        let crate_name = maybe_crate_name.unwrap();
         maybe_crate = Some(crate_name);
 
         // If we're compiling specifically the `panic_abort` crate then we pass
@@ -157,11 +189,6 @@ fn main() {
 
         // Set various options from config.toml to configure how we're building
         // code.
-        if env::var("RUSTC_DEBUGINFO") == Ok("true".to_string()) {
-            cmd.arg("-g");
-        } else if env::var("RUSTC_DEBUGINFO_LINES") == Ok("true".to_string()) {
-            cmd.arg("-Cdebuginfo=1");
-        }
         let debug_assertions = match env::var("RUSTC_DEBUG_ASSERTIONS") {
             Ok(s) => if s == "true" { "y" } else { "n" },
             Err(..) => "n",
@@ -250,19 +277,13 @@ fn main() {
             // The flags here should be kept in sync with `add_miri_default_args`
             // in miri's `src/lib.rs`.
             cmd.arg("-Zalways-encode-mir");
+            cmd.arg("--cfg=miri");
             // These options are preferred by miri, to be able to perform better validation,
             // but the bootstrap compiler might not understand them.
             if stage != "0" {
                 cmd.arg("-Zmir-emit-retag");
                 cmd.arg("-Zmir-opt-level=0");
             }
-        }
-
-        // Force all crates compiled by this compiler to (a) be unstable and (b)
-        // allow the `rustc_private` feature to link to other unstable crates
-        // also in the sysroot.
-        if env::var_os("RUSTC_FORCE_UNSTABLE").is_some() {
-            cmd.arg("-Z").arg("force-unstable-if-unmarked");
         }
 
         if let Ok(map) = env::var("RUSTC_DEBUGINFO_MAP") {
@@ -284,6 +305,17 @@ fn main() {
         }
     }
 
+    // This is required for internal lints.
+    cmd.arg("-Zunstable-options");
+
+    // Force all crates compiled by this compiler to (a) be unstable and (b)
+    // allow the `rustc_private` feature to link to other unstable crates
+    // also in the sysroot. We also do this for host crates, since those
+    // may be proc macros, in which case we might ship them.
+    if env::var_os("RUSTC_FORCE_UNSTABLE").is_some() && (stage != "0" || target.is_some()) {
+        cmd.arg("-Z").arg("force-unstable-if-unmarked");
+    }
+
     if env::var_os("RUSTC_PARALLEL_COMPILER").is_some() {
         cmd.arg("--cfg").arg("parallel_compiler");
     }
@@ -292,6 +324,7 @@ fn main() {
     {
         cmd.arg("-Dwarnings");
         cmd.arg("-Dbare_trait_objects");
+        cmd.arg("-Drust_2018_idioms");
     }
 
     if verbose > 1 {

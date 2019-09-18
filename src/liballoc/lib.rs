@@ -51,22 +51,20 @@
 //! default global allocator. It is not compatible with the libc allocator API.
 
 #![allow(unused_attributes)]
-#![unstable(feature = "alloc",
-            reason = "this library is unlikely to be stabilized in its current \
-                      form or name",
-            issue = "27783")]
+#![stable(feature = "alloc", since = "1.36.0")]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
        test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
 #![no_std]
 #![needs_allocator]
 
+#![warn(deprecated_in_future)]
+#![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
+#![deny(intra_doc_link_resolution_failure)] // rustdoc is run without -D warnings
+
 #![deny(rust_2018_idioms)]
 #![allow(explicit_outlives_requirements)]
-
-#![warn(deprecated_in_future)]
-#![warn(intra_doc_link_resolution_failure)]
-#![warn(missing_debug_implementations)]
 
 #![cfg_attr(not(test), feature(generator_trait))]
 #![cfg_attr(test, feature(test))]
@@ -81,16 +79,14 @@
 #![feature(coerce_unsized)]
 #![feature(dispatch_from_dyn)]
 #![feature(core_intrinsics)]
-#![feature(custom_attribute)]
+#![cfg_attr(bootstrap, feature(custom_attribute))]
 #![feature(dropck_eyepatch)]
 #![feature(exact_size_is_empty)]
 #![feature(fmt_internals)]
 #![feature(fn_traits)]
 #![feature(fundamental)]
-#![feature(futures_api)]
 #![feature(lang_items)]
 #![feature(libc)]
-#![feature(needs_allocator)]
 #![feature(nll)]
 #![feature(optin_builtin_traits)]
 #![feature(pattern)]
@@ -107,12 +103,13 @@
 #![feature(unboxed_closures)]
 #![feature(unicode_internals)]
 #![feature(unsize)]
+#![feature(unsized_locals)]
 #![feature(allocator_internals)]
 #![feature(on_unimplemented)]
 #![feature(rustc_const_unstable)]
 #![feature(const_vec_new)]
 #![feature(slice_partition_dedup)]
-#![feature(maybe_uninit, maybe_uninit_slice, maybe_uninit_array)]
+#![feature(maybe_uninit_extra, maybe_uninit_slice, maybe_uninit_array)]
 #![feature(alloc_layout_extra)]
 #![feature(try_trait)]
 
@@ -144,7 +141,7 @@ mod boxed {
     pub use std::boxed::Box;
 }
 #[cfg(test)]
-mod boxed_test;
+mod tests;
 pub mod collections;
 #[cfg(all(target_has_atomic = "ptr", target_has_atomic = "cas"))]
 pub mod sync;

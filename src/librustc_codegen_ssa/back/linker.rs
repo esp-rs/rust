@@ -25,7 +25,7 @@ pub struct LinkerInfo {
 }
 
 impl LinkerInfo {
-    pub fn new(tcx: TyCtxt<'_, '_, '_>) -> LinkerInfo {
+    pub fn new(tcx: TyCtxt<'_>) -> LinkerInfo {
         LinkerInfo {
             exports: tcx.sess.crate_types.borrow().iter().map(|&c| {
                 (c, exported_symbols(tcx, c))
@@ -160,7 +160,16 @@ impl<'a> GccLinker<'a> {
     }
 
     fn takes_hints(&self) -> bool {
-        !self.sess.target.target.options.is_like_osx
+        // Really this function only returns true if the underlying linker
+        // configured for a compiler is binutils `ld.bfd` and `ld.gold`. We
+        // don't really have a foolproof way to detect that, so rule out some
+        // platforms where currently this is guaranteed to *not* be the case:
+        //
+        // * On OSX they have their own linker, not binutils'
+        // * For WebAssembly the only functional linker is LLD, which doesn't
+        //   support hint flags
+        !self.sess.target.target.options.is_like_osx &&
+            self.sess.target.target.arch != "wasm32"
     }
 
     // Some platforms take hints about whether a library is static or dynamic.
@@ -363,15 +372,20 @@ impl<'a> Linker for GccLinker<'a> {
     }
 
     fn export_symbols(&mut self, tmpdir: &Path, crate_type: CrateType) {
-        // If we're compiling a dylib, then we let symbol visibility in object
-        // files to take care of whether they're exported or not.
-        //
-        // If we're compiling a cdylib, however, we manually create a list of
-        // exported symbols to ensure we don't expose any more. The object files
-        // have far more public symbols than we actually want to export, so we
-        // hide them all here.
-        if crate_type == CrateType::Dylib ||
-           crate_type == CrateType::ProcMacro {
+        // Symbol visibility in object files typically takes care of this.
+        if crate_type == CrateType::Executable {
+            return;
+        }
+
+        // We manually create a list of exported symbols to ensure we don't expose any more.
+        // The object files have far more public symbols than we actually want to export,
+        // so we hide them all here.
+
+        if !self.sess.target.target.options.limit_rdylib_exports {
+            return;
+        }
+
+        if crate_type == CrateType::ProcMacro {
             return
         }
 
@@ -382,20 +396,19 @@ impl<'a> Linker for GccLinker<'a> {
 
         if self.sess.target.target.options.is_like_osx {
             // Write a plain, newline-separated list of symbols
-            let res = (|| -> io::Result<()> {
+            let res: io::Result<()> = try {
                 let mut f = BufWriter::new(File::create(&path)?);
                 for sym in self.info.exports[&crate_type].iter() {
                     debug!("  _{}", sym);
                     writeln!(f, "_{}", sym)?;
                 }
-                Ok(())
-            })();
+            };
             if let Err(e) = res {
                 self.sess.fatal(&format!("failed to write lib.def file: {}", e));
             }
         } else {
             // Write an LD version script
-            let res = (|| -> io::Result<()> {
+            let res: io::Result<()> = try {
                 let mut f = BufWriter::new(File::create(&path)?);
                 writeln!(f, "{{\n  global:")?;
                 for sym in self.info.exports[&crate_type].iter() {
@@ -403,8 +416,7 @@ impl<'a> Linker for GccLinker<'a> {
                     writeln!(f, "    {};", sym)?;
                 }
                 writeln!(f, "\n  local:\n    *;\n}};")?;
-                Ok(())
-            })();
+            };
             if let Err(e) = res {
                 self.sess.fatal(&format!("failed to write version script: {}", e));
             }
@@ -443,13 +455,13 @@ impl<'a> Linker for GccLinker<'a> {
     }
 
     fn group_start(&mut self) {
-        if !self.sess.target.target.options.is_like_osx {
+        if self.takes_hints() {
             self.linker_arg("--start-group");
         }
     }
 
     fn group_end(&mut self) {
-        if !self.sess.target.target.options.is_like_osx {
+        if self.takes_hints() {
             self.linker_arg("--end-group");
         }
     }
@@ -598,18 +610,6 @@ impl<'a> Linker for MsvcLinker<'a> {
         // This will cause the Microsoft linker to embed .natvis info into the PDB file
         let natvis_dir_path = self.sess.sysroot.join("lib\\rustlib\\etc");
         if let Ok(natvis_dir) = fs::read_dir(&natvis_dir_path) {
-            // LLVM 5.0.0's lld-link frontend doesn't yet recognize, and chokes
-            // on, the /NATVIS:... flags.  LLVM 6 (or earlier) should at worst ignore
-            // them, eventually mooting this workaround, per this landed patch:
-            // https://github.com/llvm-mirror/lld/commit/27b9c4285364d8d76bb43839daa100
-            if let Some(ref linker_path) = self.sess.opts.cg.linker {
-                if let Some(linker_name) = Path::new(&linker_path).file_stem() {
-                    if linker_name.to_str().unwrap().to_lowercase() == "lld-link" {
-                        self.sess.warn("not embedding natvis: lld-link may not support the flag");
-                        return;
-                    }
-                }
-            }
             for entry in natvis_dir {
                 match entry {
                     Ok(entry) => {
@@ -643,8 +643,13 @@ impl<'a> Linker for MsvcLinker<'a> {
     fn export_symbols(&mut self,
                       tmpdir: &Path,
                       crate_type: CrateType) {
+        // Symbol visibility takes care of this typically
+        if crate_type == CrateType::Executable {
+            return;
+        }
+
         let path = tmpdir.join("lib.def");
-        let res = (|| -> io::Result<()> {
+        let res: io::Result<()> = try {
             let mut f = BufWriter::new(File::create(&path)?);
 
             // Start off with the standard module name header and then go
@@ -655,8 +660,7 @@ impl<'a> Linker for MsvcLinker<'a> {
                 debug!("  _{}", symbol);
                 writeln!(f, "  {}", symbol)?;
             }
-            Ok(())
-        })();
+        };
         if let Err(e) = res {
             self.sess.fatal(&format!("failed to write lib.def file: {}", e));
         }
@@ -877,59 +881,7 @@ pub struct WasmLd<'a> {
 }
 
 impl<'a> WasmLd<'a> {
-    fn new(mut cmd: Command, sess: &'a Session, info: &'a LinkerInfo) -> WasmLd<'a> {
-        // There have been reports in the wild (rustwasm/wasm-bindgen#119) of
-        // using threads causing weird hangs and bugs. Disable it entirely as
-        // this isn't yet the bottleneck of compilation at all anyway.
-        cmd.arg("--no-threads");
-
-        // By default LLD only gives us one page of stack (64k) which is a
-        // little small. Default to a larger stack closer to other PC platforms
-        // (1MB) and users can always inject their own link-args to override this.
-        cmd.arg("-z").arg("stack-size=1048576");
-
-        // By default LLD's memory layout is:
-        //
-        // 1. First, a blank page
-        // 2. Next, all static data
-        // 3. Finally, the main stack (which grows down)
-        //
-        // This has the unfortunate consequence that on stack overflows you
-        // corrupt static data and can cause some exceedingly weird bugs. To
-        // help detect this a little sooner we instead request that the stack is
-        // placed before static data.
-        //
-        // This means that we'll generate slightly larger binaries as references
-        // to static data will take more bytes in the ULEB128 encoding, but
-        // stack overflow will be guaranteed to trap as it underflows instead of
-        // corrupting static data.
-        cmd.arg("--stack-first");
-
-        // FIXME we probably shouldn't pass this but instead pass an explicit
-        // whitelist of symbols we'll allow to be undefined. Unfortunately
-        // though we can't handle symbols like `log10` that LLVM injects at a
-        // super late date without actually parsing object files. For now let's
-        // stick to this and hopefully fix it before stabilization happens.
-        cmd.arg("--allow-undefined");
-
-        // For now we just never have an entry symbol
-        cmd.arg("--no-entry");
-
-        // Rust code should never have warnings, and warnings are often
-        // indicative of bugs, let's prevent them.
-        cmd.arg("--fatal-warnings");
-
-        // The symbol visibility story is a bit in flux right now with LLD.
-        // It's... not entirely clear to me what's going on, but this looks to
-        // make everything work when `export_symbols` isn't otherwise called for
-        // things like executables.
-        cmd.arg("--export-dynamic");
-
-        // LLD only implements C++-like demangling, which doesn't match our own
-        // mangling scheme. Tell LLD to not demangle anything and leave it up to
-        // us to demangle these symbols later.
-        cmd.arg("--no-demangle");
-
+    fn new(cmd: Command, sess: &'a Session, info: &'a LinkerInfo) -> WasmLd<'a> {
         WasmLd { cmd, sess, info }
     }
 }
@@ -1025,6 +977,7 @@ impl<'a> Linker for WasmLd<'a> {
     }
 
     fn build_dylib(&mut self, _out_filename: &Path) {
+        self.cmd.arg("--no-entry");
     }
 
     fn export_symbols(&mut self, _tmpdir: &Path, crate_type: CrateType) {
@@ -1052,7 +1005,7 @@ impl<'a> Linker for WasmLd<'a> {
     }
 }
 
-fn exported_symbols(tcx: TyCtxt<'_, '_, '_>, crate_type: CrateType) -> Vec<String> {
+fn exported_symbols(tcx: TyCtxt<'_>, crate_type: CrateType) -> Vec<String> {
     if let Some(ref exports) = tcx.sess.target.target.options.override_export_symbols {
         return exports.clone()
     }

@@ -3,33 +3,30 @@
 use rustc::hir::def_id::DefId;
 use rustc::middle::lang_items::LangItem;
 use rustc::mir::*;
-use rustc::ty::{List, Ty, TyCtxt, TyKind};
+use rustc::ty::{self, List, Ty, TyCtxt};
 use rustc_data_structures::indexed_vec::{Idx};
 use crate::transform::{MirPass, MirSource};
 
 pub struct Lower128Bit;
 
 impl MirPass for Lower128Bit {
-    fn run_pass<'a, 'tcx>(&self,
-                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _src: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
+    fn run_pass<'tcx>(&self, tcx: TyCtxt<'tcx>, _src: MirSource<'tcx>, body: &mut Body<'tcx>) {
         let debugging_override = tcx.sess.opts.debugging_opts.lower_128bit_ops;
         let target_default = tcx.sess.host.options.i128_lowering;
         if !debugging_override.unwrap_or(target_default) {
             return
         }
 
-        self.lower_128bit_ops(tcx, mir);
-    }
+        self.lower_128bit_ops(tcx, body);
+}
 }
 
 impl Lower128Bit {
-    fn lower_128bit_ops<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, mir: &mut Mir<'tcx>) {
+    fn lower_128bit_ops<'tcx>(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         let mut new_blocks = Vec::new();
-        let cur_len = mir.basic_blocks().len();
+        let cur_len = body.basic_blocks().len();
 
-        let (basic_blocks, local_decls) = mir.basic_blocks_and_local_decls_mut();
+        let (basic_blocks, local_decls) = body.basic_blocks_and_local_decls_mut();
         for block in basic_blocks.iter_mut() {
             for i in (0..block.statements.len()).rev() {
                 let (lang_item, rhs_kind) =
@@ -86,13 +83,13 @@ impl Lower128Bit {
                     block.statements.push(Statement {
                         source_info: source_info,
                         kind: StatementKind::Assign(
-                            Place::Base(PlaceBase::Local(local)),
+                            Place::from(local),
                             box Rvalue::Cast(
                                 CastKind::Misc,
                                 rhs,
                                 rhs_override_ty.unwrap())),
                     });
-                    rhs = Operand::Move(Place::Base(PlaceBase::Local(local)));
+                    rhs = Operand::Move(Place::from(local));
                 }
 
                 let call_did = check_lang_item_type(
@@ -120,31 +117,36 @@ impl Lower128Bit {
     }
 }
 
-fn check_lang_item_type<'a, 'tcx, D>(
+fn check_lang_item_type<'tcx, D>(
     lang_item: LangItem,
     place: &Place<'tcx>,
     lhs: &Operand<'tcx>,
     rhs: &Operand<'tcx>,
     local_decls: &D,
-    tcx: TyCtxt<'a, 'tcx, 'tcx>)
--> DefId
-    where D: HasLocalDecls<'tcx>
+    tcx: TyCtxt<'tcx>,
+) -> DefId
+where
+    D: HasLocalDecls<'tcx>,
 {
     let did = tcx.require_lang_item(lang_item);
     let poly_sig = tcx.fn_sig(did);
     let sig = poly_sig.no_bound_vars().unwrap();
     let lhs_ty = lhs.ty(local_decls, tcx);
     let rhs_ty = rhs.ty(local_decls, tcx);
-    let place_ty = place.ty(local_decls, tcx).to_ty(tcx);
+    let place_ty = place.ty(local_decls, tcx).ty;
     let expected = [lhs_ty, rhs_ty, place_ty];
     assert_eq!(sig.inputs_and_output[..], expected,
-        "lang item {}", tcx.def_symbol_name(did));
+        "lang item `{}`", tcx.def_path_str(did));
     did
 }
 
-fn lower_to<'a, 'tcx, D>(statement: &Statement<'tcx>, local_decls: &D, tcx: TyCtxt<'a, 'tcx, 'tcx>)
-    -> Option<(LangItem, RhsKind)>
-    where D: HasLocalDecls<'tcx>
+fn lower_to<'tcx, D>(
+    statement: &Statement<'tcx>,
+    local_decls: &D,
+    tcx: TyCtxt<'tcx>,
+) -> Option<(LangItem, RhsKind)>
+where
+    D: HasLocalDecls<'tcx>,
 {
     match statement.kind {
         StatementKind::Assign(_, box Rvalue::BinaryOp(bin_op, ref lhs, _)) => {
@@ -172,7 +174,7 @@ enum RhsKind {
 }
 
 impl RhsKind {
-    fn ty<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Option<Ty<'tcx>> {
+    fn ty<'tcx>(&self, tcx: TyCtxt<'tcx>) -> Option<Ty<'tcx>> {
         match *self {
             RhsKind::Unchanged => None,
             RhsKind::ForceU128 => Some(tcx.types.u128),
@@ -183,8 +185,8 @@ impl RhsKind {
 
 fn sign_of_128bit(ty: Ty<'_>) -> Option<bool> {
     match ty.sty {
-        TyKind::Int(syntax::ast::IntTy::I128) => Some(true),
-        TyKind::Uint(syntax::ast::UintTy::U128) => Some(false),
+        ty::Int(syntax::ast::IntTy::I128) => Some(true),
+        ty::Uint(syntax::ast::UintTy::U128) => Some(false),
         _ => None,
     }
 }

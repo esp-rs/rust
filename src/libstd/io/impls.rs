@@ -1,6 +1,6 @@
 use crate::cmp;
-use crate::io::{self, SeekFrom, Read, Initializer, Write, Seek, BufRead, Error, ErrorKind, IoVecMut,
-         IoVec};
+use crate::io::{self, SeekFrom, Read, Initializer, Write, Seek, BufRead, Error, ErrorKind,
+        IoSliceMut, IoSlice};
 use crate::fmt;
 use crate::mem;
 
@@ -15,7 +15,7 @@ impl<R: Read + ?Sized> Read for &mut R {
     }
 
     #[inline]
-    fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         (**self).read_vectored(bufs)
     }
 
@@ -45,7 +45,7 @@ impl<W: Write + ?Sized> Write for &mut W {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> { (**self).write(buf) }
 
     #[inline]
-    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         (**self).write_vectored(bufs)
     }
 
@@ -58,7 +58,7 @@ impl<W: Write + ?Sized> Write for &mut W {
     }
 
     #[inline]
-    fn write_fmt(&mut self, fmt: fmt::Arguments) -> io::Result<()> {
+    fn write_fmt(&mut self, fmt: fmt::Arguments<'_>) -> io::Result<()> {
         (**self).write_fmt(fmt)
     }
 }
@@ -94,7 +94,7 @@ impl<R: Read + ?Sized> Read for Box<R> {
     }
 
     #[inline]
-    fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         (**self).read_vectored(bufs)
     }
 
@@ -124,7 +124,7 @@ impl<W: Write + ?Sized> Write for Box<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> { (**self).write(buf) }
 
     #[inline]
-    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         (**self).write_vectored(bufs)
     }
 
@@ -137,7 +137,7 @@ impl<W: Write + ?Sized> Write for Box<W> {
     }
 
     #[inline]
-    fn write_fmt(&mut self, fmt: fmt::Arguments) -> io::Result<()> {
+    fn write_fmt(&mut self, fmt: fmt::Arguments<'_>) -> io::Result<()> {
         (**self).write_fmt(fmt)
     }
 }
@@ -162,6 +162,20 @@ impl<B: BufRead + ?Sized> BufRead for Box<B> {
     #[inline]
     fn read_line(&mut self, buf: &mut String) -> io::Result<usize> {
         (**self).read_line(buf)
+    }
+}
+
+// Used by panicking::default_hook
+#[cfg(test)]
+/// This impl is only used by printing logic, so any error returned is always
+/// of kind `Other`, and should be ignored.
+impl Write for Box<dyn (::realstd::io::Write) + Send> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        (**self).write(buf).map_err(|_| ErrorKind::Other.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (**self).flush().map_err(|_| ErrorKind::Other.into())
     }
 }
 
@@ -193,7 +207,7 @@ impl Read for &[u8] {
     }
 
     #[inline]
-    fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         let mut nread = 0;
         for buf in bufs {
             nread += self.read(buf)?;
@@ -266,7 +280,7 @@ impl Write for &mut [u8] {
     }
 
     #[inline]
-    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         let mut nwritten = 0;
         for buf in bufs {
             nwritten += self.write(buf)?;
@@ -302,7 +316,7 @@ impl Write for Vec<u8> {
     }
 
     #[inline]
-    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         let len = bufs.iter().map(|b| b.len()).sum();
         self.reserve(len);
         for buf in bufs {

@@ -123,12 +123,12 @@ pub use core::slice::{RChunks, RChunksMut, RChunksExact, RChunksExactMut};
 ////////////////////////////////////////////////////////////////////////////////
 
 // HACK(japaric) needed for the implementation of `vec!` macro during testing
-// NB see the hack module in this file for more details
+// N.B., see the `hack` module in this file for more details.
 #[cfg(test)]
 pub use hack::into_vec;
 
 // HACK(japaric) needed for the implementation of `Vec::clone` during testing
-// NB see the hack module in this file for more details
+// N.B., see the `hack` module in this file for more details.
 #[cfg(test)]
 pub use hack::to_vec;
 
@@ -137,17 +137,16 @@ pub use hack::to_vec;
 // `core::slice::SliceExt` - we need to supply these functions for the
 // `test_permutations` test
 mod hack {
-    use core::mem;
-
     use crate::boxed::Box;
     use crate::vec::Vec;
     #[cfg(test)]
     use crate::string::ToString;
 
-    pub fn into_vec<T>(mut b: Box<[T]>) -> Vec<T> {
+    pub fn into_vec<T>(b: Box<[T]>) -> Vec<T> {
         unsafe {
-            let xs = Vec::from_raw_parts(b.as_mut_ptr(), b.len(), b.len());
-            mem::forget(b);
+            let len = b.len();
+            let b = Box::into_raw(b);
+            let xs = Vec::from_raw_parts(b as *mut T, len, len);
             xs
         }
     }
@@ -376,7 +375,7 @@ impl<T> [T] {
     pub fn to_vec(&self) -> Vec<T>
         where T: Clone
     {
-        // NB see hack module in this file
+        // N.B., see the `hack` module in this file for more details.
         hack::to_vec(self)
     }
 
@@ -397,7 +396,7 @@ impl<T> [T] {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn into_vec(self: Box<Self>) -> Vec<T> {
-        // NB see hack module in this file
+        // N.B., see the `hack` module in this file for more details.
         hack::into_vec(self)
     }
 
@@ -570,9 +569,21 @@ pub trait SliceConcatExt<T: ?Sized> {
     #[stable(feature = "rename_connect_to_join", since = "1.3.0")]
     fn join(&self, sep: &T) -> Self::Output;
 
+    /// Flattens a slice of `T` into a single value `Self::Output`, placing a
+    /// given separator between each.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![allow(deprecated)]
+    /// assert_eq!(["hello", "world"].connect(" "), "hello world");
+    /// assert_eq!([[1, 2], [3, 4]].connect(&0), [1, 2, 0, 3, 4]);
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_deprecated(since = "1.3.0", reason = "renamed to join")]
-    fn connect(&self, sep: &T) -> Self::Output;
+    fn connect(&self, sep: &T) -> Self::Output {
+        self.join(sep)
+    }
 }
 
 #[unstable(feature = "slice_concat_ext",
@@ -605,10 +616,6 @@ impl<T: Clone, V: Borrow<[T]>> SliceConcatExt<T> for [V] {
             result.extend_from_slice(v.borrow())
         }
         result
-    }
-
-    fn connect(&self, sep: &T) -> Vec<T> {
-        self.join(sep)
     }
 }
 

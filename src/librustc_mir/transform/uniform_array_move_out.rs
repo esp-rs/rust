@@ -37,28 +37,24 @@ use crate::util::patch::MirPatch;
 pub struct UniformArrayMoveOut;
 
 impl MirPass for UniformArrayMoveOut {
-    fn run_pass<'a, 'tcx>(&self,
-                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _src: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
-        let mut patch = MirPatch::new(mir);
+    fn run_pass<'tcx>(&self, tcx: TyCtxt<'tcx>, _src: MirSource<'tcx>, body: &mut Body<'tcx>) {
+        let mut patch = MirPatch::new(body);
         {
-            let mut visitor = UniformArrayMoveOutVisitor{mir, patch: &mut patch, tcx};
-            visitor.visit_mir(mir);
+            let mut visitor = UniformArrayMoveOutVisitor{body, patch: &mut patch, tcx};
+            visitor.visit_body(body);
         }
-        patch.apply(mir);
+        patch.apply(body);
     }
 }
 
-struct UniformArrayMoveOutVisitor<'a, 'tcx: 'a> {
-    mir: &'a Mir<'tcx>,
+struct UniformArrayMoveOutVisitor<'a, 'tcx> {
+    body: &'a Body<'tcx>,
     patch: &'a mut MirPatch<'tcx>,
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for UniformArrayMoveOutVisitor<'a, 'tcx> {
     fn visit_assign(&mut self,
-                    block: BasicBlock,
                     dst_place: &Place<'tcx>,
                     rvalue: &Rvalue<'tcx>,
                     location: Location) {
@@ -69,7 +65,7 @@ impl<'a, 'tcx> Visitor<'tcx> for UniformArrayMoveOutVisitor<'a, 'tcx> {
                                                      from_end: false} = proj.elem {
                     // no need to transformation
                 } else {
-                    let place_ty = proj.base.ty(self.mir, self.tcx).to_ty(self.tcx);
+                    let place_ty = proj.base.ty(self.body, self.tcx).ty;
                     if let ty::Array(item_ty, const_size) = place_ty.sty {
                         if let Some(size) = const_size.assert_usize(self.tcx) {
                             assert!(size <= u32::max_value() as u64,
@@ -82,7 +78,7 @@ impl<'a, 'tcx> Visitor<'tcx> for UniformArrayMoveOutVisitor<'a, 'tcx> {
                 }
             }
         }
-        self.super_assign(block, dst_place, rvalue, location)
+        self.super_assign(dst_place, rvalue, location)
     }
 }
 
@@ -90,7 +86,7 @@ impl<'a, 'tcx> UniformArrayMoveOutVisitor<'a, 'tcx> {
     fn uniform(&mut self,
                location: Location,
                dst_place: &Place<'tcx>,
-               proj: &PlaceProjection<'tcx>,
+               proj: &Projection<'tcx>,
                item_ty: &'tcx ty::TyS<'tcx>,
                size: u32) {
         match proj.elem {
@@ -98,13 +94,13 @@ impl<'a, 'tcx> UniformArrayMoveOutVisitor<'a, 'tcx> {
             ProjectionElem::Subslice{from, to} => {
                 self.patch.make_nop(location);
                 let temps : Vec<_> = (from..(size-to)).map(|i| {
-                    let temp = self.patch.new_temp(item_ty, self.mir.source_info(location).span);
+                    let temp = self.patch.new_temp(item_ty, self.body.source_info(location).span);
                     self.patch.add_statement(location, StatementKind::StorageLive(temp));
                     self.patch.add_assign(location,
-                                          Place::Base(PlaceBase::Local(temp)),
+                                          Place::from(temp),
                                           Rvalue::Use(
                                               Operand::Move(
-                                                  Place::Projection(box PlaceProjection{
+                                                  Place::Projection(box Projection{
                                                       base: proj.base.clone(),
                                                       elem: ProjectionElem::ConstantIndex{
                                                           offset: i,
@@ -119,7 +115,7 @@ impl<'a, 'tcx> UniformArrayMoveOutVisitor<'a, 'tcx> {
                     Rvalue::Aggregate(
                         box AggregateKind::Array(item_ty),
                         temps.iter().map(
-                            |x| Operand::Move(Place::Base(PlaceBase::Local(*x)))
+                            |x| Operand::Move(Place::from(*x))
                         ).collect()
                     )
                 );
@@ -134,7 +130,7 @@ impl<'a, 'tcx> UniformArrayMoveOutVisitor<'a, 'tcx> {
                                       dst_place.clone(),
                                       Rvalue::Use(
                                           Operand::Move(
-                                              Place::Projection(box PlaceProjection{
+                                              Place::Projection(box Projection{
                                                   base: proj.base.clone(),
                                                   elem: ProjectionElem::ConstantIndex{
                                                       offset: size - offset,
@@ -163,26 +159,24 @@ impl<'a, 'tcx> UniformArrayMoveOutVisitor<'a, 'tcx> {
 pub struct RestoreSubsliceArrayMoveOut;
 
 impl MirPass for RestoreSubsliceArrayMoveOut {
-    fn run_pass<'a, 'tcx>(&self,
-                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _src: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
-        let mut patch = MirPatch::new(mir);
+    fn run_pass<'tcx>(&self, tcx: TyCtxt<'tcx>, _src: MirSource<'tcx>, body: &mut Body<'tcx>) {
+        let mut patch = MirPatch::new(body);
         {
             let mut visitor = RestoreDataCollector {
-                locals_use: IndexVec::from_elem(LocalUse::new(), &mir.local_decls),
+                locals_use: IndexVec::from_elem(LocalUse::new(), &body.local_decls),
                 candidates: vec![],
             };
-            visitor.visit_mir(mir);
+            visitor.visit_body(body);
 
             for candidate in &visitor.candidates {
-                let statement = &mir[candidate.block].statements[candidate.statement_index];
+                let statement = &body[candidate.block].statements[candidate.statement_index];
                 if let StatementKind::Assign(ref dst_place, ref rval) = statement.kind {
                     if let Rvalue::Aggregate(box AggregateKind::Array(_), ref items) = **rval {
                         let items : Vec<_> = items.iter().map(|item| {
                             if let Operand::Move(Place::Base(PlaceBase::Local(local))) = item {
                                 let local_use = &visitor.locals_use[*local];
-                                let opt_index_and_place = Self::try_get_item_source(local_use, mir);
+                                let opt_index_and_place =
+                                    Self::try_get_item_source(local_use, body);
                                 // each local should be used twice:
                                 //  in assign and in aggregate statements
                                 if local_use.use_count == 2 && opt_index_and_place.is_some() {
@@ -195,7 +189,7 @@ impl MirPass for RestoreSubsliceArrayMoveOut {
 
                         let opt_src_place = items.first().and_then(|x| *x).map(|x| x.2);
                         let opt_size = opt_src_place.and_then(|src_place| {
-                            let src_ty = src_place.ty(mir, tcx).to_ty(tcx);
+                            let src_ty = src_place.ty(body, tcx).ty;
                             if let ty::Array(_, ref size_o) = src_ty.sty {
                                 size_o.assert_usize(tcx)
                             } else {
@@ -207,7 +201,7 @@ impl MirPass for RestoreSubsliceArrayMoveOut {
                 }
             }
         }
-        patch.apply(mir);
+        patch.apply(body);
     }
 }
 
@@ -247,7 +241,7 @@ impl RestoreSubsliceArrayMoveOut {
                              dst_place.clone(),
                              Rvalue::Use(
                                  Operand::Move(
-                                     Place::Projection(box PlaceProjection{
+                                     Place::Projection(box Projection{
                                          base: opt_src_place.unwrap().clone(),
                                          elem: ProjectionElem::Subslice{
                                              from: min, to: size - max - 1}}))));
@@ -255,14 +249,14 @@ impl RestoreSubsliceArrayMoveOut {
     }
 
     fn try_get_item_source<'a, 'tcx>(local_use: &LocalUse,
-                                     mir: &'a Mir<'tcx>) -> Option<(u32, &'a Place<'tcx>)> {
+                                     body: &'a Body<'tcx>) -> Option<(u32, &'a Place<'tcx>)> {
         if let Some(location) = local_use.first_use {
-            let block = &mir[location.block];
+            let block = &body[location.block];
             if block.statements.len() > location.statement_index {
                 let statement = &block.statements[location.statement_index];
                 if let StatementKind::Assign(
                     Place::Base(PlaceBase::Local(_)),
-                    box Rvalue::Use(Operand::Move(Place::Projection(box PlaceProjection{
+                    box Rvalue::Use(Operand::Move(Place::Projection(box Projection{
                         ref base, elem: ProjectionElem::ConstantIndex{
                             offset, min_length: _, from_end: false}})))) = statement.kind {
                     return Some((offset, base))
@@ -294,19 +288,18 @@ struct RestoreDataCollector {
 
 impl<'tcx> Visitor<'tcx> for RestoreDataCollector {
     fn visit_assign(&mut self,
-                    block: BasicBlock,
                     place: &Place<'tcx>,
                     rvalue: &Rvalue<'tcx>,
                     location: Location) {
         if let Rvalue::Aggregate(box AggregateKind::Array(_), _) = *rvalue {
             self.candidates.push(location);
         }
-        self.super_assign(block, place, rvalue, location)
+        self.super_assign(place, rvalue, location)
     }
 
     fn visit_local(&mut self,
                    local: &Local,
-                   context: PlaceContext<'tcx>,
+                   context: PlaceContext,
                    location: Location) {
         let local_use = &mut self.locals_use[*local];
         match context {

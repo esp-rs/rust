@@ -12,10 +12,9 @@ use syntax::ast;
 use syntax::ext::base::ExtCtxt;
 use syntax::parse::lexer::comments;
 use syntax::parse::{self, token, ParseSess};
-use syntax::parse::parser::emit_unclosed_delims;
 use syntax::tokenstream::{self, DelimSpan, IsJoint::*, TokenStream, TreeAndJoint};
 use syntax_pos::hygiene::{SyntaxContext, Transparency};
-use syntax_pos::symbol::{keywords, Symbol};
+use syntax_pos::symbol::{kw, sym, Symbol};
 use syntax_pos::{BytePos, FileName, MultiSpan, Pos, SourceFile, Span};
 
 trait FromInternal<T> {
@@ -56,7 +55,7 @@ impl FromInternal<(TreeAndJoint, &'_ ParseSess, &'_ mut Vec<Self>)>
         use syntax::parse::token::*;
 
         let joint = is_joint == Joint;
-        let (span, token) = match tree {
+        let Token { kind, span } = match tree {
             tokenstream::TokenTree::Delimited(span, delim, tts) => {
                 let delimiter = Delimiter::from_internal(delim);
                 return TokenTree::Group(Group {
@@ -65,13 +64,13 @@ impl FromInternal<(TreeAndJoint, &'_ ParseSess, &'_ mut Vec<Self>)>
                     span,
                 });
             }
-            tokenstream::TokenTree::Token(span, token) => (span, token),
+            tokenstream::TokenTree::Token(token) => token,
         };
 
         macro_rules! tt {
             ($ty:ident { $($field:ident $(: $value:expr)*),+ $(,)? }) => (
                 TokenTree::$ty(self::$ty {
-                    $($field $(: $value)*,)*
+                    $($field $(: $value)*,)+
                     span,
                 })
             );
@@ -94,7 +93,7 @@ impl FromInternal<(TreeAndJoint, &'_ ParseSess, &'_ mut Vec<Self>)>
             }};
         }
 
-        match token {
+        match kind {
             Eq => op!('='),
             Lt => op!('<'),
             Le => op!('<', '='),
@@ -143,15 +142,14 @@ impl FromInternal<(TreeAndJoint, &'_ ParseSess, &'_ mut Vec<Self>)>
             Question => op!('?'),
             SingleQuote => op!('\''),
 
-            Ident(ident, false) if ident.name == keywords::DollarCrate.name() =>
-                tt!(Ident::dollar_crate()),
-            Ident(ident, is_raw) => tt!(Ident::new(ident.name, is_raw)),
-            Lifetime(ident) => {
-                let ident = ident.without_first_quote();
+            Ident(name, false) if name == kw::DollarCrate => tt!(Ident::dollar_crate()),
+            Ident(name, is_raw) => tt!(Ident::new(name, is_raw)),
+            Lifetime(name) => {
+                let ident = ast::Ident::new(name, span).without_first_quote();
                 stack.push(tt!(Ident::new(ident.name, false)));
                 tt!(Punct::new('\'', true))
             }
-            Literal(lit, suffix) => tt!(Literal { lit, suffix }),
+            Literal(lit) => tt!(Literal { lit }),
             DocComment(c) => {
                 let style = comments::doc_comment_style(&c.as_str());
                 let stripped = comments::strip_doc_comment_decoration(&c.as_str());
@@ -160,12 +158,12 @@ impl FromInternal<(TreeAndJoint, &'_ ParseSess, &'_ mut Vec<Self>)>
                     escaped.extend(ch.escape_debug());
                 }
                 let stream = vec![
-                    Ident(ast::Ident::new(Symbol::intern("doc"), span), false),
+                    Ident(sym::doc, false),
                     Eq,
-                    Literal(Lit::Str_(Symbol::intern(&escaped)), None),
+                    TokenKind::lit(token::Str, Symbol::intern(&escaped), None),
                 ]
                 .into_iter()
-                .map(|token| tokenstream::TokenTree::Token(span, token))
+                .map(|kind| tokenstream::TokenTree::token(kind, span))
                 .collect();
                 stack.push(TokenTree::Group(Group {
                     delimiter: Delimiter::Bracket,
@@ -212,39 +210,36 @@ impl ToInternal<TokenStream> for TokenTree<Group, Punct, Ident, Literal> {
                 .into();
             }
             TokenTree::Ident(self::Ident { sym, is_raw, span }) => {
-                let token = Ident(ast::Ident::new(sym, span), is_raw);
-                return tokenstream::TokenTree::Token(span, token).into();
+                return tokenstream::TokenTree::token(Ident(sym, is_raw), span).into();
             }
             TokenTree::Literal(self::Literal {
-                lit: Lit::Integer(ref a),
-                suffix,
+                lit: token::Lit { kind: token::Integer, symbol, suffix },
                 span,
-            }) if a.as_str().starts_with("-") => {
+            }) if symbol.as_str().starts_with("-") => {
                 let minus = BinOp(BinOpToken::Minus);
-                let integer = Symbol::intern(&a.as_str()[1..]);
-                let integer = Literal(Lit::Integer(integer), suffix);
-                let a = tokenstream::TokenTree::Token(span, minus);
-                let b = tokenstream::TokenTree::Token(span, integer);
+                let symbol = Symbol::intern(&symbol.as_str()[1..]);
+                let integer = TokenKind::lit(token::Integer, symbol, suffix);
+                let a = tokenstream::TokenTree::token(minus, span);
+                let b = tokenstream::TokenTree::token(integer, span);
                 return vec![a, b].into_iter().collect();
             }
             TokenTree::Literal(self::Literal {
-                lit: Lit::Float(ref a),
-                suffix,
+                lit: token::Lit { kind: token::Float, symbol, suffix },
                 span,
-            }) if a.as_str().starts_with("-") => {
+            }) if symbol.as_str().starts_with("-") => {
                 let minus = BinOp(BinOpToken::Minus);
-                let float = Symbol::intern(&a.as_str()[1..]);
-                let float = Literal(Lit::Float(float), suffix);
-                let a = tokenstream::TokenTree::Token(span, minus);
-                let b = tokenstream::TokenTree::Token(span, float);
+                let symbol = Symbol::intern(&symbol.as_str()[1..]);
+                let float = TokenKind::lit(token::Float, symbol, suffix);
+                let a = tokenstream::TokenTree::token(minus, span);
+                let b = tokenstream::TokenTree::token(float, span);
                 return vec![a, b].into_iter().collect();
             }
-            TokenTree::Literal(self::Literal { lit, suffix, span }) => {
-                return tokenstream::TokenTree::Token(span, Literal(lit, suffix)).into()
+            TokenTree::Literal(self::Literal { lit, span }) => {
+                return tokenstream::TokenTree::token(Literal(lit), span).into()
             }
         };
 
-        let token = match ch {
+        let kind = match ch {
             '=' => Eq,
             '<' => Lt,
             '>' => Gt,
@@ -270,7 +265,7 @@ impl ToInternal<TokenStream> for TokenTree<Group, Punct, Ident, Literal> {
             _ => unreachable!(),
         };
 
-        let tree = tokenstream::TokenTree::Token(span, token);
+        let tree = tokenstream::TokenTree::token(kind, span);
         TokenStream::new(vec![(tree, if joint { Joint } else { NonJoint })])
     }
 }
@@ -337,22 +332,19 @@ impl Ident {
         }
     }
     fn new(sym: Symbol, is_raw: bool, span: Span) -> Ident {
-        let string = sym.as_str().get();
-        if !Self::is_valid(string) {
+        let string = sym.as_str();
+        if !Self::is_valid(&string) {
             panic!("`{:?}` is not a valid identifier", string)
         }
-        if is_raw {
-            let normalized_sym = Symbol::intern(string);
-            if normalized_sym == keywords::Underscore.name() ||
-               ast::Ident::with_empty_ctxt(normalized_sym).is_path_segment_keyword() {
-                panic!("`{:?}` is not a valid raw identifier", string)
-            }
+        // Get rid of gensyms to conservatively check rawness on the string contents only.
+        if is_raw && !sym.as_interned_str().as_symbol().can_be_raw() {
+            panic!("`{}` cannot be a raw identifier", string);
         }
         Ident { sym, is_raw, span }
     }
     fn dollar_crate(span: Span) -> Ident {
         // `$crate` is accepted as an ident only if it comes from the compiler.
-        Ident { sym: keywords::DollarCrate.name(), is_raw: false, span }
+        Ident { sym: kw::DollarCrate, is_raw: false, span }
     }
 }
 
@@ -360,7 +352,6 @@ impl Ident {
 #[derive(Clone, Debug)]
 pub struct Literal {
     lit: token::Lit,
-    suffix: Option<Symbol>,
     span: Span,
 }
 
@@ -384,6 +375,13 @@ impl<'a> Rustc<'a> {
             sess: cx.parse_sess,
             def_site: to_span(Transparency::Opaque),
             call_site: to_span(Transparency::Transparent),
+        }
+    }
+
+    fn lit(&mut self, kind: token::LitKind, symbol: Symbol, suffix: Option<Symbol>) -> Literal {
+        Literal {
+            lit: token::Lit::new(kind, symbol, suffix),
+            span: server::Span::call_site(self),
         }
     }
 }
@@ -410,14 +408,12 @@ impl server::TokenStream for Rustc<'_> {
         stream.is_empty()
     }
     fn from_str(&mut self, src: &str) -> Self::TokenStream {
-        let (tokens, errors) = parse::parse_stream_from_source_str(
-            FileName::proc_macro_source_code(src.clone()),
+        parse::parse_stream_from_source_str(
+            FileName::proc_macro_source_code(src),
             src.to_string(),
             self.sess,
             Some(self.call_site),
-        );
-        emit_unclosed_delims(&errors, &self.sess.span_diagnostic);
-        tokens
+        )
     }
     fn to_string(&mut self, stream: &Self::TokenStream) -> String {
         stream.to_string()
@@ -543,59 +539,31 @@ impl server::Literal for Rustc<'_> {
         format!("{:?}", literal)
     }
     fn integer(&mut self, n: &str) -> Self::Literal {
-        Literal {
-            lit: token::Lit::Integer(Symbol::intern(n)),
-            suffix: None,
-            span: server::Span::call_site(self),
-        }
+        self.lit(token::Integer, Symbol::intern(n), None)
     }
     fn typed_integer(&mut self, n: &str, kind: &str) -> Self::Literal {
-        Literal {
-            lit: token::Lit::Integer(Symbol::intern(n)),
-            suffix: Some(Symbol::intern(kind)),
-            span: server::Span::call_site(self),
-        }
+        self.lit(token::Integer, Symbol::intern(n), Some(Symbol::intern(kind)))
     }
     fn float(&mut self, n: &str) -> Self::Literal {
-        Literal {
-            lit: token::Lit::Float(Symbol::intern(n)),
-            suffix: None,
-            span: server::Span::call_site(self),
-        }
+        self.lit(token::Float, Symbol::intern(n), None)
     }
     fn f32(&mut self, n: &str) -> Self::Literal {
-        Literal {
-            lit: token::Lit::Float(Symbol::intern(n)),
-            suffix: Some(Symbol::intern("f32")),
-            span: server::Span::call_site(self),
-        }
+        self.lit(token::Float, Symbol::intern(n), Some(Symbol::intern("f32")))
     }
     fn f64(&mut self, n: &str) -> Self::Literal {
-        Literal {
-            lit: token::Lit::Float(Symbol::intern(n)),
-            suffix: Some(Symbol::intern("f64")),
-            span: server::Span::call_site(self),
-        }
+        self.lit(token::Float, Symbol::intern(n), Some(Symbol::intern("f64")))
     }
     fn string(&mut self, string: &str) -> Self::Literal {
         let mut escaped = String::new();
         for ch in string.chars() {
             escaped.extend(ch.escape_debug());
         }
-        Literal {
-            lit: token::Lit::Str_(Symbol::intern(&escaped)),
-            suffix: None,
-            span: server::Span::call_site(self),
-        }
+        self.lit(token::Str, Symbol::intern(&escaped), None)
     }
     fn character(&mut self, ch: char) -> Self::Literal {
         let mut escaped = String::new();
         escaped.extend(ch.escape_unicode());
-        Literal {
-            lit: token::Lit::Char(Symbol::intern(&escaped)),
-            suffix: None,
-            span: server::Span::call_site(self),
-        }
+        self.lit(token::Char, Symbol::intern(&escaped), None)
     }
     fn byte_string(&mut self, bytes: &[u8]) -> Self::Literal {
         let string = bytes
@@ -604,11 +572,7 @@ impl server::Literal for Rustc<'_> {
             .flat_map(ascii::escape_default)
             .map(Into::<char>::into)
             .collect::<String>();
-        Literal {
-            lit: token::Lit::ByteStr(Symbol::intern(&string)),
-            suffix: None,
-            span: server::Span::call_site(self),
-        }
+        self.lit(token::ByteStr, Symbol::intern(&string), None)
     }
     fn span(&mut self, literal: &Self::Literal) -> Self::Span {
         literal.span
@@ -715,7 +679,7 @@ impl server::Span for Rustc<'_> {
         self.sess.source_map().lookup_char_pos(span.lo()).file
     }
     fn parent(&mut self, span: Self::Span) -> Option<Self::Span> {
-        span.ctxt().outer().expn_info().map(|i| i.call_site)
+        span.ctxt().outer_expn_info().map(|i| i.call_site)
     }
     fn source(&mut self, span: Self::Span) -> Self::Span {
         span.source_callsite()
@@ -746,5 +710,8 @@ impl server::Span for Rustc<'_> {
     }
     fn resolved_at(&mut self, span: Self::Span, at: Self::Span) -> Self::Span {
         span.with_ctxt(at.ctxt())
+    }
+    fn source_text(&mut self,  span: Self::Span) -> Option<String> {
+        self.sess.source_map().span_to_snippet(span).ok()
     }
 }

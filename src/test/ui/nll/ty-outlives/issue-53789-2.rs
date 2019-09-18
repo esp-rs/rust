@@ -2,9 +2,6 @@
 //
 // compile-pass
 
-#![feature(nll)]
-#![allow(unused_variables)]
-
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::cmp::Ord;
@@ -248,4 +245,3 @@ mod statics {
 }
 
 fn main() { }
-

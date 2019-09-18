@@ -10,6 +10,8 @@
 
 #![feature(in_band_lifetimes)]
 #![feature(unboxed_closures)]
+#![feature(generators)]
+#![feature(generator_trait)]
 #![feature(fn_traits)]
 #![feature(unsize)]
 #![feature(specialization)]
@@ -70,7 +72,9 @@ macro_rules! unlikely {
 pub mod macros;
 pub mod svh;
 pub mod base_n;
+pub mod binary_search_util;
 pub mod bit_set;
+pub mod box_region;
 pub mod const_cstr;
 pub mod flock;
 pub mod fx;

@@ -2,9 +2,6 @@
 //
 // compile-pass
 
-#![feature(nll)]
-#![allow(unused_variables)]
-
 use std::collections::BTreeMap;
 
 trait ValueTree {
@@ -88,4 +85,3 @@ fn any_with<'a, A: Arbitrary<'a>>(args: A::Parameters) -> StrategyType<'a, A> {
 }
 
 fn main() { }
-

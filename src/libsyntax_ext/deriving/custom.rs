@@ -8,7 +8,7 @@ use syntax::attr::{mark_used, mark_known};
 use syntax::source_map::Span;
 use syntax::ext::base::*;
 use syntax::parse;
-use syntax::parse::token::{self, Token};
+use syntax::parse::token;
 use syntax::tokenstream;
 use syntax::visit::Visitor;
 use syntax_pos::DUMMY_SP;
@@ -17,9 +17,11 @@ struct MarkAttrs<'a>(&'a [ast::Name]);
 
 impl<'a> Visitor<'a> for MarkAttrs<'a> {
     fn visit_attribute(&mut self, attr: &Attribute) {
-        if self.0.contains(&attr.name()) {
-            mark_used(attr);
-            mark_known(attr);
+        if let Some(ident) = attr.ident() {
+            if self.0.contains(&ident.name) {
+                mark_used(attr);
+                mark_known(attr);
+            }
         }
     }
 
@@ -66,8 +68,8 @@ impl MultiItemModifier for ProcMacroDerive {
         // Mark attributes as known, and used.
         MarkAttrs(&self.attrs).visit_item(&item);
 
-        let token = Token::Interpolated(Lrc::new(token::NtItem(item)));
-        let input = tokenstream::TokenTree::Token(DUMMY_SP, token).into();
+        let token = token::Interpolated(Lrc::new(token::NtItem(item)));
+        let input = tokenstream::TokenTree::token(token, DUMMY_SP).into();
 
         let server = proc_macro_server::Rustc::new(ecx);
         let stream = match self.client.run(&EXEC_STRATEGY, server, input) {
@@ -87,7 +89,7 @@ impl MultiItemModifier for ProcMacroDerive {
         let error_count_before = ecx.parse_sess.span_diagnostic.err_count();
         let msg = "proc-macro derive produced unparseable tokens";
 
-        let mut parser = parse::stream_to_parser(ecx.parse_sess, stream);
+        let mut parser = parse::stream_to_parser(ecx.parse_sess, stream, Some("proc-macro derive"));
         let mut items = vec![];
 
         loop {

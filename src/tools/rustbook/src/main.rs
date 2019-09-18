@@ -1,4 +1,5 @@
-//
+#![deny(rust_2018_idioms)]
+
 use clap::{crate_version};
 
 use std::env;
@@ -9,8 +10,8 @@ use clap::{App, ArgMatches, SubCommand, AppSettings};
 use mdbook_1::{MDBook as MDBook1};
 use mdbook_1::errors::{Result as Result1};
 
-use mdbook_2::{MDBook as MDBook2};
-use mdbook_2::errors::{Result as Result2};
+use mdbook::MDBook;
+use mdbook::errors::Result;
 
 fn main() {
     let d_message = "-d, --dest-dir=[dest-dir]
@@ -47,8 +48,8 @@ fn main() {
                         ::std::process::exit(101);
                     }
                 }
-                Some("2") => {
-                    if let Err(e) = build_2(sub_matches) {
+                Some("2") | Some("3") => {
+                    if let Err(e) = build(sub_matches) {
                         eprintln!("Error: {}", e);
 
                         for cause in e.iter().skip(1) {
@@ -59,7 +60,7 @@ fn main() {
                     }
                 }
                 _ => {
-                    panic!("Invalid mdBook version! Select '1' or '2'");
+                    panic!("Invalid mdBook version! Select '1' or '2' or '3'");
                 }
             };
         },
@@ -68,7 +69,7 @@ fn main() {
 }
 
 // Build command implementation
-pub fn build_1(args: &ArgMatches) -> Result1<()> {
+pub fn build_1(args: &ArgMatches<'_>) -> Result1<()> {
     let book_dir = get_book_dir(args);
     let mut book = MDBook1::load(&book_dir)?;
 
@@ -85,9 +86,9 @@ pub fn build_1(args: &ArgMatches) -> Result1<()> {
 }
 
 // Build command implementation
-pub fn build_2(args: &ArgMatches) -> Result2<()> {
+pub fn build(args: &ArgMatches<'_>) -> Result<()> {
     let book_dir = get_book_dir(args);
-    let mut book = MDBook2::load(&book_dir)?;
+    let mut book = MDBook::load(&book_dir)?;
 
     // Set this to allow us to catch bugs in advance.
     book.config.build.create_missing = false;
@@ -101,7 +102,7 @@ pub fn build_2(args: &ArgMatches) -> Result2<()> {
     Ok(())
 }
 
-fn get_book_dir(args: &ArgMatches) -> PathBuf {
+fn get_book_dir(args: &ArgMatches<'_>) -> PathBuf {
     if let Some(dir) = args.value_of("dir") {
         // Check if path is relative from current dir, or absolute...
         let p = Path::new(dir);

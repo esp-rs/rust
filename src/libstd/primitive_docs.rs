@@ -120,7 +120,7 @@ mod prim_bool { }
 /// When implementing this trait for [`String`] we need to pick a type for [`Err`]. And since
 /// converting a string into a string will never result in an error, the appropriate type is `!`.
 /// (Currently the type actually used is an enum with no variants, though this is only because `!`
-/// was added to Rust at a later date and it may change in the future). With an [`Err`] type of
+/// was added to Rust at a later date and it may change in the future.) With an [`Err`] type of
 /// `!`, if we have to call [`String::from_str`] for some reason the result will be a
 /// [`Result<String, !>`] which we can unpack like this:
 ///
@@ -204,10 +204,10 @@ mod prim_bool { }
 /// #![feature(never_type)]
 /// # use std::fmt;
 /// # trait Debug {
-/// # fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result;
+/// # fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result;
 /// # }
 /// impl Debug for ! {
-///     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+///     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 ///         *self
 ///     }
 /// }
@@ -279,7 +279,7 @@ mod prim_never { }
 ///
 /// As always, remember that a human intuition for 'character' may not map to
 /// Unicode's definitions. For example, despite looking similar, the 'é'
-/// character is one Unicode code point while 'é' is two Unicode code points:
+/// character is one Unicode code point while 'é' is two Unicode code points:
 ///
 /// ```
 /// let mut chars = "é".chars();
@@ -482,8 +482,8 @@ mod prim_pointer { }
 /// an array. Indeed, this provides most of the API for working with arrays.
 /// Slices have a dynamic size and do not coerce to arrays.
 ///
-/// There is no way to move elements out of an array. See [`mem::replace`][replace]
-/// for an alternative.
+/// You can move elements out of an array with a slice pattern. If you want
+/// one element, see [`mem::replace`][replace].
 ///
 /// # Examples
 ///
@@ -523,6 +523,16 @@ mod prim_pointer { }
 /// ```
 /// # let array: [i32; 3] = [0; 3];
 /// for x in &array { }
+/// ```
+///
+/// You can use a slice pattern to move elements out of an array:
+///
+/// ```
+/// fn move_away(_: String) { /* Do interesting things. */ }
+///
+/// let [john, roa] = ["John".to_string(), "Roa".to_string()];
+/// move_away(john);
+/// move_away(roa);
 /// ```
 ///
 /// [slice]: primitive.slice.html
@@ -682,6 +692,10 @@ mod prim_str { }
 /// assert_eq!(tuple.1, 5);
 /// assert_eq!(tuple.2, 'c');
 /// ```
+///
+/// The sequential nature of the tuple applies to its implementations of various
+/// traits.  For example, in `PartialOrd` and `Ord`, the elements are compared
+/// sequentially until the first non-equal set is found.
 ///
 /// For more about tuples, see [the book](../book/ch03-02-data-types.html#the-tuple-type).
 ///

@@ -1,19 +1,19 @@
 use crate::borrow_check::location::LocationTable;
+use crate::borrow_check::nll::constraints::OutlivesConstraintSet;
+use crate::borrow_check::nll::facts::{AllFacts, AllFactsExt};
 use crate::borrow_check::nll::region_infer::values::RegionValueElements;
-use crate::borrow_check::nll::constraints::ConstraintSet;
-use crate::borrow_check::nll::NllLivenessMap;
 use crate::borrow_check::nll::universal_regions::UniversalRegions;
+use crate::borrow_check::nll::ToRegionVid;
 use crate::dataflow::move_paths::MoveData;
-use crate::dataflow::MaybeInitializedPlaces;
 use crate::dataflow::FlowAtLocation;
-use rustc::mir::Mir;
-use rustc::ty::RegionVid;
+use crate::dataflow::MaybeInitializedPlaces;
+use rustc::mir::{Local, Body};
+use rustc::ty::{RegionVid, TyCtxt};
 use rustc_data_structures::fx::FxHashSet;
 use std::rc::Rc;
 
 use super::TypeChecker;
 
-crate mod liveness_map;
 mod local_use_map;
 mod trace;
 
@@ -25,25 +25,79 @@ mod trace;
 ///
 /// N.B., this computation requires normalization; therefore, it must be
 /// performed before
-pub(super) fn generate<'gcx, 'tcx>(
-    typeck: &mut TypeChecker<'_, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+pub(super) fn generate<'tcx>(
+    typeck: &mut TypeChecker<'_, 'tcx>,
+    body: &Body<'tcx>,
     elements: &Rc<RegionValueElements>,
-    flow_inits: &mut FlowAtLocation<'tcx, MaybeInitializedPlaces<'_, 'gcx, 'tcx>>,
+    flow_inits: &mut FlowAtLocation<'tcx, MaybeInitializedPlaces<'_, 'tcx>>,
     move_data: &MoveData<'tcx>,
     location_table: &LocationTable,
 ) {
     debug!("liveness::generate");
-    let free_regions = {
-        let borrowck_context = typeck.borrowck_context.as_ref().unwrap();
-        regions_that_outlive_free_regions(
-            typeck.infcx.num_region_vars(),
-            &borrowck_context.universal_regions,
-            &borrowck_context.constraints.outlives_constraints,
-        )
+
+    let live_locals: Vec<Local> = if AllFacts::enabled(typeck.tcx()) {
+        // If "dump facts from NLL analysis" was requested perform
+        // the liveness analysis for all `Local`s. This case opens
+        // the possibility of the variables being analyzed in `trace`
+        // to be *any* `Local`, not just the "live" ones, so we can't
+        // make any assumptions past this point as to the characteristics
+        // of the `live_locals`.
+        // FIXME: Review "live" terminology past this point, we should
+        // not be naming the `Local`s as live.
+        body.local_decls.indices().collect()
+    } else {
+        let free_regions = {
+            regions_that_outlive_free_regions(
+                typeck.infcx.num_region_vars(),
+                &typeck.borrowck_context.universal_regions,
+                &typeck.borrowck_context.constraints.outlives_constraints,
+            )
+        };
+        compute_live_locals(typeck.tcx(), &free_regions, body)
     };
-    let liveness_map = NllLivenessMap::compute(typeck.tcx(), &free_regions, mir);
-    trace::trace(typeck, mir, elements, flow_inits, move_data, &liveness_map, location_table);
+
+    if !live_locals.is_empty() {
+        trace::trace(
+            typeck,
+            body,
+            elements,
+            flow_inits,
+            move_data,
+            live_locals,
+            location_table,
+        );
+    }
+}
+
+// The purpose of `compute_live_locals` is to define the subset of `Local`
+// variables for which we need to do a liveness computation. We only need
+// to compute whether a variable `X` is live if that variable contains
+// some region `R` in its type where `R` is not known to outlive a free
+// region (i.e., where `R` may be valid for just a subset of the fn body).
+fn compute_live_locals(
+    tcx: TyCtxt<'tcx>,
+    free_regions: &FxHashSet<RegionVid>,
+    body: &Body<'tcx>,
+) -> Vec<Local> {
+    let live_locals: Vec<Local> = body
+        .local_decls
+        .iter_enumerated()
+        .filter_map(|(local, local_decl)| {
+            if tcx.all_free_regions_meet(&local_decl.ty, |r| {
+                free_regions.contains(&r.to_region_vid())
+            }) {
+                None
+            } else {
+                Some(local)
+            }
+        })
+        .collect();
+
+    debug!("{} total variables", body.local_decls.len());
+    debug!("{} variables need liveness", live_locals.len());
+    debug!("{} regions outlive free regions", free_regions.len());
+
+    live_locals
 }
 
 /// Computes all regions that are (currently) known to outlive free
@@ -53,7 +107,7 @@ pub(super) fn generate<'gcx, 'tcx>(
 fn regions_that_outlive_free_regions(
     num_region_vars: usize,
     universal_regions: &UniversalRegions<'tcx>,
-    constraint_set: &ConstraintSet,
+    constraint_set: &OutlivesConstraintSet,
 ) -> FxHashSet<RegionVid> {
     // Build a graph of the outlives constraints thus far. This is
     // a reverse graph, so for each constraint `R1: R2` we have an

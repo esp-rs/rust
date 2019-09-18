@@ -1,7 +1,7 @@
 error[E0573]: expected type, found variant `foo::Foo::FooV`
   --> $DIR/issue-30535.rs:6:8
    |
-LL |     _: foo::Foo::FooV //~ ERROR expected type, found variant `foo::Foo::FooV`
+LL |     _: foo::Foo::FooV
    |        ^^^^^^^^^^^^^^
    |        |
    |        not a type
@@ -9,4 +9,3 @@ LL |     _: foo::Foo::FooV //~ ERROR expected type, found variant `foo::Foo::Foo
 
 error: aborting due to previous error
 
-For more information about this error, try `rustc --explain E0573`.

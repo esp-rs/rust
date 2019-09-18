@@ -18,11 +18,11 @@ error[E0392]: parameter `T` is never used
   --> $DIR/issue-37534.rs:1:12
    |
 LL | struct Foo<T: ?Hash> { }
-   |            ^ unused type parameter
+   |            ^ unused parameter
    |
    = help: consider removing `T` or using a marker such as `std::marker::PhantomData`
 
 error: aborting due to 2 previous errors
 
-Some errors occurred: E0392, E0405.
+Some errors have detailed explanations: E0392, E0405.
 For more information about an error, try `rustc --explain E0392`.

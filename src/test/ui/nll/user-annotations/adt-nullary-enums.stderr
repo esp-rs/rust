@@ -1,7 +1,7 @@
 error[E0597]: `c` does not live long enough
-  --> $DIR/adt-nullary-enums.rs:34:41
+  --> $DIR/adt-nullary-enums.rs:33:41
    |
-LL |         SomeEnum::SomeVariant(Cell::new(&c)), //~ ERROR
+LL |         SomeEnum::SomeVariant(Cell::new(&c)),
    |                               ----------^^-
    |                               |         |
    |                               |         borrowed value does not live long enough
@@ -11,12 +11,12 @@ LL | }
    | - `c` dropped here while still borrowed
 
 error[E0597]: `c` does not live long enough
-  --> $DIR/adt-nullary-enums.rs:42:41
+  --> $DIR/adt-nullary-enums.rs:41:41
    |
 LL | fn annot_reference_named_lifetime<'a>(_d: &'a u32) {
    |                                   -- lifetime `'a` defined here
 ...
-LL |         SomeEnum::SomeVariant(Cell::new(&c)), //~ ERROR
+LL |         SomeEnum::SomeVariant(Cell::new(&c)),
    |                               ----------^^-
    |                               |         |
    |                               |         borrowed value does not live long enough
@@ -26,12 +26,12 @@ LL | }
    | - `c` dropped here while still borrowed
 
 error[E0597]: `c` does not live long enough
-  --> $DIR/adt-nullary-enums.rs:55:45
+  --> $DIR/adt-nullary-enums.rs:54:45
    |
 LL | fn annot_reference_named_lifetime_in_closure<'a>(_: &'a u32) {
    |                                              -- lifetime `'a` defined here
 ...
-LL |             SomeEnum::SomeVariant(Cell::new(&c)), //~ ERROR
+LL |             SomeEnum::SomeVariant(Cell::new(&c)),
    |                                   ----------^^-
    |                                   |         |
    |                                   |         borrowed value does not live long enough

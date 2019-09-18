@@ -15,7 +15,7 @@ crate type AllFacts = PoloniusAllFacts<RegionVid, BorrowIndex, LocationIndex>;
 crate trait AllFactsExt {
     /// Returns `true` if there is a need to gather `AllFacts` given the
     /// current `-Z` flags.
-    fn enabled(tcx: TyCtxt<'_, '_, '_>) -> bool;
+    fn enabled(tcx: TyCtxt<'_>) -> bool;
 
     fn write_to_dir(
         &self,
@@ -26,7 +26,7 @@ crate trait AllFactsExt {
 
 impl AllFactsExt for AllFacts {
     /// Return
-    fn enabled(tcx: TyCtxt<'_, '_, '_>) -> bool {
+    fn enabled(tcx: TyCtxt<'_>) -> bool {
         tcx.sess.opts.debugging_opts.nll_facts
             || tcx.sess.opts.debugging_opts.polonius
     }
@@ -69,18 +69,6 @@ impl AllFactsExt for AllFacts {
 impl Atom for BorrowIndex {
     fn index(self) -> usize {
         Idx::index(self)
-    }
-}
-
-impl From<usize> for BorrowIndex {
-    fn from(i: usize) -> BorrowIndex {
-        BorrowIndex::new(i)
-    }
-}
-
-impl From<BorrowIndex> for usize {
-    fn from(vid: BorrowIndex) -> usize {
-        Idx::index(vid)
     }
 }
 

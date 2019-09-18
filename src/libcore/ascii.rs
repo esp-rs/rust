@@ -11,9 +11,9 @@
 
 #![stable(feature = "core_ascii", since = "1.26.0")]
 
-use fmt;
-use ops::Range;
-use iter::FusedIterator;
+use crate::fmt;
+use crate::ops::Range;
+use crate::iter::FusedIterator;
 
 /// An iterator over the escaped version of a byte.
 ///
@@ -131,7 +131,7 @@ impl FusedIterator for EscapeDefault {}
 
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for EscapeDefault {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad("EscapeDefault { .. }")
     }
 }

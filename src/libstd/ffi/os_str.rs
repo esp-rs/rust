@@ -351,14 +351,16 @@ impl From<String> for OsString {
     /// Converts a [`String`] into a [`OsString`].
     ///
     /// The conversion copies the data, and includes an allocation on the heap.
+    ///
+    /// [`OsString`]: ../../std/ffi/struct.OsString.html
     fn from(s: String) -> OsString {
         OsString { inner: Buf::from_string(s) }
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T: ?Sized + AsRef<OsStr>> From<&'a T> for OsString {
-    fn from(s: &'a T) -> OsString {
+impl<T: ?Sized + AsRef<OsStr>> From<&T> for OsString {
+    fn from(s: &T) -> OsString {
         s.as_ref().to_os_string()
     }
 }
@@ -394,7 +396,7 @@ impl Default for OsString {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Debug for OsString {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, formatter)
     }
 }
@@ -421,8 +423,8 @@ impl PartialEq<OsString> for str {
 }
 
 #[stable(feature = "os_str_str_ref_eq", since = "1.29.0")]
-impl<'a> PartialEq<&'a str> for OsString {
-    fn eq(&self, other: &&'a str) -> bool {
+impl PartialEq<&str> for OsString {
+    fn eq(&self, other: &&str) -> bool {
         **self == **other
     }
 }
@@ -563,7 +565,7 @@ impl OsStr {
     /// }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn to_string_lossy(&self) -> Cow<str> {
+    pub fn to_string_lossy(&self) -> Cow<'_, str> {
         self.inner.to_string_lossy()
     }
 
@@ -656,8 +658,8 @@ impl OsStr {
 }
 
 #[stable(feature = "box_from_os_str", since = "1.17.0")]
-impl<'a> From<&'a OsStr> for Box<OsStr> {
-    fn from(s: &'a OsStr) -> Box<OsStr> {
+impl From<&OsStr> for Box<OsStr> {
+    fn from(s: &OsStr) -> Box<OsStr> {
         let rw = Box::into_raw(s.inner.into_box()) as *mut OsStr;
         unsafe { Box::from_raw(rw) }
     }
@@ -707,7 +709,7 @@ impl From<OsString> for Arc<OsStr> {
 }
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
-impl<'a> From<&'a OsStr> for Arc<OsStr> {
+impl From<&OsStr> for Arc<OsStr> {
     #[inline]
     fn from(s: &OsStr) -> Arc<OsStr> {
         let arc = s.inner.into_arc();
@@ -729,7 +731,7 @@ impl From<OsString> for Rc<OsStr> {
 }
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
-impl<'a> From<&'a OsStr> for Rc<OsStr> {
+impl From<&OsStr> for Rc<OsStr> {
     #[inline]
     fn from(s: &OsStr) -> Rc<OsStr> {
         let rc = s.inner.into_rc();
@@ -891,13 +893,13 @@ impl Hash for OsStr {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Debug for OsStr {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.inner, formatter)
     }
 }
 
 impl OsStr {
-    pub(crate) fn display(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    pub(crate) fn display(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.inner, formatter)
     }
 }
@@ -960,6 +962,7 @@ impl IntoInner<Buf> for OsString {
 }
 
 impl AsInner<Slice> for OsStr {
+    #[inline]
     fn as_inner(&self) -> &Slice {
         &self.inner
     }

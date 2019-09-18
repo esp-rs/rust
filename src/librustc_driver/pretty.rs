@@ -6,13 +6,14 @@ use rustc::hir;
 use rustc::hir::map as hir_map;
 use rustc::hir::map::blocks;
 use rustc::hir::print as pprust_hir;
+use rustc::hir::def_id::LOCAL_CRATE;
 use rustc::session::Session;
-use rustc::session::config::{Input, OutputFilenames};
-use rustc::ty::{self, TyCtxt, Resolutions, AllArenas};
-use rustc_interface::util;
+use rustc::session::config::Input;
+use rustc::ty::{self, TyCtxt};
+use rustc::util::common::ErrorReported;
+use rustc_interface::util::ReplaceBodyWithLoop;
 use rustc_borrowck as borrowck;
 use rustc_borrowck::graphviz as borrowck_dot;
-use rustc_metadata::cstore::CStore;
 use rustc_mir::util::{write_mir_pretty, write_mir_graphviz};
 
 use syntax::ast;
@@ -34,8 +35,9 @@ pub use self::UserIdentifiedItem::*;
 pub use self::PpSourceMode::*;
 pub use self::PpMode::*;
 use self::NodesMatchingUII::*;
-use abort_on_err;
-use driver;
+use crate::abort_on_err;
+
+use crate::source_name;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum PpSourceMode {
@@ -152,18 +154,20 @@ pub fn parse_pretty(sess: &Session,
 
 impl PpSourceMode {
     /// Constructs a `PrinterSupport` object and passes it to `f`.
-    fn call_with_pp_support<'tcx, A, F>(&self,
-                                        sess: &'tcx Session,
-                                        hir_map: Option<&hir_map::Map<'tcx>>,
-                                        f: F)
-                                        -> A
-        where F: FnOnce(&dyn PrinterSupport) -> A
+    fn call_with_pp_support<'tcx, A, F>(
+        &self,
+        sess: &'tcx Session,
+        tcx: Option<TyCtxt<'tcx>>,
+        f: F,
+    ) -> A
+    where
+        F: FnOnce(&dyn PrinterSupport) -> A,
     {
         match *self {
             PpmNormal | PpmEveryBodyLoops | PpmExpanded => {
                 let annotation = NoAnn {
                     sess,
-                    hir_map: hir_map.map(|m| m.clone()),
+                    tcx,
                 };
                 f(&annotation)
             }
@@ -171,7 +175,7 @@ impl PpSourceMode {
             PpmIdentified | PpmExpandedIdentified => {
                 let annotation = IdentifiedAnnotation {
                     sess,
-                    hir_map: hir_map.map(|m| m.clone()),
+                    tcx,
                 };
                 f(&annotation)
             }
@@ -184,57 +188,36 @@ impl PpSourceMode {
             _ => panic!("Should use call_with_pp_support_hir"),
         }
     }
-    fn call_with_pp_support_hir<'tcx, A, F>(
-        &self,
-        sess: &'tcx Session,
-        cstore: &'tcx CStore,
-        hir_map: &hir_map::Map<'tcx>,
-        resolutions: &Resolutions,
-        output_filenames: &OutputFilenames,
-        id: &str,
-        f: F
-    ) -> A
-        where F: FnOnce(&dyn HirPrinterSupport, &hir::Crate) -> A
+    fn call_with_pp_support_hir<'tcx, A, F>(&self, tcx: TyCtxt<'tcx>, f: F) -> A
+    where
+        F: FnOnce(&dyn HirPrinterSupport<'_>, &hir::Crate) -> A,
     {
         match *self {
             PpmNormal => {
                 let annotation = NoAnn {
-                    sess,
-                    hir_map: Some(hir_map.clone()),
+                    sess: tcx.sess,
+                    tcx: Some(tcx),
                 };
-                f(&annotation, hir_map.forest.krate())
+                f(&annotation, tcx.hir().forest.krate())
             }
 
             PpmIdentified => {
                 let annotation = IdentifiedAnnotation {
-                    sess,
-                    hir_map: Some(hir_map.clone()),
+                    sess: tcx.sess,
+                    tcx: Some(tcx),
                 };
-                f(&annotation, hir_map.forest.krate())
+                f(&annotation, tcx.hir().forest.krate())
             }
             PpmTyped => {
-                let control = &driver::CompileController::basic();
-                let codegen_backend = util::get_codegen_backend(sess);
-                let mut arenas = AllArenas::new();
-                driver::phase_3_run_analysis_passes(&*codegen_backend,
-                                                    control,
-                                                    sess,
-                                                    cstore,
-                                                    hir_map.clone(),
-                                                    resolutions.clone(),
-                                                    &mut arenas,
-                                                    id,
-                                                    output_filenames,
-                                                    |tcx, _, result| {
-                    abort_on_err(result, tcx.sess);
-                    let empty_tables = ty::TypeckTables::empty(None);
-                    let annotation = TypedAnnotation {
-                        tcx,
-                        tables: Cell::new(&empty_tables)
-                    };
-                    tcx.dep_graph.with_ignore(|| {
-                        f(&annotation, hir_map.forest.krate())
-                    })
+                abort_on_err(tcx.analysis(LOCAL_CRATE), tcx.sess);
+
+                let empty_tables = ty::TypeckTables::empty(None);
+                let annotation = TypedAnnotation {
+                    tcx,
+                    tables: Cell::new(&empty_tables)
+                };
+                tcx.dep_graph.with_ignore(|| {
+                    f(&annotation, tcx.hir().forest.krate())
                 })
             }
             _ => panic!("Should use call_with_pp_support"),
@@ -270,8 +253,10 @@ trait HirPrinterSupport<'hir>: pprust_hir::PpAnn {
     fn pp_ann<'a>(&'a self) -> &'a dyn pprust_hir::PpAnn;
 
     /// Computes an user-readable representation of a path, if possible.
-    fn node_path(&self, id: ast::NodeId) -> Option<String> {
-        self.hir_map().and_then(|map| map.def_path_from_id(id)).map(|path| {
+    fn node_path(&self, id: hir::HirId) -> Option<String> {
+        self.hir_map().and_then(|map| {
+            map.def_path_from_hir_id(id)
+        }).map(|path| {
             path.data
                 .into_iter()
                 .map(|elem| elem.data.to_string())
@@ -283,7 +268,7 @@ trait HirPrinterSupport<'hir>: pprust_hir::PpAnn {
 
 struct NoAnn<'hir> {
     sess: &'hir Session,
-    hir_map: Option<hir_map::Map<'hir>>,
+    tcx: Option<TyCtxt<'hir>>,
 }
 
 impl<'hir> PrinterSupport for NoAnn<'hir> {
@@ -302,7 +287,7 @@ impl<'hir> HirPrinterSupport<'hir> for NoAnn<'hir> {
     }
 
     fn hir_map<'a>(&'a self) -> Option<&'a hir_map::Map<'hir>> {
-        self.hir_map.as_ref()
+        self.tcx.map(|tcx| tcx.hir())
     }
 
     fn pp_ann<'a>(&'a self) -> &'a dyn pprust_hir::PpAnn {
@@ -312,10 +297,10 @@ impl<'hir> HirPrinterSupport<'hir> for NoAnn<'hir> {
 
 impl<'hir> pprust::PpAnn for NoAnn<'hir> {}
 impl<'hir> pprust_hir::PpAnn for NoAnn<'hir> {
-    fn nested(&self, state: &mut pprust_hir::State, nested: pprust_hir::Nested)
+    fn nested(&self, state: &mut pprust_hir::State<'_>, nested: pprust_hir::Nested)
               -> io::Result<()> {
-        if let Some(ref map) = self.hir_map {
-            pprust_hir::PpAnn::nested(map, state, nested)
+        if let Some(tcx) = self.tcx {
+            pprust_hir::PpAnn::nested(tcx.hir(), state, nested)
         } else {
             Ok(())
         }
@@ -324,7 +309,7 @@ impl<'hir> pprust_hir::PpAnn for NoAnn<'hir> {
 
 struct IdentifiedAnnotation<'hir> {
     sess: &'hir Session,
-    hir_map: Option<hir_map::Map<'hir>>,
+    tcx: Option<TyCtxt<'hir>>,
 }
 
 impl<'hir> PrinterSupport for IdentifiedAnnotation<'hir> {
@@ -338,13 +323,13 @@ impl<'hir> PrinterSupport for IdentifiedAnnotation<'hir> {
 }
 
 impl<'hir> pprust::PpAnn for IdentifiedAnnotation<'hir> {
-    fn pre(&self, s: &mut pprust::State, node: pprust::AnnNode) -> io::Result<()> {
+    fn pre(&self, s: &mut pprust::State<'_>, node: pprust::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust::AnnNode::Expr(_) => s.popen(),
             _ => Ok(()),
         }
     }
-    fn post(&self, s: &mut pprust::State, node: pprust::AnnNode) -> io::Result<()> {
+    fn post(&self, s: &mut pprust::State<'_>, node: pprust::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust::AnnNode::Ident(_) |
             pprust::AnnNode::Name(_) => Ok(()),
@@ -380,7 +365,7 @@ impl<'hir> HirPrinterSupport<'hir> for IdentifiedAnnotation<'hir> {
     }
 
     fn hir_map<'a>(&'a self) -> Option<&'a hir_map::Map<'hir>> {
-        self.hir_map.as_ref()
+        self.tcx.map(|tcx| tcx.hir())
     }
 
     fn pp_ann<'a>(&'a self) -> &'a dyn pprust_hir::PpAnn {
@@ -389,27 +374,27 @@ impl<'hir> HirPrinterSupport<'hir> for IdentifiedAnnotation<'hir> {
 }
 
 impl<'hir> pprust_hir::PpAnn for IdentifiedAnnotation<'hir> {
-    fn nested(&self, state: &mut pprust_hir::State, nested: pprust_hir::Nested)
+    fn nested(&self, state: &mut pprust_hir::State<'_>, nested: pprust_hir::Nested)
               -> io::Result<()> {
-        if let Some(ref map) = self.hir_map {
-            pprust_hir::PpAnn::nested(map, state, nested)
+        if let Some(ref tcx) = self.tcx {
+            pprust_hir::PpAnn::nested(tcx.hir(), state, nested)
         } else {
             Ok(())
         }
     }
-    fn pre(&self, s: &mut pprust_hir::State, node: pprust_hir::AnnNode) -> io::Result<()> {
+    fn pre(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust_hir::AnnNode::Expr(_) => s.popen(),
             _ => Ok(()),
         }
     }
-    fn post(&self, s: &mut pprust_hir::State, node: pprust_hir::AnnNode) -> io::Result<()> {
+    fn post(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust_hir::AnnNode::Name(_) => Ok(()),
             pprust_hir::AnnNode::Item(item) => {
                 s.s.space()?;
-                s.synth_comment(format!("node_id: {} hir local_id: {}",
-                                        item.id, item.hir_id.local_id.as_u32()))
+                s.synth_comment(format!("hir_id: {} hir local_id: {}",
+                                        item.hir_id, item.hir_id.local_id.as_u32()))
             }
             pprust_hir::AnnNode::SubItem(id) => {
                 s.s.space()?;
@@ -428,8 +413,8 @@ impl<'hir> pprust_hir::PpAnn for IdentifiedAnnotation<'hir> {
             }
             pprust_hir::AnnNode::Pat(pat) => {
                 s.s.space()?;
-                s.synth_comment(format!("pat node_id: {} hir local_id: {}",
-                                        pat.id, pat.hir_id.local_id.as_u32()))
+                s.synth_comment(format!("pat hir_id: {} hir local_id: {}",
+                                        pat.hir_id, pat.hir_id.local_id.as_u32()))
             }
         }
     }
@@ -450,7 +435,7 @@ impl<'a> PrinterSupport for HygieneAnnotation<'a> {
 }
 
 impl<'a> pprust::PpAnn for HygieneAnnotation<'a> {
-    fn post(&self, s: &mut pprust::State, node: pprust::AnnNode) -> io::Result<()> {
+    fn post(&self, s: &mut pprust::State<'_>, node: pprust::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust::AnnNode::Ident(&ast::Ident { name, span }) => {
                 s.s.space()?;
@@ -467,9 +452,8 @@ impl<'a> pprust::PpAnn for HygieneAnnotation<'a> {
     }
 }
 
-
-struct TypedAnnotation<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct TypedAnnotation<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
     tables: Cell<&'a ty::TypeckTables<'tcx>>,
 }
 
@@ -486,13 +470,13 @@ impl<'b, 'tcx> HirPrinterSupport<'tcx> for TypedAnnotation<'b, 'tcx> {
         self
     }
 
-    fn node_path(&self, id: ast::NodeId) -> Option<String> {
-        Some(self.tcx.node_path_str(id))
+    fn node_path(&self, id: hir::HirId) -> Option<String> {
+        Some(self.tcx.def_path_str(self.tcx.hir().local_def_id_from_hir_id(id)))
     }
 }
 
 impl<'a, 'tcx> pprust_hir::PpAnn for TypedAnnotation<'a, 'tcx> {
-    fn nested(&self, state: &mut pprust_hir::State, nested: pprust_hir::Nested)
+    fn nested(&self, state: &mut pprust_hir::State<'_>, nested: pprust_hir::Nested)
               -> io::Result<()> {
         let old_tables = self.tables.get();
         if let pprust_hir::Nested::Body(id) = nested {
@@ -502,13 +486,13 @@ impl<'a, 'tcx> pprust_hir::PpAnn for TypedAnnotation<'a, 'tcx> {
         self.tables.set(old_tables);
         Ok(())
     }
-    fn pre(&self, s: &mut pprust_hir::State, node: pprust_hir::AnnNode) -> io::Result<()> {
+    fn pre(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust_hir::AnnNode::Expr(_) => s.popen(),
             _ => Ok(()),
         }
     }
-    fn post(&self, s: &mut pprust_hir::State, node: pprust_hir::AnnNode) -> io::Result<()> {
+    fn post(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust_hir::AnnNode::Expr(expr) => {
                 s.s.space()?;
@@ -556,12 +540,12 @@ impl FromStr for UserIdentifiedItem {
     }
 }
 
-enum NodesMatchingUII<'a, 'hir: 'a> {
+enum NodesMatchingUII<'a> {
     NodesMatchingDirect(option::IntoIter<ast::NodeId>),
-    NodesMatchingSuffix(hir_map::NodesMatchingSuffix<'a, 'hir>),
+    NodesMatchingSuffix(Box<dyn Iterator<Item = ast::NodeId> + 'a>),
 }
 
-impl<'a, 'hir> Iterator for NodesMatchingUII<'a, 'hir> {
+impl<'a> Iterator for NodesMatchingUII<'a> {
     type Item = ast::NodeId;
 
     fn next(&mut self) -> Option<ast::NodeId> {
@@ -589,14 +573,20 @@ impl UserIdentifiedItem {
 
     fn all_matching_node_ids<'a, 'hir>(&'a self,
                                        map: &'a hir_map::Map<'hir>)
-                                       -> NodesMatchingUII<'a, 'hir> {
+                                       -> NodesMatchingUII<'a> {
         match *self {
             ItemViaNode(node_id) => NodesMatchingDirect(Some(node_id).into_iter()),
-            ItemViaPath(ref parts) => NodesMatchingSuffix(map.nodes_matching_suffix(&parts)),
+            ItemViaPath(ref parts) => {
+                NodesMatchingSuffix(Box::new(map.nodes_matching_suffix(&parts)))
+            }
         }
     }
 
-    fn to_one_node_id(self, user_option: &str, sess: &Session, map: &hir_map::Map) -> ast::NodeId {
+    fn to_one_node_id(self,
+                      user_option: &str,
+                      sess: &Session,
+                      map: &hir_map::Map<'_>)
+                      -> ast::NodeId {
         let fail_because = |is_wrong_because| -> ast::NodeId {
             let message = format!("{} needs NodeId (int) or unique path suffix (b::c::d); got \
                                    {}, which {}",
@@ -624,22 +614,23 @@ impl UserIdentifiedItem {
     }
 }
 
-fn print_flowgraph<'a, 'tcx, W: Write>(variants: Vec<borrowck_dot::Variant>,
-                                       tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                       code: blocks::Code<'tcx>,
-                                       mode: PpFlowGraphMode,
-                                       mut out: W)
-                                       -> io::Result<()> {
+fn print_flowgraph<'tcx, W: Write>(
+    variants: Vec<borrowck_dot::Variant>,
+    tcx: TyCtxt<'tcx>,
+    code: blocks::Code<'tcx>,
+    mode: PpFlowGraphMode,
+    mut out: W,
+) -> io::Result<()> {
     let body_id = match code {
         blocks::Code::Expr(expr) => {
             // Find the function this expression is from.
             let mut hir_id = expr.hir_id;
             loop {
-                let node = tcx.hir().get_by_hir_id(hir_id);
+                let node = tcx.hir().get(hir_id);
                 if let Some(n) = hir::map::blocks::FnLikeNode::from_node(node) {
                     break n.body();
                 }
-                let parent = tcx.hir().get_parent_node_by_hir_id(hir_id);
+                let parent = tcx.hir().get_parent_node(hir_id);
                 assert_ne!(hir_id, parent);
                 hir_id = parent;
             }
@@ -649,10 +640,19 @@ fn print_flowgraph<'a, 'tcx, W: Write>(variants: Vec<borrowck_dot::Variant>,
     let body = tcx.hir().body(body_id);
     let cfg = cfg::CFG::new(tcx, &body);
     let labelled_edges = mode != PpFlowGraphMode::UnlabelledEdges;
+    let hir_id = code.id();
+    // We have to disassemble the hir_id because name must be ASCII
+    // alphanumeric. This does not appear in the rendered graph, so it does not
+    // have to be user friendly.
+    let name = format!(
+        "hir_id_{}_{}",
+        hir_id.owner.index(),
+        hir_id.local_id.index(),
+    );
     let lcfg = LabelledCFG {
         tcx,
         cfg: &cfg,
-        name: format!("node_{}", code.id()),
+        name,
         labelled_edges,
     };
 
@@ -691,12 +691,12 @@ fn print_flowgraph<'a, 'tcx, W: Write>(variants: Vec<borrowck_dot::Variant>,
 
 pub fn visit_crate(sess: &Session, krate: &mut ast::Crate, ppm: PpMode) {
     if let PpmSource(PpmEveryBodyLoops) = ppm {
-        util::ReplaceBodyWithLoop::new(sess).visit_crate(krate);
+        ReplaceBodyWithLoop::new(sess).visit_crate(krate);
     }
 }
 
 fn get_source(input: &Input, sess: &Session) -> (Vec<u8>, FileName) {
-    let src_name = input.source_name();
+    let src_name = source_name(input);
     let src = sess.source_map()
         .get_source_file(&src_name)
         .unwrap()
@@ -752,31 +752,25 @@ pub fn print_after_parsing(sess: &Session,
     write_output(out, ofile);
 }
 
-pub fn print_after_hir_lowering<'tcx, 'a: 'tcx>(sess: &'a Session,
-                                                cstore: &'tcx CStore,
-                                                hir_map: &hir_map::Map<'tcx>,
-                                                resolutions: &Resolutions,
-                                                input: &Input,
-                                                krate: &ast::Crate,
-                                                crate_name: &str,
-                                                ppm: PpMode,
-                                                output_filenames: &OutputFilenames,
-                                                opt_uii: Option<UserIdentifiedItem>,
-                                                ofile: Option<&Path>) {
+pub fn print_after_hir_lowering<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    input: &Input,
+    krate: &ast::Crate,
+    ppm: PpMode,
+    opt_uii: Option<UserIdentifiedItem>,
+    ofile: Option<&Path>,
+) {
     if ppm.needs_analysis() {
-        print_with_analysis(sess,
-                            cstore,
-                            hir_map,
-                            resolutions,
-                            crate_name,
-                            output_filenames,
-                            ppm,
-                            opt_uii,
-                            ofile);
+        abort_on_err(print_with_analysis(
+            tcx,
+            ppm,
+            opt_uii,
+            ofile
+        ), tcx.sess);
         return;
     }
 
-    let (src, src_name) = get_source(input, sess);
+    let (src, src_name) = get_source(input, tcx.sess);
 
     let mut rdr = &src[..];
     let mut out = Vec::new();
@@ -785,7 +779,7 @@ pub fn print_after_hir_lowering<'tcx, 'a: 'tcx>(sess: &'a Session,
             (PpmSource(s), _) => {
                 // Silently ignores an identified node.
                 let out: &mut dyn Write = &mut out;
-                s.call_with_pp_support(sess, Some(hir_map), move |annotation| {
+                s.call_with_pp_support(tcx.sess, Some(tcx), move |annotation| {
                     debug!("pretty printing source code {:?}", s);
                     let sess = annotation.sess();
                     pprust::print_crate(sess.source_map(),
@@ -801,13 +795,7 @@ pub fn print_after_hir_lowering<'tcx, 'a: 'tcx>(sess: &'a Session,
 
             (PpmHir(s), None) => {
                 let out: &mut dyn Write = &mut out;
-                s.call_with_pp_support_hir(sess,
-                                           cstore,
-                                           hir_map,
-                                           resolutions,
-                                           output_filenames,
-                                           crate_name,
-                                           move |annotation, krate| {
+                s.call_with_pp_support_hir(tcx, move |annotation, krate| {
                     debug!("pretty printing source code {:?}", s);
                     let sess = annotation.sess();
                     pprust_hir::print_crate(sess.source_map(),
@@ -816,20 +804,13 @@ pub fn print_after_hir_lowering<'tcx, 'a: 'tcx>(sess: &'a Session,
                                             src_name,
                                             &mut rdr,
                                             box out,
-                                            annotation.pp_ann(),
-                                            true)
+                                            annotation.pp_ann())
                 })
             }
 
             (PpmHirTree(s), None) => {
                 let out: &mut dyn Write = &mut out;
-                s.call_with_pp_support_hir(sess,
-                                           cstore,
-                                           hir_map,
-                                           resolutions,
-                                           output_filenames,
-                                           crate_name,
-                                           move |_annotation, krate| {
+                s.call_with_pp_support_hir(tcx, move |_annotation, krate| {
                     debug!("pretty printing source code {:?}", s);
                     write!(out, "{:#?}", krate)
                 })
@@ -837,13 +818,7 @@ pub fn print_after_hir_lowering<'tcx, 'a: 'tcx>(sess: &'a Session,
 
             (PpmHir(s), Some(uii)) => {
                 let out: &mut dyn Write = &mut out;
-                s.call_with_pp_support_hir(sess,
-                                           cstore,
-                                           hir_map,
-                                           resolutions,
-                                           output_filenames,
-                                           crate_name,
-                                           move |annotation, _| {
+                s.call_with_pp_support_hir(tcx, move |annotation, _| {
                     debug!("pretty printing source code {:?}", s);
                     let sess = annotation.sess();
                     let hir_map = annotation.hir_map().expect("-Z unpretty missing HIR map");
@@ -852,13 +827,13 @@ pub fn print_after_hir_lowering<'tcx, 'a: 'tcx>(sess: &'a Session,
                                                                          src_name,
                                                                          &mut rdr,
                                                                          box out,
-                                                                         annotation.pp_ann(),
-                                                                         true);
+                                                                         annotation.pp_ann());
                     for node_id in uii.all_matching_node_ids(hir_map) {
-                        let node = hir_map.get(node_id);
+                        let hir_id = tcx.hir().node_to_hir_id(node_id);
+                        let node = hir_map.get(hir_id);
                         pp_state.print_node(node)?;
                         pp_state.s.space()?;
-                        let path = annotation.node_path(node_id)
+                        let path = annotation.node_path(hir_id)
                             .expect("-Z unpretty missing node paths");
                         pp_state.synth_comment(path)?;
                         pp_state.s.hardbreak()?;
@@ -869,16 +844,11 @@ pub fn print_after_hir_lowering<'tcx, 'a: 'tcx>(sess: &'a Session,
 
             (PpmHirTree(s), Some(uii)) => {
                 let out: &mut dyn Write = &mut out;
-                s.call_with_pp_support_hir(sess,
-                                           cstore,
-                                           hir_map,
-                                           resolutions,
-                                           output_filenames,
-                                           crate_name,
-                                           move |_annotation, _krate| {
+                s.call_with_pp_support_hir(tcx, move |_annotation, _krate| {
                     debug!("pretty printing source code {:?}", s);
-                    for node_id in uii.all_matching_node_ids(hir_map) {
-                        let node = hir_map.get(node_id);
+                    for node_id in uii.all_matching_node_ids(tcx.hir()) {
+                        let hir_id = tcx.hir().node_to_hir_id(node_id);
+                        let node = tcx.hir().get(hir_id);
                         write!(out, "{:#?}", node)?;
                     }
                     Ok(())
@@ -896,18 +866,15 @@ pub fn print_after_hir_lowering<'tcx, 'a: 'tcx>(sess: &'a Session,
 // analysis is performed. However, we want to call `phase_3_run_analysis_passes`
 // with a different callback than the standard driver, so that isn't easy.
 // Instead, we call that function ourselves.
-fn print_with_analysis<'tcx, 'a: 'tcx>(sess: &'a Session,
-                                       cstore: &'a CStore,
-                                       hir_map: &hir_map::Map<'tcx>,
-                                       resolutions: &Resolutions,
-                                       crate_name: &str,
-                                       output_filenames: &OutputFilenames,
-                                       ppm: PpMode,
-                                       uii: Option<UserIdentifiedItem>,
-                                       ofile: Option<&Path>) {
+fn print_with_analysis<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    ppm: PpMode,
+    uii: Option<UserIdentifiedItem>,
+    ofile: Option<&Path>,
+) -> Result<(), ErrorReported> {
     let nodeid = if let Some(uii) = uii {
         debug!("pretty printing for {:?}", uii);
-        Some(uii.to_one_node_id("-Z unpretty", sess, &hir_map))
+        Some(uii.to_one_node_id("-Z unpretty", tcx.sess, tcx.hir()))
     } else {
         debug!("pretty printing for whole crate");
         None
@@ -915,66 +882,59 @@ fn print_with_analysis<'tcx, 'a: 'tcx>(sess: &'a Session,
 
     let mut out = Vec::new();
 
-    let control = &driver::CompileController::basic();
-    let codegen_backend = util::get_codegen_backend(sess);
-    let mut arenas = AllArenas::new();
-    driver::phase_3_run_analysis_passes(&*codegen_backend,
-                                        control,
-                                        sess,
-                                        cstore,
-                                        hir_map.clone(),
-                                        resolutions.clone(),
-                                        &mut arenas,
-                                        crate_name,
-                                        output_filenames,
-                                        |tcx, _, result| {
-        abort_on_err(result, tcx.sess);
-        match ppm {
-            PpmMir | PpmMirCFG => {
-                if let Some(nodeid) = nodeid {
-                    let def_id = tcx.hir().local_def_id(nodeid);
-                    match ppm {
-                        PpmMir => write_mir_pretty(tcx, Some(def_id), &mut out),
-                        PpmMirCFG => write_mir_graphviz(tcx, Some(def_id), &mut out),
-                        _ => unreachable!(),
-                    }?;
-                } else {
-                    match ppm {
-                        PpmMir => write_mir_pretty(tcx, None, &mut out),
-                        PpmMirCFG => write_mir_graphviz(tcx, None, &mut out),
-                        _ => unreachable!(),
-                    }?;
-                }
-                Ok(())
+    tcx.analysis(LOCAL_CRATE)?;
+
+    let mut print = || match ppm {
+        PpmMir | PpmMirCFG => {
+            if let Some(nodeid) = nodeid {
+                let def_id = tcx.hir().local_def_id(nodeid);
+                match ppm {
+                    PpmMir => write_mir_pretty(tcx, Some(def_id), &mut out),
+                    PpmMirCFG => write_mir_graphviz(tcx, Some(def_id), &mut out),
+                    _ => unreachable!(),
+                }?;
+            } else {
+                match ppm {
+                    PpmMir => write_mir_pretty(tcx, None, &mut out),
+                    PpmMirCFG => write_mir_graphviz(tcx, None, &mut out),
+                    _ => unreachable!(),
+                }?;
             }
-            PpmFlowGraph(mode) => {
-                let nodeid =
-                    nodeid.expect("`pretty flowgraph=..` needs NodeId (int) or unique path \
-                                   suffix (b::c::d)");
-                let node = tcx.hir().find(nodeid).unwrap_or_else(|| {
-                    tcx.sess.fatal(&format!("--pretty flowgraph couldn't find id: {}", nodeid))
-                });
-
-                match blocks::Code::from_node(&tcx.hir(), nodeid) {
-                    Some(code) => {
-                        let variants = gather_flowgraph_variants(tcx.sess);
-
-                        let out: &mut dyn Write = &mut out;
-
-                        print_flowgraph(variants, tcx, code, mode, out)
-                    }
-                    None => {
-                        let message = format!("--pretty=flowgraph needs block, fn, or method; \
-                                               got {:?}",
-                                              node);
-
-                        tcx.sess.span_fatal(tcx.hir().span(nodeid), &message)
-                    }
-                }
-            }
-            _ => unreachable!(),
+            Ok(())
         }
-    }).unwrap();
+        PpmFlowGraph(mode) => {
+            let nodeid =
+                nodeid.expect("`pretty flowgraph=..` needs NodeId (int) or unique path \
+                                suffix (b::c::d)");
+            let hir_id = tcx.hir().node_to_hir_id(nodeid);
+            let node = tcx.hir().find(hir_id).unwrap_or_else(|| {
+                tcx.sess.fatal(&format!("--pretty flowgraph couldn't find id: {}", nodeid))
+            });
+
+            match blocks::Code::from_node(&tcx.hir(), hir_id) {
+                Some(code) => {
+                    let variants = gather_flowgraph_variants(tcx.sess);
+
+                    let out: &mut dyn Write = &mut out;
+
+                    print_flowgraph(variants, tcx, code, mode, out)
+                }
+                None => {
+                    let message = format!("--pretty=flowgraph needs block, fn, or method; \
+                                            got {:?}",
+                                            node);
+
+                    let hir_id = tcx.hir().node_to_hir_id(nodeid);
+                    tcx.sess.span_fatal(tcx.hir().span(hir_id), &message)
+                }
+            }
+        }
+        _ => unreachable!(),
+    };
+
+    print().unwrap();
 
     write_output(out, ofile);
+
+    Ok(())
 }

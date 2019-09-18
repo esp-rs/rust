@@ -564,7 +564,7 @@ pub mod debuginfo {
 
     // These values **must** match with LLVMRustDIFlags!!
     bitflags! {
-        #[repr(C)]
+        #[repr(transparent)]
         #[derive(Default)]
         pub struct DIFlags: ::libc::uint32_t {
             const FlagZero                = 0;
@@ -588,13 +588,12 @@ pub mod debuginfo {
             const FlagIntroducedVirtual   = (1 << 18);
             const FlagBitField            = (1 << 19);
             const FlagNoReturn            = (1 << 20);
-            const FlagMainSubprogram      = (1 << 21);
         }
     }
 
     // These values **must** match with LLVMRustDISPFlags!!
     bitflags! {
-        #[repr(C)]
+        #[repr(transparent)]
         #[derive(Default)]
         pub struct DISPFlags: ::libc::uint32_t {
             const SPFlagZero              = 0;
@@ -603,6 +602,7 @@ pub mod debuginfo {
             const SPFlagLocalToUnit       = (1 << 2);
             const SPFlagDefinition        = (1 << 3);
             const SPFlagOptimized         = (1 << 4);
+            const SPFlagMainSubprogram    = (1 << 5);
         }
     }
 
@@ -1002,6 +1002,36 @@ extern "C" {
                          RHS: &'a Value,
                          Name: *const c_char)
                          -> &'a Value;
+    pub fn LLVMBuildNSWAdd(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWAdd(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNSWSub(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWSub(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNSWMul(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWMul(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
     pub fn LLVMBuildAnd(B: &Builder<'a>,
                         LHS: &'a Value,
                         RHS: &'a Value,
@@ -1382,7 +1412,6 @@ extern "C" {
     pub fn LLVMRustDebugMetadataVersion() -> u32;
     pub fn LLVMRustVersionMajor() -> u32;
     pub fn LLVMRustVersionMinor() -> u32;
-    pub fn LLVMRustIsRustLLVM() -> bool;
 
     pub fn LLVMRustAddModuleFlag(M: &Module, name: *const c_char, value: u32);
 
@@ -1687,7 +1716,8 @@ extern "C" {
                                Demangle: extern fn(*const c_char,
                                                    size_t,
                                                    *mut c_char,
-                                                   size_t) -> size_t);
+                                                   size_t) -> size_t,
+                               ) -> LLVMRustResult;
     pub fn LLVMRustSetLLVMOptions(Argc: c_int, Argv: *const *const c_char);
     pub fn LLVMRustPrintPasses();
     pub fn LLVMRustSetNormalizedTarget(M: &Module, triple: *const c_char);

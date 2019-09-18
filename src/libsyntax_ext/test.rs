@@ -3,12 +3,12 @@
 
 use syntax::ext::base::*;
 use syntax::ext::build::AstBuilder;
-use syntax::ext::hygiene::{self, Mark, SyntaxContext};
+use syntax::ext::hygiene::{Mark, SyntaxContext};
 use syntax::attr;
 use syntax::ast;
 use syntax::print::pprust;
-use syntax::symbol::Symbol;
-use syntax_pos::{DUMMY_SP, Span};
+use syntax::symbol::{Symbol, sym};
+use syntax_pos::Span;
 use syntax::source_map::{ExpnInfo, MacroAttribute};
 use std::iter;
 
@@ -62,18 +62,10 @@ pub fn expand_test_or_bench(
 
     let (sp, attr_sp) = {
         let mark = Mark::fresh(Mark::root());
-        mark.set_expn_info(ExpnInfo {
-            call_site: DUMMY_SP,
-            def_site: None,
-            format: MacroAttribute(Symbol::intern("test")),
-            allow_internal_unstable: Some(vec![
-                Symbol::intern("rustc_attrs"),
-                Symbol::intern("test"),
-            ].into()),
-            allow_internal_unsafe: false,
-            local_inner_macros: false,
-            edition: hygiene::default_edition(),
-        });
+        mark.set_expn_info(ExpnInfo::with_unstable(
+            MacroAttribute(sym::test), attr_sp, cx.parse_sess.edition,
+            &[sym::rustc_attrs, sym::test],
+        ));
         (item.span.with_ctxt(SyntaxContext::empty().apply_mark(mark)),
          attr_sp.with_ctxt(SyntaxContext::empty().apply_mark(mark)))
     };
@@ -86,7 +78,7 @@ pub fn expand_test_or_bench(
         cx.path(sp, vec![test_id, cx.ident_of(name)])
     };
 
-    // creates test::$name
+    // creates test::ShouldPanic::$name
     let should_panic_path = |name| {
         cx.path(sp, vec![test_id, cx.ident_of("ShouldPanic"), cx.ident_of(name)])
     };
@@ -127,14 +119,14 @@ pub fn expand_test_or_bench(
         ])
     };
 
-    let mut test_const = cx.item(sp, ast::Ident::new(item.ident.name.gensymed(), sp),
+    let mut test_const = cx.item(sp, ast::Ident::new(item.ident.name, sp).gensym(),
         vec![
             // #[cfg(test)]
-            cx.attribute(attr_sp, cx.meta_list(attr_sp, Symbol::intern("cfg"), vec![
-                cx.meta_list_item_word(attr_sp, Symbol::intern("test"))
+            cx.attribute(attr_sp, cx.meta_list(attr_sp, sym::cfg, vec![
+                cx.meta_list_item_word(attr_sp, sym::test)
             ])),
             // #[rustc_test_marker]
-            cx.attribute(attr_sp, cx.meta_word(attr_sp, Symbol::intern("rustc_test_marker"))),
+            cx.attribute(attr_sp, cx.meta_word(attr_sp, sym::rustc_test_marker)),
         ],
         // const $ident: test::TestDescAndFn =
         ast::ItemKind::Const(cx.ty(sp, ast::TyKind::Path(None, test_path("TestDescAndFn"))),
@@ -180,7 +172,7 @@ pub fn expand_test_or_bench(
     let test_extern = cx.item(sp,
         test_id,
         vec![],
-        ast::ItemKind::ExternCrate(Some(Symbol::intern("test")))
+        ast::ItemKind::ExternCrate(Some(sym::test))
     );
 
     log::debug!("Synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
@@ -206,15 +198,15 @@ enum ShouldPanic {
 }
 
 fn should_ignore(i: &ast::Item) -> bool {
-    attr::contains_name(&i.attrs, "ignore")
+    attr::contains_name(&i.attrs, sym::ignore)
 }
 
 fn should_fail(i: &ast::Item) -> bool {
-    attr::contains_name(&i.attrs, "allow_fail")
+    attr::contains_name(&i.attrs, sym::allow_fail)
 }
 
 fn should_panic(cx: &ExtCtxt<'_>, i: &ast::Item) -> ShouldPanic {
-    match attr::find_by_name(&i.attrs, "should_panic") {
+    match attr::find_by_name(&i.attrs, sym::should_panic) {
         Some(attr) => {
             let ref sd = cx.parse_sess.span_diagnostic;
 
@@ -222,12 +214,12 @@ fn should_panic(cx: &ExtCtxt<'_>, i: &ast::Item) -> ShouldPanic {
                 // Handle #[should_panic(expected = "foo")]
                 Some(list) => {
                     let msg = list.iter()
-                        .find(|mi| mi.check_name("expected"))
+                        .find(|mi| mi.check_name(sym::expected))
                         .and_then(|mi| mi.meta_item())
                         .and_then(|mi| mi.value_str());
                     if list.len() != 1 || msg.is_none() {
                         sd.struct_span_warn(
-                            attr.span(),
+                            attr.span,
                             "argument must be of the form: \
                              `expected = \"error message\"`"
                         ).note("Errors in this attribute were erroneously \
@@ -247,7 +239,7 @@ fn should_panic(cx: &ExtCtxt<'_>, i: &ast::Item) -> ShouldPanic {
 }
 
 fn has_test_signature(cx: &ExtCtxt<'_>, i: &ast::Item) -> bool {
-    let has_should_panic_attr = attr::contains_name(&i.attrs, "should_panic");
+    let has_should_panic_attr = attr::contains_name(&i.attrs, sym::should_panic);
     let ref sd = cx.parse_sess.span_diagnostic;
     if let ast::ItemKind::Fn(ref decl, ref header, ref generics, _) = i.node {
         if header.unsafety == ast::Unsafety::Unsafe {

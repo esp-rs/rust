@@ -1,7 +1,7 @@
 error[E0573]: expected type, found variant `Foo::Bar`
   --> $DIR/enum-variant-type-2.rs:7:11
    |
-LL | fn foo(x: Foo::Bar) {} //~ ERROR expected type, found variant `Foo::Bar`
+LL | fn foo(x: Foo::Bar) {}
    |           ^^^^^^^^
    |           |
    |           not a type
@@ -9,4 +9,3 @@ LL | fn foo(x: Foo::Bar) {} //~ ERROR expected type, found variant `Foo::Bar`
 
 error: aborting due to previous error
 
-For more information about this error, try `rustc --explain E0573`.

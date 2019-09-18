@@ -4,6 +4,7 @@
 // ignore-musl
 // ignore-cloudabi no processes
 // ignore-emscripten no processes
+// ignore-sgx no processes
 
 #![feature(asm)]
 #![feature(rustc_private)]
@@ -36,7 +37,6 @@ fn loud_recurse() {
 #[cfg(unix)]
 fn check_status(status: std::process::ExitStatus)
 {
-    use libc;
     use std::os::unix::process::ExitStatusExt;
 
     assert!(!status.success());

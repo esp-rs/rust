@@ -6,8 +6,6 @@
 // `x`.  The lexical checker makes this very painful. The NLL checker
 // does not.
 
-#![feature(nll)]
-
 use std::rc::Rc;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -28,4 +26,3 @@ fn main() {
     let base = find_base(chain);
     assert_eq!(&*base, &Foo::Base(44));
 }
-

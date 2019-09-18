@@ -14,7 +14,7 @@ error[E0618]: expected function, found `()`
    |
 LL | / fn foo(x: i32) {
 LL | |     |y| x + y
-LL | | //~^ ERROR: mismatched types
+LL | |
 LL | | }
    | |_- `foo` defined here returns `()`
 ...
@@ -25,5 +25,5 @@ LL |       let x = foo(5)(2);
 
 error: aborting due to 2 previous errors
 
-Some errors occurred: E0308, E0618.
+Some errors have detailed explanations: E0308, E0618.
 For more information about an error, try `rustc --explain E0308`.

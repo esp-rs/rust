@@ -1,4 +1,3 @@
-use crate::boxed::FnBox;
 use crate::ffi::CStr;
 use crate::io;
 use crate::sys::{unsupported, Void};
@@ -10,7 +9,7 @@ pub const DEFAULT_MIN_STACK_SIZE: usize = 4096;
 
 impl Thread {
     // unsafe: see thread::Builder::spawn_unchecked for safety requirements
-    pub unsafe fn new(_stack: usize, _p: Box<dyn FnBox()>)
+    pub unsafe fn new(_stack: usize, _p: Box<dyn FnOnce()>)
         -> io::Result<Thread>
     {
         unsupported()
@@ -60,7 +59,7 @@ pub mod guard {
     pub unsafe fn init() -> Option<Guard> { None }
 }
 
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(all(target_feature = "atomics", feature = "wasm-bindgen-threads"))] {
         #[link(wasm_import_module = "__wbindgen_thread_xform__")]
         extern {

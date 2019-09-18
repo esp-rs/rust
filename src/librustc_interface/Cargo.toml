@@ -2,6 +2,7 @@
 authors = ["The Rust Project Developers"]
 name = "rustc_interface"
 version = "0.0.0"
+edition = "2018"
 
 [lib]
 name = "rustc_interface"
@@ -10,9 +11,9 @@ crate-type = ["dylib"]
 
 [dependencies]
 log = "0.4"
-rustc-rayon = "0.1.1"
+rayon = { version = "0.2.0", package = "rustc-rayon" }
 smallvec = { version = "0.6.7", features = ["union", "may_dangle"] }
-scoped-tls = { version = "0.1.1", features = ["nightly"] }
+scoped-tls = "1.0"
 syntax = { path = "../libsyntax" }
 syntax_ext = { path = "../libsyntax_ext" }
 syntax_pos = { path = "../libsyntax_pos" }
@@ -23,6 +24,7 @@ rustc_borrowck = { path = "../librustc_borrowck" }
 rustc_incremental = { path = "../librustc_incremental" }
 rustc_traits = { path = "../librustc_traits" }
 rustc_data_structures = { path = "../librustc_data_structures" }
+rustc_codegen_ssa = { path = "../librustc_codegen_ssa" }
 rustc_codegen_utils = { path = "../librustc_codegen_utils" }
 rustc_metadata = { path = "../librustc_metadata" }
 rustc_mir = { path = "../librustc_mir" }
@@ -33,3 +35,4 @@ rustc_errors = { path = "../librustc_errors" }
 rustc_plugin = { path = "../librustc_plugin" }
 rustc_privacy = { path = "../librustc_privacy" }
 rustc_resolve = { path = "../librustc_resolve" }
+tempfile = "3.0.5"

@@ -12,7 +12,7 @@ use crate::Namespace::{self, TypeNS, ValueNS, MacroNS};
 use crate::{resolve_error, resolve_struct_error, ResolutionError};
 
 use rustc::bug;
-use rustc::hir::def::*;
+use rustc::hir::def::{self, *};
 use rustc::hir::def_id::{CrateNum, CRATE_DEF_INDEX, LOCAL_CRATE, DefId};
 use rustc::ty;
 use rustc::middle::cstore::CrateStore;
@@ -28,7 +28,7 @@ use syntax::ast::{Name, Ident};
 use syntax::attr;
 
 use syntax::ast::{self, Block, ForeignItem, ForeignItemKind, Item, ItemKind, NodeId};
-use syntax::ast::{MetaItemKind, Mutability, StmtKind, TraitItem, TraitItemKind, Variant};
+use syntax::ast::{MetaItemKind, StmtKind, TraitItem, TraitItemKind, Variant};
 use syntax::ext::base::{MacroKind, SyntaxExtension};
 use syntax::ext::base::Determinacy::Undetermined;
 use syntax::ext::hygiene::Mark;
@@ -37,12 +37,14 @@ use syntax::feature_gate::is_builtin_attr;
 use syntax::parse::token::{self, Token};
 use syntax::span_err;
 use syntax::std_inject::injected_crate_name;
-use syntax::symbol::keywords;
+use syntax::symbol::{kw, sym};
 use syntax::visit::{self, Visitor};
 
 use syntax_pos::{Span, DUMMY_SP};
 
 use log::debug;
+
+type Res = def::Res<NodeId>;
 
 impl<'a> ToNameBinding<'a> for (Module<'a>, ty::Visibility, Span, Mark) {
     fn to_name_binding(self, arenas: &'a ResolverArenas<'a>) -> &'a NameBinding<'a> {
@@ -56,10 +58,10 @@ impl<'a> ToNameBinding<'a> for (Module<'a>, ty::Visibility, Span, Mark) {
     }
 }
 
-impl<'a> ToNameBinding<'a> for (Def, ty::Visibility, Span, Mark) {
+impl<'a> ToNameBinding<'a> for (Res, ty::Visibility, Span, Mark) {
     fn to_name_binding(self, arenas: &'a ResolverArenas<'a>) -> &'a NameBinding<'a> {
         arenas.alloc_name_binding(NameBinding {
-            kind: NameBindingKind::Def(self.0, false),
+            kind: NameBindingKind::Res(self.0, false),
             ambiguity: None,
             vis: self.1,
             span: self.2,
@@ -70,10 +72,10 @@ impl<'a> ToNameBinding<'a> for (Def, ty::Visibility, Span, Mark) {
 
 pub(crate) struct IsMacroExport;
 
-impl<'a> ToNameBinding<'a> for (Def, ty::Visibility, Span, Mark, IsMacroExport) {
+impl<'a> ToNameBinding<'a> for (Res, ty::Visibility, Span, Mark, IsMacroExport) {
     fn to_name_binding(self, arenas: &'a ResolverArenas<'a>) -> &'a NameBinding<'a> {
         arenas.alloc_name_binding(NameBinding {
-            kind: NameBindingKind::Def(self.0, true),
+            kind: NameBindingKind::Res(self.0, true),
             ambiguity: None,
             vis: self.1,
             span: self.2,
@@ -131,12 +133,9 @@ impl<'a> Resolver<'a> {
         // so prefixes are prepended with crate root segment if necessary.
         // The root is prepended lazily, when the first non-empty prefix or terminating glob
         // appears, so imports in braced groups can have roots prepended independently.
-        // 2015 identifiers used on global 2018 edition enter special "virtual 2015 mode", don't
-        // get crate root prepended, but get special treatment during in-scope resolution instead.
         let is_glob = if let ast::UseTreeKind::Glob = use_tree.kind { true } else { false };
         let crate_root = match prefix_iter.peek() {
-            Some(seg) if !seg.ident.is_path_segment_keyword() &&
-                         seg.ident.span.rust_2015() && self.session.rust_2015() => {
+            Some(seg) if !seg.ident.is_path_segment_keyword() && seg.ident.span.rust_2015() => {
                 Some(seg.ident.span.ctxt())
             }
             None if is_glob && use_tree.span.rust_2015() => {
@@ -144,7 +143,7 @@ impl<'a> Resolver<'a> {
             }
             _ => None,
         }.map(|ctxt| Segment::from_ident(Ident::new(
-            keywords::PathRoot.name(), use_tree.prefix.span.shrink_to_lo().with_ctxt(ctxt)
+            kw::PathRoot, use_tree.prefix.span.shrink_to_lo().with_ctxt(ctxt)
         )));
 
         let prefix = crate_root.into_iter().chain(prefix_iter).collect::<Vec<_>>();
@@ -152,7 +151,7 @@ impl<'a> Resolver<'a> {
 
         let empty_for_self = |prefix: &[Segment]| {
             prefix.is_empty() ||
-            prefix.len() == 1 && prefix[0].ident.name == keywords::PathRoot.name()
+            prefix.len() == 1 && prefix[0].ident.name == kw::PathRoot
         };
         match use_tree.kind {
             ast::UseTreeKind::Simple(rename, ..) => {
@@ -163,7 +162,7 @@ impl<'a> Resolver<'a> {
 
                 if nested {
                     // Correctly handle `self`
-                    if source.ident.name == keywords::SelfLower.name() {
+                    if source.ident.name == kw::SelfLower {
                         type_ns_only = true;
 
                         if empty_for_self(&module_path) {
@@ -184,27 +183,27 @@ impl<'a> Resolver<'a> {
                     }
                 } else {
                     // Disallow `self`
-                    if source.ident.name == keywords::SelfLower.name() {
+                    if source.ident.name == kw::SelfLower {
                         resolve_error(self,
                                       use_tree.span,
                                       ResolutionError::SelfImportsOnlyAllowedWithin);
                     }
 
                     // Disallow `use $crate;`
-                    if source.ident.name == keywords::DollarCrate.name() && module_path.is_empty() {
+                    if source.ident.name == kw::DollarCrate && module_path.is_empty() {
                         let crate_root = self.resolve_crate_root(source.ident);
                         let crate_name = match crate_root.kind {
-                            ModuleKind::Def(_, name) => name,
+                            ModuleKind::Def(.., name) => name,
                             ModuleKind::Block(..) => unreachable!(),
                         };
                         // HACK(eddyb) unclear how good this is, but keeping `$crate`
                         // in `source` breaks `src/test/compile-fail/import-crate-var.rs`,
                         // while the current crate doesn't have a valid `crate_name`.
-                        if crate_name != keywords::Invalid.name() {
+                        if crate_name != kw::Invalid {
                             // `crate_name` should not be interpreted as relative.
                             module_path.push(Segment {
                                 ident: Ident {
-                                    name: keywords::PathRoot.name(),
+                                    name: kw::PathRoot,
                                     span: source.ident.span,
                                 },
                                 id: Some(self.session.next_node_id()),
@@ -222,7 +221,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
 
-                if ident.name == keywords::Crate.name() {
+                if ident.name == kw::Crate {
                     self.session.span_err(ident.span,
                         "crate root imports need to be explicitly named: \
                          `use crate as name;`");
@@ -258,7 +257,7 @@ impl<'a> Resolver<'a> {
             }
             ast::UseTreeKind::Glob => {
                 let subclass = GlobImport {
-                    is_prelude: attr::contains_name(&item.attrs, "prelude_import"),
+                    is_prelude: attr::contains_name(&item.attrs, sym::prelude_import),
                     max_vis: Cell::new(ty::Visibility::Invisible),
                 };
                 self.add_import_directive(
@@ -277,7 +276,7 @@ impl<'a> Resolver<'a> {
                 // Ensure there is at most one `self` in the list
                 let self_spans = items.iter().filter_map(|&(ref use_tree, _)| {
                     if let ast::UseTreeKind::Simple(..) = use_tree.kind {
-                        if use_tree.ident().name == keywords::SelfLower.name() {
+                        if use_tree.ident().name == kw::SelfLower {
                             return Some(use_tree.span);
                         }
                     }
@@ -312,10 +311,10 @@ impl<'a> Resolver<'a> {
                     let new_span = prefix[prefix.len() - 1].ident.span;
                     let tree = ast::UseTree {
                         prefix: ast::Path::from_ident(
-                            Ident::new(keywords::SelfLower.name(), new_span)
+                            Ident::new(kw::SelfLower, new_span)
                         ),
                         kind: ast::UseTreeKind::Simple(
-                            Some(Ident::new(keywords::Underscore.name().gensymed(), new_span)),
+                            Some(Ident::new(kw::Underscore, new_span)),
                             ast::DUMMY_NODE_ID,
                             ast::DUMMY_NODE_ID,
                         ),
@@ -351,7 +350,7 @@ impl<'a> Resolver<'a> {
             }
 
             ItemKind::ExternCrate(orig_name) => {
-                let module = if orig_name.is_none() && ident.name == keywords::SelfLower.name() {
+                let module = if orig_name.is_none() && ident.name == kw::SelfLower {
                     self.session
                         .struct_span_err(item.span, "`extern crate self;` requires renaming")
                         .span_suggestion(
@@ -362,7 +361,7 @@ impl<'a> Resolver<'a> {
                         )
                         .emit();
                     return;
-                } else if orig_name == Some(keywords::SelfLower.name()) {
+                } else if orig_name == Some(kw::SelfLower) {
                     self.graph_root
                 } else {
                     let crate_id = self.crate_loader.process_extern_crate(item, &self.definitions);
@@ -370,7 +369,7 @@ impl<'a> Resolver<'a> {
                 };
 
                 self.populate_module_if_necessary(module);
-                if injected_crate_name().map_or(false, |name| ident.name == name) {
+                if injected_crate_name().map_or(false, |name| ident.name.as_str() == name) {
                     self.injected_crate = Some(module);
                 }
 
@@ -421,14 +420,14 @@ impl<'a> Resolver<'a> {
 
             ItemKind::GlobalAsm(..) => {}
 
-            ItemKind::Mod(..) if ident == keywords::Invalid.ident() => {} // Crate root
+            ItemKind::Mod(..) if ident.name == kw::Invalid => {} // Crate root
 
             ItemKind::Mod(..) => {
                 let def_id = self.definitions.local_def_id(item.id);
-                let module_kind = ModuleKind::Def(Def::Mod(def_id), ident.name);
+                let module_kind = ModuleKind::Def(DefKind::Mod, def_id, ident.name);
                 let module = self.arenas.alloc_module(ModuleData {
                     no_implicit_prelude: parent.no_implicit_prelude || {
-                        attr::contains_name(&item.attrs, "no_implicit_prelude")
+                        attr::contains_name(&item.attrs, sym::no_implicit_prelude)
                     },
                     ..ModuleData::new(Some(parent), module_kind, def_id, expansion, item.span)
                 });
@@ -443,33 +442,34 @@ impl<'a> Resolver<'a> {
             ItemKind::ForeignMod(..) => {}
 
             // These items live in the value namespace.
-            ItemKind::Static(_, m, _) => {
-                let mutbl = m == Mutability::Mutable;
-                let def = Def::Static(self.definitions.local_def_id(item.id), mutbl);
-                self.define(parent, ident, ValueNS, (def, vis, sp, expansion));
+            ItemKind::Static(..) => {
+                let res = Res::Def(DefKind::Static, self.definitions.local_def_id(item.id));
+                self.define(parent, ident, ValueNS, (res, vis, sp, expansion));
             }
             ItemKind::Const(..) => {
-                let def = Def::Const(self.definitions.local_def_id(item.id));
-                self.define(parent, ident, ValueNS, (def, vis, sp, expansion));
+                let res = Res::Def(DefKind::Const, self.definitions.local_def_id(item.id));
+                self.define(parent, ident, ValueNS, (res, vis, sp, expansion));
             }
             ItemKind::Fn(..) => {
-                let def = Def::Fn(self.definitions.local_def_id(item.id));
-                self.define(parent, ident, ValueNS, (def, vis, sp, expansion));
+                let res = Res::Def(DefKind::Fn, self.definitions.local_def_id(item.id));
+                self.define(parent, ident, ValueNS, (res, vis, sp, expansion));
 
                 // Functions introducing procedural macros reserve a slot
                 // in the macro namespace as well (see #52225).
-                if attr::contains_name(&item.attrs, "proc_macro") ||
-                   attr::contains_name(&item.attrs, "proc_macro_attribute") {
-                    let def = Def::Macro(def.def_id(), MacroKind::ProcMacroStub);
-                    self.define(parent, ident, MacroNS, (def, vis, sp, expansion));
+                if attr::contains_name(&item.attrs, sym::proc_macro) ||
+                   attr::contains_name(&item.attrs, sym::proc_macro_attribute) {
+                    let res = Res::Def(DefKind::Macro(MacroKind::ProcMacroStub), res.def_id());
+                    self.define(parent, ident, MacroNS, (res, vis, sp, expansion));
                 }
-                if let Some(attr) = attr::find_by_name(&item.attrs, "proc_macro_derive") {
+                if let Some(attr) = attr::find_by_name(&item.attrs, sym::proc_macro_derive) {
                     if let Some(trait_attr) =
                             attr.meta_item_list().and_then(|list| list.get(0).cloned()) {
-                        if let Some(ident) = trait_attr.name().map(Ident::with_empty_ctxt) {
-                            let sp = trait_attr.span;
-                            let def = Def::Macro(def.def_id(), MacroKind::ProcMacroStub);
-                            self.define(parent, ident, MacroNS, (def, vis, sp, expansion));
+                        if let Some(ident) = trait_attr.ident() {
+                            let res = Res::Def(
+                                DefKind::Macro(MacroKind::ProcMacroStub),
+                                res.def_id(),
+                            );
+                            self.define(parent, ident, MacroNS, (res, vis, ident.span, expansion));
                         }
                     }
                 }
@@ -477,18 +477,21 @@ impl<'a> Resolver<'a> {
 
             // These items live in the type namespace.
             ItemKind::Ty(..) => {
-                let def = Def::TyAlias(self.definitions.local_def_id(item.id));
-                self.define(parent, ident, TypeNS, (def, vis, sp, expansion));
+                let res = Res::Def(DefKind::TyAlias, self.definitions.local_def_id(item.id));
+                self.define(parent, ident, TypeNS, (res, vis, sp, expansion));
             }
 
             ItemKind::Existential(_, _) => {
-                let def = Def::Existential(self.definitions.local_def_id(item.id));
-                self.define(parent, ident, TypeNS, (def, vis, sp, expansion));
+                let res = Res::Def(DefKind::Existential, self.definitions.local_def_id(item.id));
+                self.define(parent, ident, TypeNS, (res, vis, sp, expansion));
             }
 
             ItemKind::Enum(ref enum_definition, _) => {
-                let def = Def::Enum(self.definitions.local_def_id(item.id));
-                let module_kind = ModuleKind::Def(def, ident.name);
+                let module_kind = ModuleKind::Def(
+                    DefKind::Enum,
+                    self.definitions.local_def_id(item.id),
+                    ident.name,
+                );
                 let module = self.new_module(parent,
                                              module_kind,
                                              parent.normal_ancestor_id,
@@ -502,20 +505,20 @@ impl<'a> Resolver<'a> {
             }
 
             ItemKind::TraitAlias(..) => {
-                let def = Def::TraitAlias(self.definitions.local_def_id(item.id));
-                self.define(parent, ident, TypeNS, (def, vis, sp, expansion));
+                let res = Res::Def(DefKind::TraitAlias, self.definitions.local_def_id(item.id));
+                self.define(parent, ident, TypeNS, (res, vis, sp, expansion));
             }
 
             // These items live in both the type and value namespaces.
             ItemKind::Struct(ref struct_def, _) => {
                 // Define a name in the type namespace.
                 let def_id = self.definitions.local_def_id(item.id);
-                let def = Def::Struct(def_id);
-                self.define(parent, ident, TypeNS, (def, vis, sp, expansion));
+                let res = Res::Def(DefKind::Struct, def_id);
+                self.define(parent, ident, TypeNS, (res, vis, sp, expansion));
 
                 let mut ctor_vis = vis;
 
-                let has_non_exhaustive = attr::contains_name(&item.attrs, "non_exhaustive");
+                let has_non_exhaustive = attr::contains_name(&item.attrs, sym::non_exhaustive);
 
                 // If the structure is marked as non_exhaustive then lower the visibility
                 // to within the crate.
@@ -536,17 +539,19 @@ impl<'a> Resolver<'a> {
 
                 // If this is a tuple or unit struct, define a name
                 // in the value namespace as well.
-                if !struct_def.is_struct() {
-                    let ctor_def = Def::StructCtor(self.definitions.local_def_id(struct_def.id()),
-                                                   CtorKind::from_ast(struct_def));
-                    self.define(parent, ident, ValueNS, (ctor_def, ctor_vis, sp, expansion));
-                    self.struct_constructors.insert(def.def_id(), (ctor_def, ctor_vis));
+                if let Some(ctor_node_id) = struct_def.ctor_id() {
+                    let ctor_res = Res::Def(
+                        DefKind::Ctor(CtorOf::Struct, CtorKind::from_ast(struct_def)),
+                        self.definitions.local_def_id(ctor_node_id),
+                    );
+                    self.define(parent, ident, ValueNS, (ctor_res, ctor_vis, sp, expansion));
+                    self.struct_constructors.insert(res.def_id(), (ctor_res, ctor_vis));
                 }
             }
 
             ItemKind::Union(ref vdata, _) => {
-                let def = Def::Union(self.definitions.local_def_id(item.id));
-                self.define(parent, ident, TypeNS, (def, vis, sp, expansion));
+                let res = Res::Def(DefKind::Union, self.definitions.local_def_id(item.id));
+                self.define(parent, ident, TypeNS, (res, vis, sp, expansion));
 
                 // Record field names for error reporting.
                 let field_names = vdata.fields().iter().filter_map(|field| {
@@ -563,7 +568,7 @@ impl<'a> Resolver<'a> {
                 let def_id = self.definitions.local_def_id(item.id);
 
                 // Add all the items within to a new module.
-                let module_kind = ModuleKind::Def(Def::Trait(def_id), ident.name);
+                let module_kind = ModuleKind::Def(DefKind::Trait, def_id, ident.name);
                 let module = self.new_module(parent,
                                              module_kind,
                                              parent.normal_ancestor_id,
@@ -585,38 +590,49 @@ impl<'a> Resolver<'a> {
                                        vis: ty::Visibility,
                                        expansion: Mark) {
         let ident = variant.node.ident;
-        let def_id = self.definitions.local_def_id(variant.node.data.id());
 
         // Define a name in the type namespace.
-        let def = Def::Variant(def_id);
-        self.define(parent, ident, TypeNS, (def, vis, variant.span, expansion));
+        let def_id = self.definitions.local_def_id(variant.node.id);
+        let res = Res::Def(DefKind::Variant, def_id);
+        self.define(parent, ident, TypeNS, (res, vis, variant.span, expansion));
+
+        // If the variant is marked as non_exhaustive then lower the visibility to within the
+        // crate.
+        let mut ctor_vis = vis;
+        let has_non_exhaustive = attr::contains_name(&variant.node.attrs, sym::non_exhaustive);
+        if has_non_exhaustive && vis == ty::Visibility::Public {
+            ctor_vis = ty::Visibility::Restricted(DefId::local(CRATE_DEF_INDEX));
+        }
 
         // Define a constructor name in the value namespace.
         // Braced variants, unlike structs, generate unusable names in
         // value namespace, they are reserved for possible future use.
+        // It's ok to use the variant's id as a ctor id since an
+        // error will be reported on any use of such resolution anyway.
+        let ctor_node_id = variant.node.data.ctor_id().unwrap_or(variant.node.id);
+        let ctor_def_id = self.definitions.local_def_id(ctor_node_id);
         let ctor_kind = CtorKind::from_ast(&variant.node.data);
-        let ctor_def = Def::VariantCtor(def_id, ctor_kind);
-
-        self.define(parent, ident, ValueNS, (ctor_def, vis, variant.span, expansion));
+        let ctor_res = Res::Def(DefKind::Ctor(CtorOf::Variant, ctor_kind), ctor_def_id);
+        self.define(parent, ident, ValueNS, (ctor_res, ctor_vis, variant.span, expansion));
     }
 
     /// Constructs the reduced graph for one foreign item.
     fn build_reduced_graph_for_foreign_item(&mut self, item: &ForeignItem, expansion: Mark) {
-        let (def, ns) = match item.node {
+        let (res, ns) = match item.node {
             ForeignItemKind::Fn(..) => {
-                (Def::Fn(self.definitions.local_def_id(item.id)), ValueNS)
+                (Res::Def(DefKind::Fn, self.definitions.local_def_id(item.id)), ValueNS)
             }
-            ForeignItemKind::Static(_, m) => {
-                (Def::Static(self.definitions.local_def_id(item.id), m), ValueNS)
+            ForeignItemKind::Static(..) => {
+                (Res::Def(DefKind::Static, self.definitions.local_def_id(item.id)), ValueNS)
             }
             ForeignItemKind::Ty => {
-                (Def::ForeignTy(self.definitions.local_def_id(item.id)), TypeNS)
+                (Res::Def(DefKind::ForeignTy, self.definitions.local_def_id(item.id)), TypeNS)
             }
             ForeignItemKind::Macro(_) => unreachable!(),
         };
         let parent = self.current_module;
         let vis = self.resolve_visibility(&item.vis);
-        self.define(parent, item.ident, ns, (def, vis, item.span, expansion));
+        self.define(parent, item.ident, ns, (res, vis, item.span, expansion));
     }
 
     fn build_reduced_graph_for_block(&mut self, block: &Block, expansion: Mark) {
@@ -633,40 +649,53 @@ impl<'a> Resolver<'a> {
     }
 
     /// Builds the reduced graph for a single item in an external crate.
-    fn build_reduced_graph_for_external_crate_def(&mut self, parent: Module<'a>, child: Export) {
-        let Export { ident, def, vis, span } = child;
+    fn build_reduced_graph_for_external_crate_res(
+        &mut self,
+        parent: Module<'a>,
+        child: Export<ast::NodeId>,
+    ) {
+        let Export { ident, res, vis, span } = child;
         // FIXME: We shouldn't create the gensym here, it should come from metadata,
         // but metadata cannot encode gensyms currently, so we create it here.
         // This is only a guess, two equivalent idents may incorrectly get different gensyms here.
         let ident = ident.gensym_if_underscore();
-        let def_id = def.def_id();
         let expansion = Mark::root(); // FIXME(jseyfried) intercrate hygiene
-        match def {
-            Def::Mod(..) | Def::Enum(..) => {
+        match res {
+            Res::Def(kind @ DefKind::Mod, def_id)
+            | Res::Def(kind @ DefKind::Enum, def_id) => {
                 let module = self.new_module(parent,
-                                             ModuleKind::Def(def, ident.name),
+                                             ModuleKind::Def(kind, def_id, ident.name),
                                              def_id,
                                              expansion,
                                              span);
                 self.define(parent, ident, TypeNS, (module, vis, DUMMY_SP, expansion));
             }
-            Def::Variant(..) | Def::TyAlias(..) | Def::ForeignTy(..) => {
-                self.define(parent, ident, TypeNS, (def, vis, DUMMY_SP, expansion));
+            Res::Def(DefKind::Variant, _)
+            | Res::Def(DefKind::TyAlias, _)
+            | Res::Def(DefKind::ForeignTy, _)
+            | Res::Def(DefKind::Existential, _)
+            | Res::Def(DefKind::TraitAlias, _)
+            | Res::PrimTy(..)
+            | Res::ToolMod => {
+                self.define(parent, ident, TypeNS, (res, vis, DUMMY_SP, expansion));
             }
-            Def::Fn(..) | Def::Static(..) | Def::Const(..) | Def::VariantCtor(..) => {
-                self.define(parent, ident, ValueNS, (def, vis, DUMMY_SP, expansion));
+            Res::Def(DefKind::Fn, _)
+            | Res::Def(DefKind::Static, _)
+            | Res::Def(DefKind::Const, _)
+            | Res::Def(DefKind::Ctor(CtorOf::Variant, ..), _) => {
+                self.define(parent, ident, ValueNS, (res, vis, DUMMY_SP, expansion));
             }
-            Def::StructCtor(..) => {
-                self.define(parent, ident, ValueNS, (def, vis, DUMMY_SP, expansion));
+            Res::Def(DefKind::Ctor(CtorOf::Struct, ..), def_id) => {
+                self.define(parent, ident, ValueNS, (res, vis, DUMMY_SP, expansion));
 
                 if let Some(struct_def_id) =
                         self.cstore.def_key(def_id).parent
                             .map(|index| DefId { krate: def_id.krate, index: index }) {
-                    self.struct_constructors.insert(struct_def_id, (def, vis));
+                    self.struct_constructors.insert(struct_def_id, (res, vis));
                 }
             }
-            Def::Trait(..) => {
-                let module_kind = ModuleKind::Def(def, ident.name);
+            Res::Def(DefKind::Trait, def_id) => {
+                let module_kind = ModuleKind::Def(DefKind::Trait, def_id, ident.name);
                 let module = self.new_module(parent,
                                              module_kind,
                                              parent.normal_ancestor_id,
@@ -675,32 +704,31 @@ impl<'a> Resolver<'a> {
                 self.define(parent, ident, TypeNS, (module, vis, DUMMY_SP, expansion));
 
                 for child in self.cstore.item_children_untracked(def_id, self.session) {
-                    let ns = if let Def::AssociatedTy(..) = child.def { TypeNS } else { ValueNS };
+                    let res = child.res.map_id(|_| panic!("unexpected id"));
+                    let ns = if let Res::Def(DefKind::AssocTy, _) = res {
+                        TypeNS
+                    } else { ValueNS };
                     self.define(module, child.ident, ns,
-                                (child.def, ty::Visibility::Public, DUMMY_SP, expansion));
+                                (res, ty::Visibility::Public, DUMMY_SP, expansion));
 
-                    if self.cstore.associated_item_cloned_untracked(child.def.def_id())
+                    if self.cstore.associated_item_cloned_untracked(child.res.def_id())
                            .method_has_self_argument {
-                        self.has_self.insert(child.def.def_id());
+                        self.has_self.insert(res.def_id());
                     }
                 }
                 module.populated.set(true);
             }
-            Def::Existential(..) |
-            Def::TraitAlias(..) => {
-                self.define(parent, ident, TypeNS, (def, vis, DUMMY_SP, expansion));
-            }
-            Def::Struct(..) | Def::Union(..) => {
-                self.define(parent, ident, TypeNS, (def, vis, DUMMY_SP, expansion));
+            Res::Def(DefKind::Struct, def_id) | Res::Def(DefKind::Union, def_id) => {
+                self.define(parent, ident, TypeNS, (res, vis, DUMMY_SP, expansion));
 
                 // Record field names for error reporting.
                 let field_names = self.cstore.struct_field_names_untracked(def_id);
                 self.insert_field_names(def_id, field_names);
             }
-            Def::Macro(..) => {
-                self.define(parent, ident, MacroNS, (def, vis, DUMMY_SP, expansion));
+            Res::Def(DefKind::Macro(..), _) | Res::NonMacroAttr(..) => {
+                self.define(parent, ident, MacroNS, (res, vis, DUMMY_SP, expansion));
             }
-            _ => bug!("unexpected definition: {:?}", def)
+            _ => bug!("unexpected resolution: {:?}", res)
         }
     }
 
@@ -722,7 +750,7 @@ impl<'a> Resolver<'a> {
              Some(self.get_module(DefId { index: def_key.parent.unwrap(), ..def_id })))
         };
 
-        let kind = ModuleKind::Def(Def::Mod(def_id), name.as_symbol());
+        let kind = ModuleKind::Def(DefKind::Mod, def_id, name.as_symbol());
         let module =
             self.arenas.alloc_module(ModuleData::new(parent, kind, def_id, Mark::root(), DUMMY_SP));
         self.extern_module_map.insert((def_id, macros_only), module);
@@ -741,13 +769,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    pub fn get_macro(&mut self, def: Def) -> Lrc<SyntaxExtension> {
-        let def_id = match def {
-            Def::Macro(def_id, ..) => def_id,
-            Def::NonMacroAttr(attr_kind) => return Lrc::new(SyntaxExtension::NonMacroAttr {
-                mark_used: attr_kind == NonMacroAttrKind::Tool,
-            }),
-            _ => panic!("expected `Def::Macro` or `Def::NonMacroAttr`"),
+    pub fn get_macro(&mut self, res: Res) -> Lrc<SyntaxExtension> {
+        let def_id = match res {
+            Res::Def(DefKind::Macro(..), def_id) => def_id,
+            Res::NonMacroAttr(attr_kind) =>
+                return self.non_macro_attr(attr_kind == NonMacroAttrKind::Tool),
+            _ => panic!("expected `DefKind::Macro` or `Res::NonMacroAttr`"),
         };
         if let Some(ext) = self.macro_map.get(&def_id) {
             return ext.clone();
@@ -772,7 +799,8 @@ impl<'a> Resolver<'a> {
         if module.populated.get() { return }
         let def_id = module.def_id().unwrap();
         for child in self.cstore.item_children_untracked(def_id, self.session) {
-            self.build_reduced_graph_for_external_crate_def(module, child);
+            let child = child.map_id(|_| panic!("unexpected id"));
+            self.build_reduced_graph_for_external_crate_res(module, child);
         }
         module.populated.set(true)
     }
@@ -796,13 +824,13 @@ impl<'a> Resolver<'a> {
         let mut import_all = None;
         let mut single_imports = Vec::new();
         for attr in &item.attrs {
-            if attr.check_name("macro_use") {
+            if attr.check_name(sym::macro_use) {
                 if self.current_module.parent.is_some() {
                     span_err!(self.session, item.span, E0468,
                         "an `extern crate` loading macros must be at the crate root");
                 }
                 if let ItemKind::ExternCrate(Some(orig_name)) = item.node {
-                    if orig_name == keywords::SelfLower.name() {
+                    if orig_name == kw::SelfLower {
                         self.session.span_err(attr.span,
                             "`macro_use` is not supported on `extern crate self`");
                     }
@@ -815,14 +843,14 @@ impl<'a> Resolver<'a> {
                             break;
                         }
                         MetaItemKind::List(nested_metas) => for nested_meta in nested_metas {
-                            match nested_meta.word() {
-                                Some(word) => single_imports.push((word.name(), word.span)),
-                                None => ill_formed(nested_meta.span),
+                            match nested_meta.ident() {
+                                Some(ident) if nested_meta.is_word() => single_imports.push(ident),
+                                _ => ill_formed(nested_meta.span()),
                             }
                         }
                         MetaItemKind::NameValue(..) => ill_formed(meta.span),
                     }
-                    None => ill_formed(attr.span()),
+                    None => ill_formed(attr.span),
                 }
             }
         }
@@ -853,23 +881,23 @@ impl<'a> Resolver<'a> {
                 self.legacy_import_macro(ident.name, imported_binding, span, allow_shadowing);
             });
         } else {
-            for (name, span) in single_imports.iter().cloned() {
-                let ident = Ident::with_empty_ctxt(name);
+            for ident in single_imports.iter().cloned() {
                 let result = self.resolve_ident_in_module(
                     ModuleOrUniformRoot::Module(module),
                     ident,
                     MacroNS,
                     None,
                     false,
-                    span,
+                    ident.span,
                 );
                 if let Ok(binding) = result {
-                    let directive = macro_use_directive(span);
+                    let directive = macro_use_directive(ident.span);
                     self.potentially_unused_imports.push(directive);
                     let imported_binding = self.import(binding, directive);
-                    self.legacy_import_macro(name, imported_binding, span, allow_shadowing);
+                    self.legacy_import_macro(ident.name, imported_binding,
+                                             ident.span, allow_shadowing);
                 } else {
-                    span_err!(self.session, span, E0469, "imported macro not found");
+                    span_err!(self.session, ident.span, E0469, "imported macro not found");
                 }
             }
         }
@@ -879,7 +907,7 @@ impl<'a> Resolver<'a> {
     /// Returns `true` if this attribute list contains `macro_use`.
     fn contains_macro_use(&mut self, attrs: &[ast::Attribute]) -> bool {
         for attr in attrs {
-            if attr.check_name("macro_escape") {
+            if attr.check_name(sym::macro_escape) {
                 let msg = "macro_escape is a deprecated synonym for macro_use";
                 let mut err = self.session.struct_span_warn(attr.span, msg);
                 if let ast::AttrStyle::Inner = attr.style {
@@ -887,7 +915,7 @@ impl<'a> Resolver<'a> {
                 } else {
                     err.emit();
                 }
-            } else if !attr.check_name("macro_use") {
+            } else if !attr.check_name(sym::macro_use) {
                 continue;
             }
 
@@ -901,7 +929,7 @@ impl<'a> Resolver<'a> {
     }
 }
 
-pub struct BuildReducedGraphVisitor<'a, 'b: 'a> {
+pub struct BuildReducedGraphVisitor<'a, 'b> {
     pub resolver: &'a mut Resolver<'b>,
     pub current_legacy_scope: LegacyScope<'b>,
     pub expansion: Mark,
@@ -1003,20 +1031,20 @@ impl<'a, 'b> Visitor<'a> for BuildReducedGraphVisitor<'a, 'b> {
 
         // Add the item to the trait info.
         let item_def_id = self.resolver.definitions.local_def_id(item.id);
-        let (def, ns) = match item.node {
-            TraitItemKind::Const(..) => (Def::AssociatedConst(item_def_id), ValueNS),
+        let (res, ns) = match item.node {
+            TraitItemKind::Const(..) => (Res::Def(DefKind::AssocConst, item_def_id), ValueNS),
             TraitItemKind::Method(ref sig, _) => {
                 if sig.decl.has_self() {
                     self.resolver.has_self.insert(item_def_id);
                 }
-                (Def::Method(item_def_id), ValueNS)
+                (Res::Def(DefKind::Method, item_def_id), ValueNS)
             }
-            TraitItemKind::Type(..) => (Def::AssociatedTy(item_def_id), TypeNS),
+            TraitItemKind::Type(..) => (Res::Def(DefKind::AssocTy, item_def_id), TypeNS),
             TraitItemKind::Macro(_) => bug!(),  // handled above
         };
 
         let vis = ty::Visibility::Public;
-        self.resolver.define(parent, item.ident, ns, (def, vis, item.span, self.expansion));
+        self.resolver.define(parent, item.ident, ns, (res, vis, item.span, self.expansion));
 
         self.resolver.current_module = parent.parent.unwrap(); // nearest normal ancestor
         visit::walk_trait_item(self, item);
@@ -1024,7 +1052,7 @@ impl<'a, 'b> Visitor<'a> for BuildReducedGraphVisitor<'a, 'b> {
     }
 
     fn visit_token(&mut self, t: Token) {
-        if let Token::Interpolated(nt) = t {
+        if let token::Interpolated(nt) = t.kind {
             if let token::NtExpr(ref expr) = *nt {
                 if let ast::ExprKind::Mac(..) = expr.node {
                     self.visit_invoc(expr.id);

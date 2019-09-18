@@ -19,7 +19,7 @@ LL | impl Trait2 for dyn Sync + Send + Sync {
 error[E0592]: duplicate definitions with name `abc`
   --> $DIR/issue-33140.rs:29:5
    |
-LL | /     fn abc() -> bool { //~ ERROR duplicate definitions with name `abc`
+LL | /     fn abc() -> bool {
 LL | |         false
 LL | |     }
    | |_____^ duplicate definitions for `abc`
@@ -31,5 +31,5 @@ LL | |     }
 
 error: aborting due to 3 previous errors
 
-Some errors occurred: E0119, E0592.
+Some errors have detailed explanations: E0119, E0592.
 For more information about an error, try `rustc --explain E0119`.

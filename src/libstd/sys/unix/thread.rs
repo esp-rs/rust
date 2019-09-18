@@ -1,4 +1,3 @@
-use crate::boxed::FnBox;
 use crate::cmp;
 use crate::ffi::CStr;
 use crate::io;
@@ -39,7 +38,7 @@ unsafe fn pthread_attr_setstacksize(_attr: *mut libc::pthread_attr_t,
 
 impl Thread {
     // unsafe: see thread::Builder::spawn_unchecked for safety requirements
-    pub unsafe fn new(stack: usize, p: Box<dyn FnBox()>)
+    pub unsafe fn new(stack: usize, p: Box<dyn FnOnce()>)
                           -> io::Result<Thread> {
         let p = box p;
         let mut native: libc::pthread_t = mem::zeroed();
@@ -100,7 +99,6 @@ impl Thread {
 
     #[cfg(any(target_os = "freebsd",
               target_os = "dragonfly",
-              target_os = "bitrig",
               target_os = "openbsd"))]
     pub fn set_name(name: &CStr) {
         unsafe {
@@ -190,7 +188,6 @@ impl Drop for Thread {
 #[cfg(all(not(all(target_os = "linux", not(target_env = "musl"))),
           not(target_os = "freebsd"),
           not(target_os = "macos"),
-          not(target_os = "bitrig"),
           not(all(target_os = "netbsd", not(target_vendor = "rumprun"))),
           not(target_os = "openbsd"),
           not(target_os = "solaris")))]
@@ -206,7 +203,6 @@ pub mod guard {
 #[cfg(any(all(target_os = "linux", not(target_env = "musl")),
           target_os = "freebsd",
           target_os = "macos",
-          target_os = "bitrig",
           all(target_os = "netbsd", not(target_vendor = "rumprun")),
           target_os = "openbsd",
           target_os = "solaris"))]
@@ -237,16 +233,15 @@ pub mod guard {
         Some(stackaddr as *mut libc::c_void)
     }
 
-    #[cfg(any(target_os = "openbsd", target_os = "bitrig"))]
+    #[cfg(target_os = "openbsd")]
     unsafe fn get_stack_start() -> Option<*mut libc::c_void> {
         let mut current_stack: libc::stack_t = crate::mem::zeroed();
         assert_eq!(libc::pthread_stackseg_np(libc::pthread_self(),
                                              &mut current_stack), 0);
 
-        let extra = if cfg!(target_os = "bitrig") {3} else {1} * PAGE_SIZE;
         let stackaddr = if libc::pthread_main_np() == 1 {
             // main thread
-            current_stack.ss_sp as usize - current_stack.ss_size + extra
+            current_stack.ss_sp as usize - current_stack.ss_size + PAGE_SIZE
         } else {
             // new thread
             current_stack.ss_sp as usize - current_stack.ss_size
@@ -344,7 +339,6 @@ pub mod guard {
     }
 
     #[cfg(any(target_os = "macos",
-              target_os = "bitrig",
               target_os = "openbsd",
               target_os = "solaris"))]
     pub unsafe fn current() -> Option<Guard> {

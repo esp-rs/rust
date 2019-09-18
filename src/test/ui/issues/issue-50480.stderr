@@ -18,7 +18,7 @@ error[E0204]: the trait `Copy` may not be implemented for this type
    |
 LL | #[derive(Clone, Copy)]
    |                 ^^^^
-LL | //~^ ERROR the trait `Copy` may not be implemented for this type
+LL |
 LL | struct Foo(NotDefined, <i32 as Iterator>::Item, Vec<i32>, String);
    |                                                 --------  ------ this field does not implement `Copy`
    |                                                 |
@@ -26,5 +26,5 @@ LL | struct Foo(NotDefined, <i32 as Iterator>::Item, Vec<i32>, String);
 
 error: aborting due to 3 previous errors
 
-Some errors occurred: E0204, E0277, E0412.
+Some errors have detailed explanations: E0204, E0277, E0412.
 For more information about an error, try `rustc --explain E0204`.

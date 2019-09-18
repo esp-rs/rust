@@ -1,8 +1,5 @@
 // compile-pass
 
-#![allow(warnings)]
-#![feature(nll)]
-
 struct LoadedObject {
     bodies: Vec<Body>,
     color: Color,
@@ -34,4 +31,3 @@ fn convert(objects: Vec<LoadedObject>) -> (Vec<Body>, Vec<Graphic>) {
 }
 
 fn main() {}
-

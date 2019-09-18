@@ -3,7 +3,7 @@ use rustc_data_structures::sync::{RwLock, MappedReadGuard, ReadGuard};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
                                            StableHasherResult};
 use crate::ich::StableHashingContext;
-use crate::mir::{Mir, BasicBlock};
+use crate::mir::{Body, BasicBlock};
 
 use crate::rustc_serialize as serialize;
 
@@ -47,19 +47,19 @@ impl Cache {
 
     pub fn predecessors(
         &self,
-        mir: &Mir<'_>
+        body: &Body<'_>
     ) -> MappedReadGuard<'_, IndexVec<BasicBlock, Vec<BasicBlock>>> {
         if self.predecessors.borrow().is_none() {
-            *self.predecessors.borrow_mut() = Some(calculate_predecessors(mir));
+            *self.predecessors.borrow_mut() = Some(calculate_predecessors(body));
         }
 
         ReadGuard::map(self.predecessors.borrow(), |p| p.as_ref().unwrap())
     }
 }
 
-fn calculate_predecessors(mir: &Mir<'_>) -> IndexVec<BasicBlock, Vec<BasicBlock>> {
-    let mut result = IndexVec::from_elem(vec![], mir.basic_blocks());
-    for (bb, data) in mir.basic_blocks().iter_enumerated() {
+fn calculate_predecessors(body: &Body<'_>) -> IndexVec<BasicBlock, Vec<BasicBlock>> {
+    let mut result = IndexVec::from_elem(vec![], body.basic_blocks());
+    for (bb, data) in body.basic_blocks().iter_enumerated() {
         if let Some(ref term) = data.terminator {
             for &tgt in term.successors() {
                 result[tgt].push(bb);

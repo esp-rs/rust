@@ -3,14 +3,22 @@ error: expected type, found `0`
    |
 LL |     println!("test"):
    |                     - help: try using a semicolon: `;`
-LL |     0; //~ ERROR expected type, found `0`
+LL |     0;
    |     ^ expecting a type here because of type ascription
 
 error: expected type, found `0`
   --> $DIR/type-ascription-instead-of-statement-end.rs:9:23
    |
-LL |     println!("test"): 0; //~ ERROR expected type, found `0`
+LL |     println!("test"): 0;
    |                       ^ expecting a type here because of type ascription
+   |
+   = note: #![feature(type_ascription)] lets you annotate an expression with a type: `<expr>: <type>`
+note: this expression expects an ascribed type after the colon
+  --> $DIR/type-ascription-instead-of-statement-end.rs:9:5
+   |
+LL |     println!("test"): 0;
+   |     ^^^^^^^^^^^^^^^^
+   = help: this might be indicative of a syntax error elsewhere
 
 error: aborting due to 2 previous errors
 

@@ -32,11 +32,13 @@ impl f64 {
     /// # Examples
     ///
     /// ```
-    /// let f = 3.99_f64;
+    /// let f = 3.7_f64;
     /// let g = 3.0_f64;
+    /// let h = -3.7_f64;
     ///
     /// assert_eq!(f.floor(), 3.0);
     /// assert_eq!(g.floor(), 3.0);
+    /// assert_eq!(h.floor(), -4.0);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
@@ -84,11 +86,13 @@ impl f64 {
     /// # Examples
     ///
     /// ```
-    /// let f = 3.3_f64;
-    /// let g = -3.7_f64;
+    /// let f = 3.7_f64;
+    /// let g = 3.0_f64;
+    /// let h = -3.7_f64;
     ///
     /// assert_eq!(f.trunc(), 3.0);
-    /// assert_eq!(g.trunc(), -3.0);
+    /// assert_eq!(g.trunc(), 3.0);
+    /// assert_eq!(h.trunc(), -3.0);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
@@ -162,21 +166,20 @@ impl f64 {
         if self.is_nan() {
             NAN
         } else {
-            unsafe { intrinsics::copysignf64(1.0, self) }
+            1.0_f64.copysign(self)
         }
     }
 
     /// Returns a number composed of the magnitude of `self` and the sign of
-    /// `y`.
+    /// `sign`.
     ///
-    /// Equal to `self` if the sign of `self` and `y` are the same, otherwise
+    /// Equal to `self` if the sign of `self` and `sign` are the same, otherwise
     /// equal to `-self`. If `self` is a `NAN`, then a `NAN` with the sign of
-    /// `y` is returned.
+    /// `sign` is returned.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(copysign)]
     /// use std::f64;
     ///
     /// let f = 3.5_f64;
@@ -190,9 +193,9 @@ impl f64 {
     /// ```
     #[inline]
     #[must_use]
-    #[unstable(feature="copysign", issue="55169")]
-    pub fn copysign(self, y: f64) -> f64 {
-        unsafe { intrinsics::copysignf64(self, y) }
+    #[stable(feature = "copysign", since = "1.35.0")]
+    pub fn copysign(self, sign: f64) -> f64 {
+        unsafe { intrinsics::copysignf64(self, sign) }
     }
 
     /// Fused multiply-add. Computes `(self * a) + b` with only one rounding
@@ -878,6 +881,37 @@ impl f64 {
         0.5 * ((2.0 * self) / (1.0 - self)).ln_1p()
     }
 
+    /// Restrict a value to a certain interval unless it is NaN.
+    ///
+    /// Returns `max` if `self` is greater than `max`, and `min` if `self` is
+    /// less than `min`. Otherwise this returns `self`.
+    ///
+    /// Not that this function returns NaN if the initial value was NaN as
+    /// well.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min > max`, `min` is NaN, or `max` is NaN.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(clamp)]
+    /// assert!((-3.0f64).clamp(-2.0, 1.0) == -2.0);
+    /// assert!((0.0f64).clamp(-2.0, 1.0) == 0.0);
+    /// assert!((2.0f64).clamp(-2.0, 1.0) == 1.0);
+    /// assert!((std::f64::NAN).clamp(-2.0, 1.0).is_nan());
+    /// ```
+    #[unstable(feature = "clamp", issue = "44095")]
+    #[inline]
+    pub fn clamp(self, min: f64, max: f64) -> f64 {
+        assert!(min <= max);
+        let mut x = self;
+        if x < min { x = min; }
+        if x > max { x = max; }
+        x
+    }
+
     // Solaris/Illumos requires a wrapper around log, log2, and log10 functions
     // because of their non-standard behavior (e.g., log(-n) returns -Inf instead
     // of expected NaN).
@@ -1496,5 +1530,23 @@ mod tests {
 
         assert_eq!(f64::from_bits(masked_nan1).to_bits(), masked_nan1);
         assert_eq!(f64::from_bits(masked_nan2).to_bits(), masked_nan2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_clamp_min_greater_than_max() {
+        1.0f64.clamp(3.0, 1.0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_clamp_min_is_nan() {
+        1.0f64.clamp(NAN, 1.0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_clamp_max_is_nan() {
+        1.0f64.clamp(3.0, NAN);
     }
 }

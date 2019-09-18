@@ -23,7 +23,9 @@ fi
 ci_dir=`cd $(dirname $0) && pwd`
 source "$ci_dir/shared.sh"
 
-if [ "$TRAVIS" != "true" ] || [ "$TRAVIS_BRANCH" == "auto" ]; then
+branch_name=$(getCIBranch)
+
+if [ ! isCI ] || [ "$branch_name" = "auto" ]; then
     RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --set build.print-step-timings --enable-verbose-tests"
 fi
 
@@ -43,11 +45,12 @@ fi
 #
 # FIXME: need a scheme for changing this `nightly` value to `beta` and `stable`
 #        either automatically or manually.
-export RUST_RELEASE_CHANNEL=nightly
-if [ "$DEPLOY$DEPLOY_ALT" != "" ]; then
+export RUST_RELEASE_CHANNEL=stable
+if [ "$DEPLOY$DEPLOY_ALT" = "1" ]; then
   RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --release-channel=$RUST_RELEASE_CHANNEL"
   RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --enable-llvm-static-stdcpp"
   RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --set rust.remap-debuginfo"
+  RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --debuginfo-level-std=1"
 
   if [ "$NO_LLVM_ASSERTIONS" = "1" ]; then
     RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --disable-llvm-assertions"
@@ -109,7 +112,7 @@ travis_time_finish
 # Display the CPU and memory information. This helps us know why the CI timing
 # is fluctuating.
 travis_fold start log-system-info
-if [ "$TRAVIS_OS_NAME" = "osx" ]; then
+if isOSX; then
     system_profiler SPHardwareDataType || true
     sysctl hw || true
     ncpus=$(sysctl -n hw.ncpu)
@@ -134,7 +137,7 @@ else
     return $retval
   }
 
-  do_make tidy
-  do_make all
   do_make "$RUST_CHECK_TARGET"
 fi
+
+sccache --show-stats || true

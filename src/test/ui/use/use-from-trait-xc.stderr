@@ -19,20 +19,20 @@ LL | use use_from_trait_xc::Trait::CONST;
 error[E0432]: unresolved import `use_from_trait_xc::Foo`
   --> $DIR/use-from-trait-xc.rs:14:24
    |
-LL | use use_from_trait_xc::Foo::new; //~ ERROR struct `Foo` is private
-   |                        ^^^ not a module `Foo`
+LL | use use_from_trait_xc::Foo::new;
+   |                        ^^^ `Foo` is a struct, not a module
 
 error[E0432]: unresolved import `use_from_trait_xc::Foo`
   --> $DIR/use-from-trait-xc.rs:17:24
    |
-LL | use use_from_trait_xc::Foo::C; //~ ERROR struct `Foo` is private
-   |                        ^^^ not a module `Foo`
+LL | use use_from_trait_xc::Foo::C;
+   |                        ^^^ `Foo` is a struct, not a module
 
 error[E0432]: unresolved import `use_from_trait_xc::Bar`
   --> $DIR/use-from-trait-xc.rs:20:24
    |
 LL | use use_from_trait_xc::Bar::new as bnew;
-   |                        ^^^ not a module `Bar`
+   |                        ^^^ `Bar` is a struct, not a module
 
 error[E0432]: unresolved import `use_from_trait_xc::Baz::new`
   --> $DIR/use-from-trait-xc.rs:23:5
@@ -43,16 +43,16 @@ LL | use use_from_trait_xc::Baz::new as baznew;
 error[E0603]: struct `Foo` is private
   --> $DIR/use-from-trait-xc.rs:14:24
    |
-LL | use use_from_trait_xc::Foo::new; //~ ERROR struct `Foo` is private
+LL | use use_from_trait_xc::Foo::new;
    |                        ^^^
 
 error[E0603]: struct `Foo` is private
   --> $DIR/use-from-trait-xc.rs:17:24
    |
-LL | use use_from_trait_xc::Foo::C; //~ ERROR struct `Foo` is private
+LL | use use_from_trait_xc::Foo::C;
    |                        ^^^
 
 error: aborting due to 9 previous errors
 
-Some errors occurred: E0253, E0432, E0603.
+Some errors have detailed explanations: E0253, E0432, E0603.
 For more information about an error, try `rustc --explain E0253`.

@@ -1,12 +1,12 @@
-//! This module contains the `EvalContext` methods for executing a single step of the interpreter.
+//! This module contains the `InterpretCx` methods for executing a single step of the interpreter.
 //!
 //! The main entry point is the `step` method.
 
 use rustc::mir;
 use rustc::ty::layout::LayoutOf;
-use rustc::mir::interpret::{EvalResult, Scalar, PointerArithmetic};
+use rustc::mir::interpret::{InterpResult, Scalar, PointerArithmetic};
 
-use super::{EvalContext, Machine};
+use super::{InterpretCx, Machine};
 
 /// Classify whether an operator is "left-homogeneous", i.e., the LHS has the
 /// same type as the result.
@@ -35,8 +35,8 @@ fn binop_right_homogeneous(op: mir::BinOp) -> bool {
     }
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
-    pub fn run(&mut self) -> EvalResult<'tcx> {
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
+    pub fn run(&mut self) -> InterpResult<'tcx> {
         while self.step()? {}
         Ok(())
     }
@@ -44,15 +44,15 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     /// Returns `true` as long as there are more things to do.
     ///
     /// This is used by [priroda](https://github.com/oli-obk/priroda)
-    pub fn step(&mut self) -> EvalResult<'tcx, bool> {
+    pub fn step(&mut self) -> InterpResult<'tcx, bool> {
         if self.stack.is_empty() {
             return Ok(false);
         }
 
         let block = self.frame().block;
         let stmt_id = self.frame().stmt;
-        let mir = self.mir();
-        let basic_block = &mir.basic_blocks()[block];
+        let body = self.body();
+        let basic_block = &body.basic_blocks()[block];
 
         let old_frames = self.cur_frame();
 
@@ -70,7 +70,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         Ok(true)
     }
 
-    fn statement(&mut self, stmt: &mir::Statement<'tcx>) -> EvalResult<'tcx> {
+    fn statement(&mut self, stmt: &mir::Statement<'tcx>) -> InterpResult<'tcx> {
         info!("{:?}", stmt);
 
         use rustc::mir::StatementKind::*;
@@ -136,7 +136,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         &mut self,
         rvalue: &mir::Rvalue<'tcx>,
         place: &mir::Place<'tcx>,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         let dest = self.eval_place(place)?;
 
         use rustc::mir::Rvalue::*;
@@ -259,8 +259,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                 )?;
             }
 
-            Cast(kind, ref operand, cast_ty) => {
-                debug_assert_eq!(self.monomorphize(cast_ty)?, dest.layout.ty);
+            Cast(kind, ref operand, _) => {
                 let src = self.eval_operand(operand, None)?;
                 self.cast(src, kind, dest)?;
             }
@@ -278,7 +277,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         Ok(())
     }
 
-    fn terminator(&mut self, terminator: &mir::Terminator<'tcx>) -> EvalResult<'tcx> {
+    fn terminator(&mut self, terminator: &mir::Terminator<'tcx>) -> InterpResult<'tcx> {
         info!("{:?}", terminator.kind);
         self.tcx.span = terminator.source_info.span;
         self.memory.tcx.span = terminator.source_info.span;

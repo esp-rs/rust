@@ -1,5 +1,6 @@
 use rustc::util::nodemap::DefIdSet;
 use std::mem;
+use syntax::symbol::sym;
 
 use crate::clean::{self, AttributesExt, NestedAttributesExt};
 use crate::clean::Item;
@@ -14,7 +15,7 @@ pub const STRIP_HIDDEN: Pass = Pass {
 };
 
 /// Strip items marked `#[doc(hidden)]`
-pub fn strip_hidden(krate: clean::Crate, _: &DocContext<'_, '_, '_>) -> clean::Crate {
+pub fn strip_hidden(krate: clean::Crate, _: &DocContext<'_>) -> clean::Crate {
     let mut retained = DefIdSet::default();
 
     // strip all #[doc(hidden)] items
@@ -37,7 +38,7 @@ struct Stripper<'a> {
 
 impl<'a> DocFolder for Stripper<'a> {
     fn fold_item(&mut self, i: Item) -> Option<Item> {
-        if i.attrs.lists("doc").has_word("hidden") {
+        if i.attrs.lists(sym::doc).has_word(sym::hidden) {
             debug!("strip_hidden: stripping {} {:?}", i.type_(), i.name);
             // use a dedicated hidden item for given item type if any
             match i.inner {

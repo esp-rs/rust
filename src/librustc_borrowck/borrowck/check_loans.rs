@@ -17,7 +17,6 @@ use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::region;
 use rustc::ty::{self, TyCtxt, RegionKind};
-use syntax::ast;
 use syntax_pos::Span;
 use rustc::hir;
 use rustc::hir::Node;
@@ -37,7 +36,7 @@ fn owned_ptr_base_path<'a, 'tcx>(loan_path: &'a LoanPath<'tcx>) -> &'a LoanPath<
 
     return match helper(loan_path) {
         Some(new_loan_path) => new_loan_path,
-        None => loan_path.clone()
+        None => loan_path,
     };
 
     fn helper<'a, 'tcx>(loan_path: &'a LoanPath<'tcx>) -> Option<&'a LoanPath<'tcx>> {
@@ -79,10 +78,10 @@ fn owned_ptr_base_path_rc<'tcx>(loan_path: &Rc<LoanPath<'tcx>>) -> Rc<LoanPath<'
     }
 }
 
-struct CheckLoanCtxt<'a, 'tcx: 'a> {
+struct CheckLoanCtxt<'a, 'tcx> {
     bccx: &'a BorrowckCtxt<'a, 'tcx>,
-    dfcx_loans: &'a LoanDataFlow<'a, 'tcx>,
-    move_data: &'a move_data::FlowedMoveData<'a, 'tcx>,
+    dfcx_loans: &'a LoanDataFlow<'tcx>,
+    move_data: &'a move_data::FlowedMoveData<'tcx>,
     all_loans: &'a [Loan<'tcx>],
     movable_generator: bool,
 }
@@ -177,20 +176,22 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for CheckLoanCtxt<'a, 'tcx> {
         self.check_assignment(assignment_id.local_id, assignment_span, assignee_cmt);
     }
 
-    fn decl_without_init(&mut self, _id: ast::NodeId, _span: Span) { }
+    fn decl_without_init(&mut self, _id: hir::HirId, _span: Span) { }
 }
 
-pub fn check_loans<'a, 'b, 'c, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
-                                     dfcx_loans: &LoanDataFlow<'b, 'tcx>,
-                                     move_data: &move_data::FlowedMoveData<'c, 'tcx>,
-                                     all_loans: &[Loan<'tcx>],
-                                     body: &hir::Body) {
+pub fn check_loans<'a, 'tcx>(
+    bccx: &BorrowckCtxt<'a, 'tcx>,
+    dfcx_loans: &LoanDataFlow<'tcx>,
+    move_data: &move_data::FlowedMoveData<'tcx>,
+    all_loans: &[Loan<'tcx>],
+    body: &hir::Body,
+) {
     debug!("check_loans(body id={})", body.value.hir_id);
 
     let def_id = bccx.tcx.hir().body_owner_def_id(body.id());
 
-    let node_id = bccx.tcx.hir().as_local_node_id(def_id).unwrap();
-    let movable_generator = !match bccx.tcx.hir().get(node_id) {
+    let hir_id = bccx.tcx.hir().as_local_hir_id(def_id).unwrap();
+    let movable_generator = !match bccx.tcx.hir().get(hir_id) {
         Node::Expr(&hir::Expr {
             node: hir::ExprKind::Closure(.., Some(hir::GeneratorMovability::Static)),
             ..
@@ -209,6 +210,7 @@ pub fn check_loans<'a, 'b, 'c, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
     let rvalue_promotable_map = bccx.tcx.rvalue_promotable_map(def_id);
     euv::ExprUseVisitor::new(&mut clcx,
                              bccx.tcx,
+                             def_id,
                              param_env,
                              &bccx.region_scope_tree,
                              bccx.tables,
@@ -229,7 +231,7 @@ fn compatible_borrow_kinds(borrow_kind1: ty::BorrowKind,
 }
 
 impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
-    pub fn tcx(&self) -> TyCtxt<'a, 'tcx, 'tcx> { self.bccx.tcx }
+    pub fn tcx(&self) -> TyCtxt<'tcx> { self.bccx.tcx }
 
     pub fn each_issued_loan<F>(&self, node: hir::ItemLocalId, mut op: F) -> bool where
         F: FnMut(&Loan<'tcx>) -> bool,
@@ -887,11 +889,10 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
         // Check for reassignments to (immutable) local variables. This
         // needs to be done here instead of in check_loans because we
         // depend on move data.
-        if let Categorization::Local(local_id) = assignee_cmt.cat {
+        if let Categorization::Local(hir_id) = assignee_cmt.cat {
             let lp = opt_loan_path(assignee_cmt).unwrap();
             self.move_data.each_assignment_of(assignment_id, &lp, |assign| {
                 if assignee_cmt.mutbl.is_mutable() {
-                    let hir_id = self.bccx.tcx.hir().node_to_hir_id(local_id);
                     self.bccx.used_mut_nodes.borrow_mut().insert(hir_id);
                 } else {
                     self.bccx.report_reassigned_immutable_variable(

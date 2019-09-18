@@ -3,11 +3,12 @@ use std::env;
 use std::path::PathBuf;
 use crate::common::Config;
 
+use log::*;
+
 /// Conversion table from triple OS name to Rust SYSNAME
 const OS_TABLE: &'static [(&'static str, &'static str)] = &[
     ("android", "android"),
     ("androideabi", "android"),
-    ("bitrig", "bitrig"),
     ("cloudabi", "cloudabi"),
     ("cuda", "cuda"),
     ("darwin", "macos"),
@@ -41,7 +42,6 @@ const ARCH_TABLE: &'static [(&'static str, &'static str)] = &[
     ("armv7", "arm"),
     ("armv7s", "arm"),
     ("asmjs", "asmjs"),
-    ("cuda", "cuda"),
     ("hexagon", "hexagon"),
     ("i386", "x86"),
     ("i586", "x86"),
@@ -49,8 +49,17 @@ const ARCH_TABLE: &'static [(&'static str, &'static str)] = &[
     ("mips", "mips"),
     ("mips64", "mips64"),
     ("mips64el", "mips64"),
+    ("mipsisa32r6", "mips"),
+    ("mipsisa32r6el", "mips"),
+    ("mipsisa64r6", "mips64"),
+    ("mipsisa64r6el", "mips64"),
     ("mipsel", "mips"),
+    ("mipsisa32r6", "mips"),
+    ("mipsisa32r6el", "mips"),
+    ("mipsisa64r6", "mips64"),
+    ("mipsisa64r6el", "mips64"),
     ("msp430", "msp430"),
+    ("nvptx64", "nvptx64"),
     ("powerpc", "powerpc"),
     ("powerpc64", "powerpc64"),
     ("powerpc64le", "powerpc64"),
@@ -158,7 +167,7 @@ fn test_get_arch_failure() {
 fn test_get_arch() {
     assert_eq!("x86_64", get_arch("x86_64-unknown-linux-gnu"));
     assert_eq!("x86_64", get_arch("amd64"));
-    assert_eq!("cuda", get_arch("nvptx64-nvidia-cuda"));
+    assert_eq!("nvptx64", get_arch("nvptx64-nvidia-cuda"));
 }
 
 #[test]

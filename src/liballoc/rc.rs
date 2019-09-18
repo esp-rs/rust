@@ -239,7 +239,7 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::intrinsics::abort;
 use core::marker::{self, Unpin, Unsize, PhantomData};
-use core::mem::{self, align_of_val, forget, size_of_val};
+use core::mem::{self, align_of, align_of_val, forget, size_of_val};
 use core::ops::{Deref, Receiver, CoerceUnsized, DispatchFromDyn};
 use core::pin::Pin;
 use core::ptr::{self, NonNull};
@@ -375,9 +375,9 @@ impl<T: ?Sized> Rc<T> {
     /// ```
     /// use std::rc::Rc;
     ///
-    /// let x = Rc::new(10);
+    /// let x = Rc::new("hello".to_owned());
     /// let x_ptr = Rc::into_raw(x);
-    /// assert_eq!(unsafe { *x_ptr }, 10);
+    /// assert_eq!(unsafe { &*x_ptr }, "hello");
     /// ```
     #[stable(feature = "rc_raw", since = "1.17.0")]
     pub fn into_raw(this: Self) -> *const T {
@@ -401,13 +401,13 @@ impl<T: ?Sized> Rc<T> {
     /// ```
     /// use std::rc::Rc;
     ///
-    /// let x = Rc::new(10);
+    /// let x = Rc::new("hello".to_owned());
     /// let x_ptr = Rc::into_raw(x);
     ///
     /// unsafe {
     ///     // Convert back to an `Rc` to prevent leak.
     ///     let x = Rc::from_raw(x_ptr);
-    ///     assert_eq!(*x, 10);
+    ///     assert_eq!(&*x, "hello");
     ///
     ///     // Further calls to `Rc::from_raw(x_ptr)` would be memory unsafe.
     /// }
@@ -416,11 +416,7 @@ impl<T: ?Sized> Rc<T> {
     /// ```
     #[stable(feature = "rc_raw", since = "1.17.0")]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
-        // Align the unsized value to the end of the RcBox.
-        // Because it is ?Sized, it will always be the last field in memory.
-        let align = align_of_val(&*ptr);
-        let layout = Layout::new::<RcBox<()>>();
-        let offset = (layout.size() + layout.padding_needed_for(align)) as isize;
+        let offset = data_offset(ptr);
 
         // Reverse the offset to find the original RcBox.
         let fake_ptr = ptr as *mut RcBox<T>;
@@ -441,10 +437,10 @@ impl<T: ?Sized> Rc<T> {
     ///
     /// use std::rc::Rc;
     ///
-    /// let x = Rc::new(10);
+    /// let x = Rc::new("hello".to_owned());
     /// let ptr = Rc::into_raw_non_null(x);
-    /// let deref = unsafe { *ptr.as_ref() };
-    /// assert_eq!(deref, 10);
+    /// let deref = unsafe { ptr.as_ref() };
+    /// assert_eq!(deref, "hello");
     /// ```
     #[unstable(feature = "rc_into_raw_non_null", issue = "47336")]
     #[inline]
@@ -584,15 +580,18 @@ impl<T: ?Sized> Rc<T> {
 impl<T: Clone> Rc<T> {
     /// Makes a mutable reference into the given `Rc`.
     ///
-    /// If there are other `Rc` or [`Weak`][weak] pointers to the same value,
-    /// then `make_mut` will invoke [`clone`][clone] on the inner value to
-    /// ensure unique ownership. This is also referred to as clone-on-write.
+    /// If there are other `Rc` pointers to the same value, then `make_mut` will
+    /// [`clone`] the inner value to ensure unique ownership.  This is also
+    /// referred to as clone-on-write.
     ///
-    /// See also [`get_mut`][get_mut], which will fail rather than cloning.
+    /// If there are no other `Rc` pointers to this value, then [`Weak`]
+    /// pointers to this value will be dissassociated.
     ///
-    /// [weak]: struct.Weak.html
-    /// [clone]: ../../std/clone/trait.Clone.html#tymethod.clone
-    /// [get_mut]: struct.Rc.html#method.get_mut
+    /// See also [`get_mut`], which will fail rather than cloning.
+    ///
+    /// [`Weak`]: struct.Weak.html
+    /// [`clone`]: ../../std/clone/trait.Clone.html#tymethod.clone
+    /// [`get_mut`]: struct.Rc.html#method.get_mut
     ///
     /// # Examples
     ///
@@ -610,6 +609,23 @@ impl<T: Clone> Rc<T> {
     /// // Now `data` and `other_data` point to different values.
     /// assert_eq!(*data, 8);
     /// assert_eq!(*other_data, 12);
+    /// ```
+    ///
+    /// [`Weak`] pointers will be dissassociated:
+    ///
+    /// ```
+    /// use std::rc::Rc;
+    ///
+    /// let mut data = Rc::new(75);
+    /// let weak = Rc::downgrade(&data);
+    ///
+    /// assert!(75 == *data);
+    /// assert!(75 == *weak.upgrade().unwrap());
+    ///
+    /// *Rc::make_mut(&mut data) += 1;
+    ///
+    /// assert!(76 == *data);
+    /// assert!(weak.upgrade().is_none());
     /// ```
     #[inline]
     #[stable(feature = "rc_unique", since = "1.4.0")]
@@ -932,6 +948,11 @@ impl<T: ?Sized + PartialEq> RcEqIdent<T> for Rc<T> {
     }
 }
 
+/// We're doing this specialization here, and not as a more general optimization on `&T`, because it
+/// would otherwise add a cost to all equality checks on refs. We assume that `Rc`s are used to
+/// store large values, that are slow to clone, but also heavy to check for equality, causing this
+/// cost to pay off more easily. It's also more likely to have two `Rc` clones, that point to
+/// the same value, than two `&T`s.
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: ?Sized + Eq> RcEqIdent<T> for Rc<T> {
     #[inline]
@@ -1145,7 +1166,7 @@ impl<T> From<T> for Rc<T> {
 }
 
 #[stable(feature = "shared_from_slice", since = "1.21.0")]
-impl<'a, T: Clone> From<&'a [T]> for Rc<[T]> {
+impl<T: Clone> From<&[T]> for Rc<[T]> {
     #[inline]
     fn from(v: &[T]) -> Rc<[T]> {
         <Self as RcFromSlice<T>>::from_slice(v)
@@ -1153,7 +1174,7 @@ impl<'a, T: Clone> From<&'a [T]> for Rc<[T]> {
 }
 
 #[stable(feature = "shared_from_slice", since = "1.21.0")]
-impl<'a> From<&'a str> for Rc<str> {
+impl From<&str> for Rc<str> {
     #[inline]
     fn from(v: &str) -> Rc<str> {
         let rc = Rc::<[u8]>::from(v.as_bytes());
@@ -1257,6 +1278,143 @@ impl<T> Weak<T> {
             ptr: NonNull::new(usize::MAX as *mut RcBox<T>).expect("MAX is not 0"),
         }
     }
+
+    /// Returns a raw pointer to the object `T` pointed to by this `Weak<T>`.
+    ///
+    /// It is up to the caller to ensure that the object is still alive when accessing it through
+    /// the pointer.
+    ///
+    /// The pointer may be [`null`] or be dangling in case the object has already been destroyed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(weak_into_raw)]
+    ///
+    /// use std::rc::{Rc, Weak};
+    /// use std::ptr;
+    ///
+    /// let strong = Rc::new("hello".to_owned());
+    /// let weak = Rc::downgrade(&strong);
+    /// // Both point to the same object
+    /// assert!(ptr::eq(&*strong, Weak::as_raw(&weak)));
+    /// // The strong here keeps it alive, so we can still access the object.
+    /// assert_eq!("hello", unsafe { &*Weak::as_raw(&weak) });
+    ///
+    /// drop(strong);
+    /// // But not any more. We can do Weak::as_raw(&weak), but accessing the pointer would lead to
+    /// // undefined behaviour.
+    /// // assert_eq!("hello", unsafe { &*Weak::as_raw(&weak) });
+    /// ```
+    ///
+    /// [`null`]: ../../std/ptr/fn.null.html
+    #[unstable(feature = "weak_into_raw", issue = "60728")]
+    pub fn as_raw(this: &Self) -> *const T {
+        match this.inner() {
+            None => ptr::null(),
+            Some(inner) => {
+                let offset = data_offset_sized::<T>();
+                let ptr = inner as *const RcBox<T>;
+                // Note: while the pointer we create may already point to dropped value, the
+                // allocation still lives (it must hold the weak point as long as we are alive).
+                // Therefore, the offset is OK to do, it won't get out of the allocation.
+                let ptr = unsafe { (ptr as *const u8).offset(offset) };
+                ptr as *const T
+            }
+        }
+    }
+
+    /// Consumes the `Weak<T>` and turns it into a raw pointer.
+    ///
+    /// This converts the weak pointer into a raw pointer, preserving the original weak count. It
+    /// can be turned back into the `Weak<T>` with [`from_raw`].
+    ///
+    /// The same restrictions of accessing the target of the pointer as with
+    /// [`as_raw`] apply.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(weak_into_raw)]
+    ///
+    /// use std::rc::{Rc, Weak};
+    ///
+    /// let strong = Rc::new("hello".to_owned());
+    /// let weak = Rc::downgrade(&strong);
+    /// let raw = Weak::into_raw(weak);
+    ///
+    /// assert_eq!(1, Rc::weak_count(&strong));
+    /// assert_eq!("hello", unsafe { &*raw });
+    ///
+    /// drop(unsafe { Weak::from_raw(raw) });
+    /// assert_eq!(0, Rc::weak_count(&strong));
+    /// ```
+    ///
+    /// [`from_raw`]: struct.Weak.html#method.from_raw
+    /// [`as_raw`]: struct.Weak.html#method.as_raw
+    #[unstable(feature = "weak_into_raw", issue = "60728")]
+    pub fn into_raw(this: Self) -> *const T {
+        let result = Self::as_raw(&this);
+        mem::forget(this);
+        result
+    }
+
+    /// Converts a raw pointer previously created by [`into_raw`] back into `Weak<T>`.
+    ///
+    /// This can be used to safely get a strong reference (by calling [`upgrade`]
+    /// later) or to deallocate the weak count by dropping the `Weak<T>`.
+    ///
+    /// It takes ownership of one weak count. In case a [`null`] is passed, a dangling [`Weak`] is
+    /// returned.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must represent one valid weak count. In other words, it must point to `T` which
+    /// is or *was* managed by an [`Rc`] and the weak count of that [`Rc`] must not have reached
+    /// 0. It is allowed for the strong count to be 0.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(weak_into_raw)]
+    ///
+    /// use std::rc::{Rc, Weak};
+    ///
+    /// let strong = Rc::new("hello".to_owned());
+    ///
+    /// let raw_1 = Weak::into_raw(Rc::downgrade(&strong));
+    /// let raw_2 = Weak::into_raw(Rc::downgrade(&strong));
+    ///
+    /// assert_eq!(2, Rc::weak_count(&strong));
+    ///
+    /// assert_eq!("hello", &*Weak::upgrade(&unsafe { Weak::from_raw(raw_1) }).unwrap());
+    /// assert_eq!(1, Rc::weak_count(&strong));
+    ///
+    /// drop(strong);
+    ///
+    /// // Decrement the last weak count.
+    /// assert!(Weak::upgrade(&unsafe { Weak::from_raw(raw_2) }).is_none());
+    /// ```
+    ///
+    /// [`null`]: ../../std/ptr/fn.null.html
+    /// [`into_raw`]: struct.Weak.html#method.into_raw
+    /// [`upgrade`]: struct.Weak.html#method.upgrade
+    /// [`Rc`]: struct.Rc.html
+    /// [`Weak`]: struct.Weak.html
+    #[unstable(feature = "weak_into_raw", issue = "60728")]
+    pub unsafe fn from_raw(ptr: *const T) -> Self {
+        if ptr.is_null() {
+            Self::new()
+        } else {
+            // See Rc::from_raw for details
+            let offset = data_offset(ptr);
+            let fake_ptr = ptr as *mut RcBox<T>;
+            let ptr = set_data_ptr(fake_ptr, (ptr as *mut u8).offset(-offset));
+            Weak {
+                ptr: NonNull::new(ptr).expect("Invalid pointer passed to from_raw"),
+            }
+        }
+    }
 }
 
 pub(crate) fn is_dangling<T: ?Sized>(ptr: NonNull<T>) -> bool {
@@ -1357,18 +1515,18 @@ impl<T: ?Sized> Weak<T> {
     ///
     /// ```
     /// #![feature(weak_ptr_eq)]
-    /// use std::rc::{Rc, Weak};
+    /// use std::rc::Rc;
     ///
     /// let first_rc = Rc::new(5);
     /// let first = Rc::downgrade(&first_rc);
     /// let second = Rc::downgrade(&first_rc);
     ///
-    /// assert!(Weak::ptr_eq(&first, &second));
+    /// assert!(first.ptr_eq(&second));
     ///
     /// let third_rc = Rc::new(5);
     /// let third = Rc::downgrade(&third_rc);
     ///
-    /// assert!(!Weak::ptr_eq(&first, &third));
+    /// assert!(!first.ptr_eq(&third));
     /// ```
     ///
     /// Comparing `Weak::new`.
@@ -1379,16 +1537,16 @@ impl<T: ?Sized> Weak<T> {
     ///
     /// let first = Weak::new();
     /// let second = Weak::new();
-    /// assert!(Weak::ptr_eq(&first, &second));
+    /// assert!(first.ptr_eq(&second));
     ///
     /// let third_rc = Rc::new(());
     /// let third = Rc::downgrade(&third_rc);
-    /// assert!(!Weak::ptr_eq(&first, &third));
+    /// assert!(!first.ptr_eq(&third));
     /// ```
     #[inline]
     #[unstable(feature = "weak_ptr_eq", issue = "55981")]
-    pub fn ptr_eq(this: &Self, other: &Self) -> bool {
-        this.ptr.as_ptr() == other.ptr.as_ptr()
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.ptr.as_ptr() == other.ptr.as_ptr()
     }
 }
 
@@ -2002,3 +2160,20 @@ impl<T: ?Sized> AsRef<T> for Rc<T> {
 
 #[stable(feature = "pin", since = "1.33.0")]
 impl<T: ?Sized> Unpin for Rc<T> { }
+
+unsafe fn data_offset<T: ?Sized>(ptr: *const T) -> isize {
+    // Align the unsized value to the end of the RcBox.
+    // Because it is ?Sized, it will always be the last field in memory.
+    let align = align_of_val(&*ptr);
+    let layout = Layout::new::<RcBox<()>>();
+    (layout.size() + layout.padding_needed_for(align)) as isize
+}
+
+/// Computes the offset of the data field within ArcInner.
+///
+/// Unlike [`data_offset`], this doesn't need the pointer, but it works only on `T: Sized`.
+fn data_offset_sized<T>() -> isize {
+    let align = align_of::<T>();
+    let layout = Layout::new::<RcBox<()>>();
+    (layout.size() + layout.padding_needed_for(align)) as isize
+}

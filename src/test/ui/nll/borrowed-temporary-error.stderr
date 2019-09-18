@@ -1,9 +1,9 @@
 error[E0716]: temporary value dropped while borrowed
-  --> $DIR/borrowed-temporary-error.rs:10:10
+  --> $DIR/borrowed-temporary-error.rs:8:10
    |
 LL |         &(v,)
    |          ^^^^ creates a temporary which is freed while still in use
-LL |         //~^ ERROR temporary value dropped while borrowed [E0716]
+LL |
 LL |     });
    |       - temporary value is freed at the end of this statement
 LL |     println!("{:?}", x);

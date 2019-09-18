@@ -43,7 +43,9 @@ use crate::sys;
 /// `CString` implements a [`as_ptr`] method through the [`Deref`]
 /// trait. This method will give you a `*const c_char` which you can
 /// feed directly to extern functions that expect a nul-terminated
-/// string, like C's `strdup()`.
+/// string, like C's `strdup()`. Notice that [`as_ptr`] returns a
+/// read-only pointer; if the C code writes to it, that causes
+/// undefined behavior.
 ///
 /// # Extracting a slice of the whole C string
 ///
@@ -61,7 +63,7 @@ use crate::sys;
 ///
 /// Once you have the kind of slice you need (with or without a nul
 /// terminator), you can call the slice's own
-/// [`as_ptr`][slice.as_ptr] method to get a raw pointer to pass to
+/// [`as_ptr`][slice.as_ptr] method to get a read-only raw pointer to pass to
 /// extern functions. See the documentation for that function for a
 /// discussion on ensuring the lifetime of the raw pointer.
 ///
@@ -628,7 +630,7 @@ impl ops::Deref for CString {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Debug for CString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
@@ -649,7 +651,7 @@ impl From<CString> for Vec<u8> {
 
 #[stable(feature = "cstr_debug", since = "1.3.0")]
 impl fmt::Debug for CStr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "\"")?;
         for byte in self.to_bytes().iter().flat_map(|&b| ascii::escape_default(b)) {
             f.write_char(byte as char)?;
@@ -690,8 +692,8 @@ impl<'a> From<Cow<'a, CStr>> for CString {
 }
 
 #[stable(feature = "box_from_c_str", since = "1.17.0")]
-impl<'a> From<&'a CStr> for Box<CStr> {
-    fn from(s: &'a CStr) -> Box<CStr> {
+impl From<&CStr> for Box<CStr> {
+    fn from(s: &CStr) -> Box<CStr> {
         let boxed: Box<[u8]> = Box::from(s.to_bytes_with_nul());
         unsafe { Box::from_raw(Box::into_raw(boxed) as *mut CStr) }
     }
@@ -767,7 +769,7 @@ impl From<CString> for Arc<CStr> {
 }
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
-impl<'a> From<&'a CStr> for Arc<CStr> {
+impl From<&CStr> for Arc<CStr> {
     #[inline]
     fn from(s: &CStr) -> Arc<CStr> {
         let arc: Arc<[u8]> = Arc::from(s.to_bytes_with_nul());
@@ -789,7 +791,7 @@ impl From<CString> for Rc<CStr> {
 }
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
-impl<'a> From<&'a CStr> for Rc<CStr> {
+impl From<&CStr> for Rc<CStr> {
     #[inline]
     fn from(s: &CStr) -> Rc<CStr> {
         let rc: Rc<[u8]> = Rc::from(s.to_bytes_with_nul());
@@ -847,7 +849,7 @@ impl Error for NulError {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Display for NulError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "nul byte found in provided data at position: {}", self.0)
     }
 }
@@ -878,7 +880,7 @@ impl Error for FromBytesWithNulError {
 
 #[stable(feature = "frombyteswithnulerror_impls", since = "1.17.0")]
 impl fmt::Display for FromBytesWithNulError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.description())?;
         if let FromBytesWithNulErrorKind::InteriorNul(pos) = self.kind {
             write!(f, " at byte pos {}", pos)?;
@@ -917,7 +919,7 @@ impl Error for IntoStringError {
 
 #[stable(feature = "cstring_into", since = "1.7.0")]
 impl fmt::Display for IntoStringError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.description().fmt(f)
     }
 }
@@ -1042,6 +1044,9 @@ impl CStr {
     /// the end of the string.
     ///
     /// **WARNING**
+    ///
+    /// The returned pointer is read-only; writing to it (including passing it
+    /// to C code that writes to it) causes undefined behavior.
     ///
     /// It is your responsibility to make sure that the underlying memory is not
     /// freed too early. For example, the following code will cause undefined
@@ -1208,11 +1213,11 @@ impl CStr {
     ///                  .expect("CStr::from_bytes_with_nul failed");
     /// assert_eq!(
     ///     c_str.to_string_lossy(),
-    ///     Cow::Owned(String::from("Hello �World")) as Cow<str>
+    ///     Cow::Owned(String::from("Hello �World")) as Cow<'_, str>
     /// );
     /// ```
     #[stable(feature = "cstr_to_str", since = "1.4.0")]
-    pub fn to_string_lossy(&self) -> Cow<str> {
+    pub fn to_string_lossy(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(self.to_bytes())
     }
 
@@ -1268,8 +1273,8 @@ impl ToOwned for CStr {
 }
 
 #[stable(feature = "cstring_asref", since = "1.7.0")]
-impl<'a> From<&'a CStr> for CString {
-    fn from(s: &'a CStr) -> CString {
+impl From<&CStr> for CString {
+    fn from(s: &CStr) -> CString {
         s.to_owned()
     }
 }

@@ -4,7 +4,7 @@ use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
 use rustc::ty::query::Providers;
 use rustc::ty::subst::UnpackedKind;
 use rustc::ty::{self, CratePredicatesMap, TyCtxt};
-use rustc_data_structures::sync::Lrc;
+use syntax::symbol::sym;
 
 mod explicit;
 mod implicit_infer;
@@ -20,13 +20,13 @@ pub fn provide(providers: &mut Providers<'_>) {
     };
 }
 
-fn inferred_outlives_of<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+fn inferred_outlives_of<'tcx>(
+    tcx: TyCtxt<'tcx>,
     item_def_id: DefId,
-) -> Lrc<Vec<ty::Predicate<'tcx>>> {
+) -> &'tcx [ty::Predicate<'tcx>] {
     let id = tcx
         .hir()
-        .as_local_node_id(item_def_id)
+        .as_local_hir_id(item_def_id)
         .expect("expected local def-id");
 
     match tcx.hir().get(id) {
@@ -37,10 +37,10 @@ fn inferred_outlives_of<'a, 'tcx>(
                 let predicates = crate_map
                     .predicates
                     .get(&item_def_id)
-                    .unwrap_or(&crate_map.empty_predicate)
-                    .clone();
+                    .map(|p| *p)
+                    .unwrap_or(&[]);
 
-                if tcx.has_attr(item_def_id, "rustc_outlives") {
+                if tcx.has_attr(item_def_id, sym::rustc_outlives) {
                     let mut pred: Vec<String> = predicates
                         .iter()
                         .map(|out_pred| match out_pred {
@@ -63,17 +63,17 @@ fn inferred_outlives_of<'a, 'tcx>(
                 predicates
             }
 
-            _ => Lrc::new(Vec::new()),
+            _ => &[],
         },
 
-        _ => Lrc::new(Vec::new()),
+        _ => &[],
     }
 }
 
 fn inferred_outlives_crate<'tcx>(
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     crate_num: CrateNum,
-) -> Lrc<CratePredicatesMap<'tcx>> {
+) -> &'tcx CratePredicatesMap<'tcx> {
     assert_eq!(crate_num, LOCAL_CRATE);
 
     // Compute a map from each struct/enum/union S to the **explicit**
@@ -96,25 +96,30 @@ fn inferred_outlives_crate<'tcx>(
     let predicates = global_inferred_outlives
         .iter()
         .map(|(&def_id, set)| {
-            let vec: Vec<ty::Predicate<'tcx>> = set
+            let predicates = tcx.arena.alloc_from_iter(set
                 .iter()
-                .map(
+                .filter_map(
                     |ty::OutlivesPredicate(kind1, region2)| match kind1.unpack() {
-                        UnpackedKind::Type(ty1) => ty::Predicate::TypeOutlives(ty::Binder::bind(
-                            ty::OutlivesPredicate(ty1, region2),
-                        )),
-                        UnpackedKind::Lifetime(region1) => ty::Predicate::RegionOutlives(
-                            ty::Binder::bind(ty::OutlivesPredicate(region1, region2)),
-                        ),
+                        UnpackedKind::Type(ty1) => {
+                            Some(ty::Predicate::TypeOutlives(ty::Binder::bind(
+                                ty::OutlivesPredicate(ty1, region2)
+                            )))
+                        }
+                        UnpackedKind::Lifetime(region1) => {
+                            Some(ty::Predicate::RegionOutlives(
+                                ty::Binder::bind(ty::OutlivesPredicate(region1, region2))
+                            ))
+                        }
+                        UnpackedKind::Const(_) => {
+                            // Generic consts don't impose any constraints.
+                            None
+                        }
                     },
-                ).collect();
-            (def_id, Lrc::new(vec))
+                ));
+            (def_id, &*predicates)
         }).collect();
 
-    let empty_predicate = Lrc::new(Vec::new());
-
-    Lrc::new(ty::CratePredicatesMap {
+    tcx.arena.alloc(ty::CratePredicatesMap {
         predicates,
-        empty_predicate,
     })
 }

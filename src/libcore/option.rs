@@ -135,9 +135,9 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use iter::{FromIterator, FusedIterator, TrustedLen};
-use {hint, mem, ops::{self, Deref}};
-use pin::Pin;
+use crate::iter::{FromIterator, FusedIterator, TrustedLen};
+use crate::{convert, hint, mem, ops::{self, Deref}};
+use crate::pin::Pin;
 
 // Note that this is not a lang item per se, but it has a hidden dependency on
 // `Iterator`, which is one. The compiler assumes that the `next` method of
@@ -145,7 +145,7 @@ use pin::Pin;
 // which basically means it must be `Option`.
 
 /// The `Option` type. See [the module level documentation](index.html) for more.
-#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[derive(Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum Option<T> {
     /// No value
@@ -178,6 +178,7 @@ impl<T> Option<T> {
     /// ```
     ///
     /// [`Some`]: #variant.Some
+    #[must_use]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_some(&self) -> bool {
@@ -200,6 +201,7 @@ impl<T> Option<T> {
     /// ```
     ///
     /// [`None`]: #variant.None
+    #[must_use]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_none(&self) -> bool {
@@ -210,7 +212,7 @@ impl<T> Option<T> {
     // Adapter for working with references
     /////////////////////////////////////////////////////////////////////////
 
-    /// Converts from `Option<T>` to `Option<&T>`.
+    /// Converts from `&Option<T>` to `Option<&T>`.
     ///
     /// # Examples
     ///
@@ -239,7 +241,7 @@ impl<T> Option<T> {
         }
     }
 
-    /// Converts from `Option<T>` to `Option<&mut T>`.
+    /// Converts from `&mut Option<T>` to `Option<&mut T>`.
     ///
     /// # Examples
     ///
@@ -536,7 +538,7 @@ impl<T> Option<T> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn iter(&self) -> Iter<T> {
+    pub fn iter(&self) -> Iter<'_, T> {
         Iter { inner: Item { opt: self.as_ref() } }
     }
 
@@ -557,7 +559,7 @@ impl<T> Option<T> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn iter_mut(&mut self) -> IterMut<T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut { inner: Item { opt: self.as_mut() } }
     }
 
@@ -723,8 +725,6 @@ impl<T> Option<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(option_xor)]
-    ///
     /// let x = Some(2);
     /// let y: Option<u32> = None;
     /// assert_eq!(x.xor(y), Some(2));
@@ -742,7 +742,7 @@ impl<T> Option<T> {
     /// assert_eq!(x.xor(y), None);
     /// ```
     #[inline]
-    #[unstable(feature = "option_xor", issue = "50512")]
+    #[stable(feature = "option_xor", since = "1.37.0")]
     pub fn xor(self, optb: Option<T>) -> Option<T> {
         match (self, optb) {
             (Some(a), None) => Some(a),
@@ -881,15 +881,13 @@ impl<T: Copy> Option<&T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(copied)]
-    ///
     /// let x = 12;
     /// let opt_x = Some(&x);
     /// assert_eq!(opt_x, Some(&12));
     /// let copied = opt_x.copied();
     /// assert_eq!(copied, Some(12));
     /// ```
-    #[unstable(feature = "copied", issue = "57126")]
+    #[stable(feature = "copied", since = "1.35.0")]
     pub fn copied(self) -> Option<T> {
         self.map(|&t| t)
     }
@@ -902,15 +900,13 @@ impl<T: Copy> Option<&mut T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(copied)]
-    ///
     /// let mut x = 12;
     /// let opt_x = Some(&mut x);
     /// assert_eq!(opt_x, Some(&mut 12));
     /// let copied = opt_x.copied();
     /// assert_eq!(copied, Some(12));
     /// ```
-    #[unstable(feature = "copied", issue = "57126")]
+    #[stable(feature = "copied", since = "1.35.0")]
     pub fn copied(self) -> Option<T> {
         self.map(|&mut t| t)
     }
@@ -1041,6 +1037,25 @@ fn expect_failed(msg: &str) -> ! {
 /////////////////////////////////////////////////////////////////////////////
 // Trait implementations
 /////////////////////////////////////////////////////////////////////////////
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T: Clone> Clone for Option<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self {
+            Some(x) => Some(x.clone()),
+            None => None,
+        }
+    }
+
+    #[inline]
+    fn clone_from(&mut self, source: &Self) {
+        match (self, source) {
+            (Some(to), Some(from)) => to.clone_from(from),
+            (to, from) => *to = from.clone(),
+        }
+    }
+}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> Default for Option<T> {
@@ -1286,7 +1301,7 @@ impl<A, V: FromIterator<A>> FromIterator<Option<A>> for Option<V> {
     /// # Examples
     ///
     /// Here is an example which increments every integer in a vector.
-    /// `We use the checked variant of `add` that returns `None` when the
+    /// We use the checked variant of `add` that returns `None` when the
     /// calculation would result in an overflow.
     ///
     /// ```
@@ -1318,6 +1333,26 @@ impl<A, V: FromIterator<A>> FromIterator<Option<A>> for Option<V> {
     ///
     /// Since the last element is zero, it would underflow. Thus, the resulting
     /// value is `None`.
+    ///
+    /// Here is a variation on the previous example, showing that no
+    /// further elements are taken from `iter` after the first `None`.
+    ///
+    /// ```
+    /// let items = vec![3_u16, 2, 1, 10];
+    ///
+    /// let mut shared = 0;
+    ///
+    /// let res: Option<Vec<u16>> = items
+    ///     .iter()
+    ///     .map(|x| { shared += x; x.checked_sub(2) })
+    ///     .collect();
+    ///
+    /// assert_eq!(res, None);
+    /// assert_eq!(shared, 6);
+    /// ```
+    ///
+    /// Since the third element caused an underflow, no further elements were taken,
+    /// so the final value of `shared` is 6 (= `3 + 2 + 1`), not 16.
     ///
     /// [`Iterator`]: ../iter/trait.Iterator.html
     #[inline]
@@ -1393,5 +1428,35 @@ impl<T> ops::Try for Option<T> {
     #[inline]
     fn from_error(_: NoneError) -> Self {
         None
+    }
+}
+
+impl<T> Option<Option<T>> {
+    /// Converts from `Option<Option<T>>` to `Option<T>`
+    ///
+    /// # Examples
+    /// Basic usage:
+    /// ```
+    /// #![feature(option_flattening)]
+    /// let x: Option<Option<u32>> = Some(Some(6));
+    /// assert_eq!(Some(6), x.flatten());
+    ///
+    /// let x: Option<Option<u32>> = Some(None);
+    /// assert_eq!(None, x.flatten());
+    ///
+    /// let x: Option<Option<u32>> = None;
+    /// assert_eq!(None, x.flatten());
+    /// ```
+    /// Flattening once only removes one level of nesting:
+    /// ```
+    /// #![feature(option_flattening)]
+    /// let x: Option<Option<Option<u32>>> = Some(Some(Some(6)));
+    /// assert_eq!(Some(Some(6)), x.flatten());
+    /// assert_eq!(Some(6), x.flatten().flatten());
+    /// ```
+    #[inline]
+    #[unstable(feature = "option_flattening", issue = "60258")]
+    pub fn flatten(self) -> Option<T> {
+        self.and_then(convert::identity)
     }
 }

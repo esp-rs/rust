@@ -14,11 +14,11 @@ use std::io::Write;
 use std::path::{PathBuf, Path};
 use std::process::{Command, Stdio};
 
-use build_helper::output;
+use build_helper::{output, t};
 
 use crate::{Compiler, Mode, LLVM_TOOLS};
 use crate::channel;
-use crate::util::{libdir, is_dylib, exe};
+use crate::util::{is_dylib, exe};
 use crate::builder::{Builder, RunConfig, ShouldRun, Step};
 use crate::compile;
 use crate::tool::{self, Tool};
@@ -68,7 +68,6 @@ fn missing_tool(tool_name: &str, skip: bool) {
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Docs {
-    pub stage: u32,
     pub host: Interned<String>,
 }
 
@@ -82,7 +81,6 @@ impl Step for Docs {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Docs {
-            stage: run.builder.top_stage,
             host: run.target,
         });
     }
@@ -130,7 +128,6 @@ impl Step for Docs {
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct RustcDocs {
-    pub stage: u32,
     pub host: Interned<String>,
 }
 
@@ -144,7 +141,6 @@ impl Step for RustcDocs {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(RustcDocs {
-            stage: run.builder.top_stage,
             host: run.target,
         });
     }
@@ -473,21 +469,23 @@ impl Step for Rustc {
         fn prepare_image(builder: &Builder<'_>, compiler: Compiler, image: &Path) {
             let host = compiler.host;
             let src = builder.sysroot(compiler);
-            let libdir = libdir(&host);
+            let libdir = builder.rustc_libdir(compiler);
 
             // Copy rustc/rustdoc binaries
             t!(fs::create_dir_all(image.join("bin")));
             builder.cp_r(&src.join("bin"), &image.join("bin"));
 
-            builder.install(&builder.rustdoc(compiler.host), &image.join("bin"), 0o755);
+            builder.install(&builder.rustdoc(compiler), &image.join("bin"), 0o755);
+
+            let libdir_relative = builder.libdir_relative(compiler);
 
             // Copy runtime DLLs needed by the compiler
-            if libdir != "bin" {
-                for entry in builder.read_dir(&src.join(libdir)) {
+            if libdir_relative.to_str() != Some("bin") {
+                for entry in builder.read_dir(&libdir) {
                     let name = entry.file_name();
                     if let Some(s) = name.to_str() {
                         if is_dylib(s) {
-                            builder.install(&entry.path(), &image.join(libdir), 0o644);
+                            builder.install(&entry.path(), &image.join(&libdir_relative), 0o644);
                         }
                     }
                 }
@@ -645,7 +643,11 @@ impl Step for Std {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Std {
-            compiler: run.builder.compiler(run.builder.top_stage, run.builder.config.build),
+            compiler: run.builder.compiler_for(
+                run.builder.top_stage,
+                run.builder.config.build,
+                run.target,
+            ),
             target: run.target,
         });
     }
@@ -735,7 +737,14 @@ impl Step for Analysis {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Analysis {
-            compiler: run.builder.compiler(run.builder.top_stage, run.builder.config.build),
+            // Find the actual compiler (handling the full bootstrap option) which
+            // produced the save-analysis data because that data isn't copied
+            // through the sysroot uplifting.
+            compiler: run.builder.compiler_for(
+                run.builder.top_stage,
+                run.builder.config.build,
+                run.target,
+            ),
             target: run.target,
         });
     }
@@ -754,14 +763,6 @@ impl Step for Analysis {
         }
 
         builder.ensure(Std { compiler, target });
-
-        // Package save-analysis from stage1 if not doing a full bootstrap, as the
-        // stage2 artifacts is simply copied from stage1 in that case.
-        let compiler = if builder.force_use_stage1(compiler, target) {
-            builder.compiler(1, compiler.host)
-        } else {
-            compiler.clone()
-        };
 
         let image = tmpdir(builder).join(format!("{}-{}-image", name, target));
 
@@ -803,6 +804,7 @@ fn copy_src_dirs(builder: &Builder<'_>, src_dirs: &[&str], exclude_dirs: &[&str]
 
         const LLVM_PROJECTS: &[&str] = &[
             "llvm-project/clang", "llvm-project\\clang",
+            "llvm-project/libunwind", "llvm-project\\libunwind",
             "llvm-project/lld", "llvm-project\\lld",
             "llvm-project/lldb", "llvm-project\\lldb",
             "llvm-project/llvm", "llvm-project\\llvm",
@@ -904,6 +906,9 @@ impl Step for Src {
             "src/stdsimd",
             "src/libproc_macro",
             "src/tools/rustc-std-workspace-core",
+            "src/tools/rustc-std-workspace-alloc",
+            "src/librustc",
+            "src/libsyntax",
         ];
 
         copy_src_dirs(builder, &std_src_dirs[..], &[], &dst_src);
@@ -1061,7 +1066,7 @@ pub fn sanitize_sh(path: &Path) -> String {
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Cargo {
-    pub stage: u32,
+    pub compiler: Compiler,
     pub target: Interned<String>,
 }
 
@@ -1075,16 +1080,20 @@ impl Step for Cargo {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Cargo {
-            stage: run.builder.top_stage,
+            compiler: run.builder.compiler_for(
+                run.builder.top_stage,
+                run.builder.config.build,
+                run.target,
+            ),
             target: run.target,
         });
     }
 
     fn run(self, builder: &Builder<'_>) -> PathBuf {
-        let stage = self.stage;
+        let compiler = self.compiler;
         let target = self.target;
 
-        builder.info(&format!("Dist cargo stage{} ({})", stage, target));
+        builder.info(&format!("Dist cargo stage{} ({})", compiler.stage, target));
         let src = builder.src.join("src/tools/cargo");
         let etc = src.join("src/etc");
         let release_num = builder.release_num("cargo");
@@ -1099,10 +1108,7 @@ impl Step for Cargo {
         // Prepare the image directory
         builder.create_dir(&image.join("share/zsh/site-functions"));
         builder.create_dir(&image.join("etc/bash_completion.d"));
-        let cargo = builder.ensure(tool::Cargo {
-            compiler: builder.compiler(stage, builder.config.build),
-            target
-        });
+        let cargo = builder.ensure(tool::Cargo { compiler, target });
         builder.install(&cargo, &image.join("bin"), 0o755);
         for man in t!(etc.join("man").read_dir()) {
             let man = t!(man);
@@ -1147,7 +1153,7 @@ impl Step for Cargo {
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Rls {
-    pub stage: u32,
+    pub compiler: Compiler,
     pub target: Interned<String>,
 }
 
@@ -1161,17 +1167,21 @@ impl Step for Rls {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Rls {
-            stage: run.builder.top_stage,
+            compiler: run.builder.compiler_for(
+                run.builder.top_stage,
+                run.builder.config.build,
+                run.target,
+            ),
             target: run.target,
         });
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<PathBuf> {
-        let stage = self.stage;
+        let compiler = self.compiler;
         let target = self.target;
         assert!(builder.config.extended);
 
-        builder.info(&format!("Dist RLS stage{} ({})", stage, target));
+        builder.info(&format!("Dist RLS stage{} ({})", compiler.stage, target));
         let src = builder.src.join("src/tools/rls");
         let release_num = builder.release_num("rls");
         let name = pkgname(builder, "rls");
@@ -1186,8 +1196,9 @@ impl Step for Rls {
         // We expect RLS to build, because we've exited this step above if tool
         // state for RLS isn't testing.
         let rls = builder.ensure(tool::Rls {
-            compiler: builder.compiler(stage, builder.config.build),
-            target, extra_features: Vec::new()
+            compiler,
+            target,
+            extra_features: Vec::new(),
         }).or_else(|| { missing_tool("RLS", builder.build.config.missing_tools); None })?;
 
         builder.install(&rls, &image.join("bin"), 0o755);
@@ -1226,7 +1237,7 @@ impl Step for Rls {
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Clippy {
-    pub stage: u32,
+    pub compiler: Compiler,
     pub target: Interned<String>,
 }
 
@@ -1240,17 +1251,21 @@ impl Step for Clippy {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Clippy {
-            stage: run.builder.top_stage,
+            compiler: run.builder.compiler_for(
+                run.builder.top_stage,
+                run.builder.config.build,
+                run.target,
+            ),
             target: run.target,
         });
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<PathBuf> {
-        let stage = self.stage;
+        let compiler = self.compiler;
         let target = self.target;
         assert!(builder.config.extended);
 
-        builder.info(&format!("Dist clippy stage{} ({})", stage, target));
+        builder.info(&format!("Dist clippy stage{} ({})", compiler.stage, target));
         let src = builder.src.join("src/tools/clippy");
         let release_num = builder.release_num("clippy");
         let name = pkgname(builder, "clippy");
@@ -1265,11 +1280,12 @@ impl Step for Clippy {
         // We expect clippy to build, because we've exited this step above if tool
         // state for clippy isn't testing.
         let clippy = builder.ensure(tool::Clippy {
-            compiler: builder.compiler(stage, builder.config.build),
-            target, extra_features: Vec::new()
+            compiler,
+            target,
+            extra_features: Vec::new(),
         }).or_else(|| { missing_tool("clippy", builder.build.config.missing_tools); None })?;
         let cargoclippy = builder.ensure(tool::CargoClippy {
-            compiler: builder.compiler(stage, builder.config.build),
+            compiler,
             target, extra_features: Vec::new()
         }).or_else(|| { missing_tool("cargo clippy", builder.build.config.missing_tools); None })?;
 
@@ -1310,7 +1326,7 @@ impl Step for Clippy {
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Miri {
-    pub stage: u32,
+    pub compiler: Compiler,
     pub target: Interned<String>,
 }
 
@@ -1324,17 +1340,21 @@ impl Step for Miri {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Miri {
-            stage: run.builder.top_stage,
+            compiler: run.builder.compiler_for(
+                run.builder.top_stage,
+                run.builder.config.build,
+                run.target,
+            ),
             target: run.target,
         });
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<PathBuf> {
-        let stage = self.stage;
+        let compiler = self.compiler;
         let target = self.target;
         assert!(builder.config.extended);
 
-        builder.info(&format!("Dist miri stage{} ({})", stage, target));
+        builder.info(&format!("Dist miri stage{} ({})", compiler.stage, target));
         let src = builder.src.join("src/tools/miri");
         let release_num = builder.release_num("miri");
         let name = pkgname(builder, "miri");
@@ -1349,12 +1369,14 @@ impl Step for Miri {
         // We expect miri to build, because we've exited this step above if tool
         // state for miri isn't testing.
         let miri = builder.ensure(tool::Miri {
-            compiler: builder.compiler(stage, builder.config.build),
-            target, extra_features: Vec::new()
+            compiler,
+            target,
+            extra_features: Vec::new(),
         }).or_else(|| { missing_tool("miri", builder.build.config.missing_tools); None })?;
         let cargomiri = builder.ensure(tool::CargoMiri {
-            compiler: builder.compiler(stage, builder.config.build),
-            target, extra_features: Vec::new()
+            compiler,
+            target,
+            extra_features: Vec::new()
         }).or_else(|| { missing_tool("cargo miri", builder.build.config.missing_tools); None })?;
 
         builder.install(&miri, &image.join("bin"), 0o755);
@@ -1394,7 +1416,7 @@ impl Step for Miri {
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Rustfmt {
-    pub stage: u32,
+    pub compiler: Compiler,
     pub target: Interned<String>,
 }
 
@@ -1408,16 +1430,20 @@ impl Step for Rustfmt {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Rustfmt {
-            stage: run.builder.top_stage,
+            compiler: run.builder.compiler_for(
+                run.builder.top_stage,
+                run.builder.config.build,
+                run.target,
+            ),
             target: run.target,
         });
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<PathBuf> {
-        let stage = self.stage;
+        let compiler = self.compiler;
         let target = self.target;
 
-        builder.info(&format!("Dist Rustfmt stage{} ({})", stage, target));
+        builder.info(&format!("Dist Rustfmt stage{} ({})", compiler.stage, target));
         let src = builder.src.join("src/tools/rustfmt");
         let release_num = builder.release_num("rustfmt");
         let name = pkgname(builder, "rustfmt");
@@ -1430,12 +1456,14 @@ impl Step for Rustfmt {
 
         // Prepare the image directory
         let rustfmt = builder.ensure(tool::Rustfmt {
-            compiler: builder.compiler(stage, builder.config.build),
-            target, extra_features: Vec::new()
+            compiler,
+            target,
+            extra_features: Vec::new(),
         }).or_else(|| { missing_tool("Rustfmt", builder.build.config.missing_tools); None })?;
         let cargofmt = builder.ensure(tool::Cargofmt {
-            compiler: builder.compiler(stage, builder.config.build),
-            target, extra_features: Vec::new()
+            compiler,
+            target,
+            extra_features: Vec::new(),
         }).or_else(|| { missing_tool("Cargofmt", builder.build.config.missing_tools); None })?;
 
         builder.install(&rustfmt, &image.join("bin"), 0o755);
@@ -1500,30 +1528,28 @@ impl Step for Extended {
 
     /// Creates a combined installer for the specified target in the provided stage.
     fn run(self, builder: &Builder<'_>) {
-        let stage = self.stage;
         let target = self.target;
+        let stage = self.stage;
+        let compiler = builder.compiler_for(self.stage, self.host, self.target);
 
-        builder.info(&format!("Dist extended stage{} ({})", stage, target));
+        builder.info(&format!("Dist extended stage{} ({})", compiler.stage, target));
 
         let rustc_installer = builder.ensure(Rustc {
             compiler: builder.compiler(stage, target),
         });
-        let cargo_installer = builder.ensure(Cargo { stage, target });
-        let rustfmt_installer = builder.ensure(Rustfmt { stage, target });
-        let rls_installer = builder.ensure(Rls { stage, target });
-        let llvm_tools_installer = builder.ensure(LlvmTools { stage, target });
-        let clippy_installer = builder.ensure(Clippy { stage, target });
-        let miri_installer = builder.ensure(Miri { stage, target });
+        let cargo_installer = builder.ensure(Cargo { compiler, target });
+        let rustfmt_installer = builder.ensure(Rustfmt { compiler, target });
+        let rls_installer = builder.ensure(Rls { compiler, target });
+        let llvm_tools_installer = builder.ensure(LlvmTools { target });
+        let clippy_installer = builder.ensure(Clippy { compiler, target });
+        let miri_installer = builder.ensure(Miri { compiler, target });
         let lldb_installer = builder.ensure(Lldb { target });
         let mingw_installer = builder.ensure(Mingw { host: target });
-        let analysis_installer = builder.ensure(Analysis {
-            compiler: builder.compiler(stage, self.host),
-            target
-        });
+        let analysis_installer = builder.ensure(Analysis { compiler, target });
 
-        let docs_installer = builder.ensure(Docs { stage, host: target, });
+        let docs_installer = builder.ensure(Docs { host: target, });
         let std_installer = builder.ensure(Std {
-            compiler: builder.compiler(stage, self.host),
+            compiler: builder.compiler(stage, target),
             target,
         });
 
@@ -2071,7 +2097,6 @@ pub fn maybe_install_llvm_dylib(builder: &Builder<'_>,
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LlvmTools {
-    pub stage: u32,
     pub target: Interned<String>,
 }
 
@@ -2085,26 +2110,24 @@ impl Step for LlvmTools {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(LlvmTools {
-            stage: run.builder.top_stage,
             target: run.target,
         });
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<PathBuf> {
-        let stage = self.stage;
         let target = self.target;
         assert!(builder.config.extended);
 
         /* run only if llvm-config isn't used */
         if let Some(config) = builder.config.target_config.get(&target) {
             if let Some(ref _s) = config.llvm_config {
-                builder.info(&format!("Skipping LlvmTools stage{} ({}): external LLVM",
-                    stage, target));
+                builder.info(&format!("Skipping LlvmTools ({}): external LLVM",
+                    target));
                 return None;
             }
         }
 
-        builder.info(&format!("Dist LlvmTools stage{} ({})", stage, target));
+        builder.info(&format!("Dist LlvmTools ({})", target));
         let src = builder.src.join("src/llvm-project/llvm");
         let name = pkgname(builder, "llvm-tools");
 

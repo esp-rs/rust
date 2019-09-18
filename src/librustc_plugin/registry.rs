@@ -4,10 +4,9 @@ use rustc::lint::{EarlyLintPassObject, LateLintPassObject, LintId, Lint};
 use rustc::session::Session;
 use rustc::util::nodemap::FxHashMap;
 
-use syntax::ext::base::{SyntaxExtension, NamedSyntaxExtension, NormalTT, IdentTT};
+use syntax::ext::base::{SyntaxExtension, SyntaxExtensionKind, NamedSyntaxExtension};
 use syntax::ext::base::MacroExpanderFn;
-use syntax::ext::hygiene;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use syntax::ast;
 use syntax::feature_gate::AttributeType;
 use syntax_pos::Span;
@@ -49,7 +48,7 @@ pub struct Registry<'a> {
     pub llvm_passes: Vec<String>,
 
     #[doc(hidden)]
-    pub attributes: Vec<(String, AttributeType)>,
+    pub attributes: Vec<(Symbol, AttributeType)>,
 }
 
 impl<'a> Registry<'a> {
@@ -85,53 +84,25 @@ impl<'a> Registry<'a> {
     /// Register a syntax extension of any kind.
     ///
     /// This is the most general hook into `libsyntax`'s expansion behavior.
-    pub fn register_syntax_extension(&mut self, name: ast::Name, extension: SyntaxExtension) {
-        if name == "macro_rules" {
+    pub fn register_syntax_extension(&mut self, name: ast::Name, mut extension: SyntaxExtension) {
+        if name == sym::macro_rules {
             panic!("user-defined macros may not be named `macro_rules`");
         }
-        self.syntax_exts.push((name, match extension {
-            NormalTT {
-                expander,
-                def_info: _,
-                allow_internal_unstable,
-                allow_internal_unsafe,
-                local_inner_macros,
-                unstable_feature,
-                edition,
-            } => {
-                let nid = ast::CRATE_NODE_ID;
-                NormalTT {
-                    expander,
-                    def_info: Some((nid, self.krate_span)),
-                    allow_internal_unstable,
-                    allow_internal_unsafe,
-                    local_inner_macros,
-                    unstable_feature,
-                    edition,
-                }
-            }
-            IdentTT { expander, span: _, allow_internal_unstable } => {
-                IdentTT { expander, span: Some(self.krate_span), allow_internal_unstable }
-            }
-            _ => extension,
-        }));
+        if extension.def_info.is_none() {
+            extension.def_info = Some((ast::CRATE_NODE_ID, self.krate_span));
+        }
+        self.syntax_exts.push((name, extension));
     }
 
     /// Register a macro of the usual kind.
     ///
     /// This is a convenience wrapper for `register_syntax_extension`.
-    /// It builds for you a `NormalTT` that calls `expander`,
+    /// It builds for you a `SyntaxExtensionKind::LegacyBang` that calls `expander`,
     /// and also takes care of interning the macro's name.
     pub fn register_macro(&mut self, name: &str, expander: MacroExpanderFn) {
-        self.register_syntax_extension(Symbol::intern(name), NormalTT {
-            expander: Box::new(expander),
-            def_info: None,
-            allow_internal_unstable: None,
-            allow_internal_unsafe: false,
-            local_inner_macros: false,
-            unstable_feature: None,
-            edition: hygiene::default_edition(),
-        });
+        let kind = SyntaxExtensionKind::LegacyBang(Box::new(expander));
+        let ext = SyntaxExtension::default(kind, self.sess.edition());
+        self.register_syntax_extension(Symbol::intern(name), ext);
     }
 
     /// Register a compiler lint pass.
@@ -169,7 +140,7 @@ impl<'a> Registry<'a> {
     /// Registered attributes will bypass the `custom_attribute` feature gate.
     /// `Whitelisted` attributes will additionally not trigger the `unused_attribute`
     /// lint. `CrateLevel` attributes will not be allowed on anything other than a crate.
-    pub fn register_attribute(&mut self, name: String, ty: AttributeType) {
+    pub fn register_attribute(&mut self, name: Symbol, ty: AttributeType) {
         self.attributes.push((name, ty));
     }
 }

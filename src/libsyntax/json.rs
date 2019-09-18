@@ -14,11 +14,12 @@ use crate::source_map::{SourceMap, FilePathMapping};
 use errors::registry::Registry;
 use errors::{DiagnosticBuilder, SubDiagnostic, CodeSuggestion, SourceMapper};
 use errors::{DiagnosticId, Applicability};
-use errors::emitter::{Emitter, EmitterWriter};
+use errors::emitter::{Emitter, HumanReadableErrorType};
 
 use syntax_pos::{MacroBacktrace, Span, SpanLabel, MultiSpan};
 use rustc_data_structures::sync::{self, Lrc};
 use std::io::{self, Write};
+use std::path::Path;
 use std::vec;
 use std::sync::{Arc, Mutex};
 
@@ -30,37 +31,46 @@ pub struct JsonEmitter {
     sm: Lrc<dyn SourceMapper + sync::Send + sync::Sync>,
     pretty: bool,
     ui_testing: bool,
+    json_rendered: HumanReadableErrorType,
 }
 
 impl JsonEmitter {
-    pub fn stderr(registry: Option<Registry>,
-                  source_map: Lrc<SourceMap>,
-                  pretty: bool) -> JsonEmitter {
+    pub fn stderr(
+        registry: Option<Registry>,
+        source_map: Lrc<SourceMap>,
+        pretty: bool,
+        json_rendered: HumanReadableErrorType,
+    ) -> JsonEmitter {
         JsonEmitter {
             dst: Box::new(io::stderr()),
             registry,
             sm: source_map,
             pretty,
             ui_testing: false,
+            json_rendered,
         }
     }
 
-    pub fn basic(pretty: bool) -> JsonEmitter {
+    pub fn basic(pretty: bool, json_rendered: HumanReadableErrorType) -> JsonEmitter {
         let file_path_mapping = FilePathMapping::empty();
         JsonEmitter::stderr(None, Lrc::new(SourceMap::new(file_path_mapping)),
-                            pretty)
+                            pretty, json_rendered)
     }
 
-    pub fn new(dst: Box<dyn Write + Send>,
-               registry: Option<Registry>,
-               source_map: Lrc<SourceMap>,
-               pretty: bool) -> JsonEmitter {
+    pub fn new(
+        dst: Box<dyn Write + Send>,
+        registry: Option<Registry>,
+        source_map: Lrc<SourceMap>,
+        pretty: bool,
+        json_rendered: HumanReadableErrorType,
+    ) -> JsonEmitter {
         JsonEmitter {
             dst,
             registry,
             sm: source_map,
             pretty,
             ui_testing: false,
+            json_rendered,
         }
     }
 
@@ -70,7 +80,7 @@ impl JsonEmitter {
 }
 
 impl Emitter for JsonEmitter {
-    fn emit(&mut self, db: &DiagnosticBuilder<'_>) {
+    fn emit_diagnostic(&mut self, db: &DiagnosticBuilder<'_>) {
         let data = Diagnostic::from_diagnostic_builder(db, self);
         let result = if self.pretty {
             writeln!(&mut self.dst, "{}", as_pretty_json(&data))
@@ -79,6 +89,18 @@ impl Emitter for JsonEmitter {
         };
         if let Err(e) = result {
             panic!("failed to print diagnostics: {:?}", e);
+        }
+    }
+
+    fn emit_artifact_notification(&mut self, path: &Path, artifact_type: &str) {
+        let data = ArtifactNotification { artifact: path, emit: artifact_type };
+        let result = if self.pretty {
+            writeln!(&mut self.dst, "{}", as_pretty_json(&data))
+        } else {
+            writeln!(&mut self.dst, "{}", as_json(&data))
+        };
+        if let Err(e) = result {
+            panic!("failed to print notification: {:?}", e);
         }
     }
 }
@@ -159,6 +181,14 @@ struct DiagnosticCode {
     explanation: Option<&'static str>,
 }
 
+#[derive(RustcEncodable)]
+struct ArtifactNotification<'a> {
+    /// The path of the artifact.
+    artifact: &'a Path,
+    /// What kind of artifact we're emitting.
+    emit: &'a str,
+}
+
 impl Diagnostic {
     fn from_diagnostic_builder(db: &DiagnosticBuilder<'_>,
                                je: &JsonEmitter)
@@ -190,8 +220,8 @@ impl Diagnostic {
         }
         let buf = BufWriter::default();
         let output = buf.clone();
-        EmitterWriter::new(Box::new(buf), Some(je.sm.clone()), false, false)
-            .ui_testing(je.ui_testing).emit(db);
+        je.json_rendered.new_emitter(Box::new(buf), Some(je.sm.clone()), false)
+            .ui_testing(je.ui_testing).emit_diagnostic(db);
         let output = Arc::try_unwrap(output.0).unwrap().into_inner().unwrap();
         let output = String::from_utf8(output).unwrap();
 
@@ -348,19 +378,17 @@ impl DiagnosticSpanLine {
     /// `span` within the line.
     fn from_span(span: Span, je: &JsonEmitter) -> Vec<DiagnosticSpanLine> {
         je.sm.span_to_lines(span)
-             .map(|lines| {
-                 let fm = &*lines.file;
-                 lines.lines
-                      .iter()
-                      .map(|line| {
-                          DiagnosticSpanLine::line_from_source_file(fm,
-                                                                line.line_index,
-                                                                line.start_col.0 + 1,
-                                                                line.end_col.0 + 1)
-                      })
-                     .collect()
-             })
-            .unwrap_or_else(|_| vec![])
+            .map(|lines| {
+                let fm = &*lines.file;
+                lines.lines
+                    .iter()
+                    .map(|line| DiagnosticSpanLine::line_from_source_file(
+                        fm,
+                        line.line_index,
+                        line.start_col.0 + 1,
+                        line.end_col.0 + 1,
+                    )).collect()
+            }).unwrap_or_else(|_| vec![])
     }
 }
 

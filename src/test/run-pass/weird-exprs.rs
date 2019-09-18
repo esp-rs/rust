@@ -1,8 +1,9 @@
+#![feature(generators)]
+
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 #![allow(unreachable_code)]
 #![allow(unused_parens)]
-// compile-flags: -Z borrowck=compare
 
 #![recursion_limit = "256"]
 
@@ -127,6 +128,35 @@ fn punch_card() -> impl std::fmt::Debug {
     ..=.. ..=..    .. ..=..=..    ..=..=.. ..    .. ..=.. ..
 }
 
+fn r#match() {
+    let val = match match match match match () {
+        () => ()
+    } {
+        () => ()
+    } {
+        () => ()
+    } {
+        () => ()
+    } {
+        () => ()
+    };
+    assert_eq!(val, ());
+}
+
+fn i_yield() {
+    static || {
+        yield yield yield yield yield yield yield yield yield;
+    };
+}
+
+fn match_nested_if() {
+    let val = match () {
+        () if if if if true {true} else {false} {true} else {false} {true} else {false} => true,
+        _ => false,
+    };
+    assert!(val);
+}
+
 pub fn main() {
     strange();
     funny();
@@ -142,4 +172,7 @@ pub fn main() {
     union();
     special_characters();
     punch_card();
+    r#match();
+    i_yield();
+    match_nested_if();
 }

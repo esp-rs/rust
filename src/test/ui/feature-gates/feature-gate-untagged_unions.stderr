@@ -1,31 +1,34 @@
-error[E0658]: unions with non-`Copy` fields are unstable (see issue #32836)
+error[E0658]: unions with non-`Copy` fields are unstable
   --> $DIR/feature-gate-untagged_unions.rs:9:1
    |
-LL | / union U3 { //~ ERROR unions with non-`Copy` fields are unstable
+LL | / union U3 {
 LL | |     a: String,
 LL | | }
    | |_^
    |
+   = note: for more information, see https://github.com/rust-lang/rust/issues/32836
    = help: add #![feature(untagged_unions)] to the crate attributes to enable
 
-error[E0658]: unions with non-`Copy` fields are unstable (see issue #32836)
+error[E0658]: unions with non-`Copy` fields are unstable
   --> $DIR/feature-gate-untagged_unions.rs:13:1
    |
-LL | / union U4<T> { //~ ERROR unions with non-`Copy` fields are unstable
+LL | / union U4<T> {
 LL | |     a: T,
 LL | | }
    | |_^
    |
+   = note: for more information, see https://github.com/rust-lang/rust/issues/32836
    = help: add #![feature(untagged_unions)] to the crate attributes to enable
 
-error[E0658]: unions with `Drop` implementations are unstable (see issue #32836)
+error[E0658]: unions with `Drop` implementations are unstable
   --> $DIR/feature-gate-untagged_unions.rs:17:1
    |
-LL | / union U5 { //~ ERROR unions with `Drop` implementations are unstable
+LL | / union U5 {
 LL | |     a: u8,
 LL | | }
    | |_^
    |
+   = note: for more information, see https://github.com/rust-lang/rust/issues/32836
    = help: add #![feature(untagged_unions)] to the crate attributes to enable
 
 error: aborting due to 3 previous errors

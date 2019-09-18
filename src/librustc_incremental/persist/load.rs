@@ -15,13 +15,12 @@ use super::fs::*;
 use super::file_format;
 use super::work_product;
 
-pub fn dep_graph_tcx_init<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
+pub fn dep_graph_tcx_init<'tcx>(tcx: TyCtxt<'tcx>) {
     if !tcx.dep_graph.is_fully_enabled() {
         return
     }
 
     tcx.allocate_metadata_dep_nodes();
-    tcx.precompute_in_scope_traits_hashes();
 }
 
 type WorkProductMap = FxHashMap<WorkProductId, WorkProduct>;
@@ -94,10 +93,10 @@ impl<T> MaybeAsync<T> {
     }
 }
 
+pub type DepGraphFuture = MaybeAsync<LoadResult<(PreviousDepGraph, WorkProductMap)>>;
+
 /// Launch a thread and load the dependency graph in the background.
-pub fn load_dep_graph(sess: &Session) ->
-    MaybeAsync<LoadResult<(PreviousDepGraph, WorkProductMap)>>
-{
+pub fn load_dep_graph(sess: &Session) -> DepGraphFuture {
     // Since `sess` isn't `Sync`, we perform all accesses to `sess`
     // before we fire the background thread.
 

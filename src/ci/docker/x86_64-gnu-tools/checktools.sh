@@ -24,6 +24,7 @@ python2.7 "$X_PY" test --no-fail-fast \
     src/doc/reference \
     src/doc/rust-by-example \
     src/doc/embedded-book \
+    src/doc/edition-guide \
     src/tools/clippy \
     src/tools/rls \
     src/tools/rustfmt \
@@ -34,12 +35,17 @@ set -e
 cat "$TOOLSTATE_FILE"
 echo
 
+# This function checks if a particular tool is *not* in status "test-pass".
+check_tool_failed() {
+    grep -vq '"'"$1"'":"test-pass"' "$TOOLSTATE_FILE"
+}
+
 # This function checks that if a tool's submodule changed, the tool's state must improve
 verify_status() {
     echo "Verifying status of $1..."
     if echo "$CHANGED_FILES" | grep -q "^M[[:blank:]]$2$"; then
         echo "This PR updated '$2', verifying if status is 'test-pass'..."
-        if grep -vq '"'"$1"'":"test-pass"' "$TOOLSTATE_FILE"; then
+        if check_tool_failed "$1"; then
             echo
             echo "⚠️ We detected that this PR updated '$1', but its tests failed."
             echo
@@ -54,14 +60,16 @@ verify_status() {
     fi
 }
 
-# deduplicates the submodule check and the assertion that on beta some tools MUST be passing
+# deduplicates the submodule check and the assertion that on beta some tools MUST be passing.
+# $1 should be "submodule_changed" to only check tools that got changed by this PR,
+# or "beta_required" to check all tools that have $2 set to "beta".
 check_dispatch() {
     if [ "$1" = submodule_changed ]; then
         # ignore $2 (branch id)
         verify_status $3 $4
     elif [ "$2" = beta ]; then
         echo "Requiring test passing for $3..."
-        if grep -q '"'"$3"'":"\(test\|build\)-fail"' "$TOOLSTATE_FILE"; then
+        if check_tool_failed "$3"; then
             exit 4
         fi
     fi
@@ -73,11 +81,13 @@ status_check() {
     check_dispatch $1 beta nomicon src/doc/nomicon
     check_dispatch $1 beta reference src/doc/reference
     check_dispatch $1 beta rust-by-example src/doc/rust-by-example
+    check_dispatch $1 beta edition-guide src/doc/edition-guide
     check_dispatch $1 beta rls src/tools/rls
     check_dispatch $1 beta rustfmt src/tools/rustfmt
     check_dispatch $1 beta clippy-driver src/tools/clippy
     # these tools are not required for beta to successfully branch
     check_dispatch $1 nightly miri src/tools/miri
+    check_dispatch $1 nightly embedded-book src/doc/embedded-book
 }
 
 # If this PR is intended to update one of these tools, do not let the build pass

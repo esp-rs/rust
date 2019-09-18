@@ -1,9 +1,12 @@
+use log::info;
 use rustc::session::config::{Input, OutputFilenames, ErrorOutputType};
 use rustc::session::{self, config, early_error, filesearch, Session, DiagnosticOutput};
 use rustc::session::CrateDisambiguator;
 use rustc::ty;
 use rustc::lint;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
+#[cfg(parallel_compiler)]
+use rustc_data_structures::jobserver;
 use rustc_data_structures::sync::{Lock, Lrc};
 use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_data_structures::fingerprint::Fingerprint;
@@ -18,7 +21,6 @@ use rustc_plugin;
 use rustc_privacy;
 use rustc_resolve;
 use rustc_typeck;
-use std::collections::HashSet;
 use std::env;
 use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::io::{self, Write};
@@ -33,8 +35,9 @@ use syntax::mut_visit::{*, MutVisitor, visit_clobber};
 use syntax::ast::BlockCheckMode;
 use syntax::util::lev_distance::find_best_match_for_name;
 use syntax::source_map::{FileLoader, RealFileLoader, SourceMap};
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use syntax::{self, ast, attr};
+use syntax_pos::edition::Edition;
 #[cfg(not(parallel_compiler))]
 use std::{thread, panic};
 
@@ -65,7 +68,7 @@ pub fn add_configuration(
     sess: &Session,
     codegen_backend: &dyn CodegenBackend,
 ) {
-    let tf = Symbol::intern("target_feature");
+    let tf = sym::target_feature;
 
     cfg.extend(
         codegen_backend
@@ -77,6 +80,170 @@ pub fn add_configuration(
     if sess.crt_static_feature() {
         cfg.insert((tf, Some(Symbol::intern("crt-static"))));
     }
+}
+
+pub fn create_session(
+    sopts: config::Options,
+    cfg: FxHashSet<(String, Option<String>)>,
+    diagnostic_output: DiagnosticOutput,
+    file_loader: Option<Box<dyn FileLoader + Send + Sync + 'static>>,
+    input_path: Option<PathBuf>,
+    lint_caps: FxHashMap<lint::LintId, lint::Level>,
+) -> (Lrc<Session>, Lrc<Box<dyn CodegenBackend>>, Lrc<SourceMap>) {
+    let descriptions = diagnostics_registry();
+
+    let loader = file_loader.unwrap_or(box RealFileLoader);
+    let source_map = Lrc::new(SourceMap::with_file_loader(
+        loader,
+        sopts.file_path_mapping(),
+    ));
+    let mut sess = session::build_session_with_source_map(
+        sopts,
+        input_path,
+        descriptions,
+        source_map.clone(),
+        diagnostic_output,
+        lint_caps,
+    );
+
+    let codegen_backend = get_codegen_backend(&sess);
+
+    rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
+    if sess.unstable_options() {
+        rustc_lint::register_internals(&mut sess.lint_store.borrow_mut(), Some(&sess));
+    }
+
+    let mut cfg = config::build_configuration(&sess, config::to_crate_config(cfg));
+    add_configuration(&mut cfg, &sess, &*codegen_backend);
+    sess.parse_sess.config = cfg;
+
+    (Lrc::new(sess), Lrc::new(codegen_backend), source_map)
+}
+
+// Temporarily have stack size set to 32MB to deal with various crates with long method
+// chains or deep syntax trees, except when on Haiku.
+// FIXME(oli-obk): get https://github.com/rust-lang/rust/pull/55617 the finish line
+#[cfg(not(target_os = "haiku"))]
+const STACK_SIZE: usize = 32 * 1024 * 1024;
+
+#[cfg(target_os = "haiku")]
+const STACK_SIZE: usize = 16 * 1024 * 1024;
+
+fn get_stack_size() -> Option<usize> {
+    // FIXME: Hacks on hacks. If the env is trying to override the stack size
+    // then *don't* set it explicitly.
+    if env::var_os("RUST_MIN_STACK").is_none() {
+        Some(STACK_SIZE)
+    } else {
+        None
+    }
+}
+
+struct Sink(Arc<Mutex<Vec<u8>>>);
+impl Write for Sink {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        Write::write(&mut *self.0.lock().unwrap(), data)
+    }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
+#[cfg(not(parallel_compiler))]
+pub fn scoped_thread<F: FnOnce() -> R + Send, R: Send>(cfg: thread::Builder, f: F) -> R {
+    struct Ptr(*mut ());
+    unsafe impl Send for Ptr {}
+    unsafe impl Sync for Ptr {}
+
+    let mut f = Some(f);
+    let run = Ptr(&mut f as *mut _ as *mut ());
+    let mut result = None;
+    let result_ptr = Ptr(&mut result as *mut _ as *mut ());
+
+    let thread = cfg.spawn(move || {
+        let run = unsafe { (*(run.0 as *mut Option<F>)).take().unwrap() };
+        let result = unsafe { &mut *(result_ptr.0 as *mut Option<R>) };
+        *result = Some(run());
+    });
+
+    match thread.unwrap().join() {
+        Ok(()) => result.unwrap(),
+        Err(p) => panic::resume_unwind(p),
+    }
+}
+
+#[cfg(not(parallel_compiler))]
+pub fn spawn_thread_pool<F: FnOnce() -> R + Send, R: Send>(
+    edition: Edition,
+    _threads: Option<usize>,
+    stderr: &Option<Arc<Mutex<Vec<u8>>>>,
+    f: F,
+) -> R {
+    let mut cfg = thread::Builder::new().name("rustc".to_string());
+
+    if let Some(size) = get_stack_size() {
+        cfg = cfg.stack_size(size);
+    }
+
+    scoped_thread(cfg, || {
+        syntax::with_globals(edition, || {
+            ty::tls::GCX_PTR.set(&Lock::new(0), || {
+                if let Some(stderr) = stderr {
+                    io::set_panic(Some(box Sink(stderr.clone())));
+                }
+                ty::tls::with_thread_locals(|| f())
+            })
+        })
+    })
+}
+
+#[cfg(parallel_compiler)]
+pub fn spawn_thread_pool<F: FnOnce() -> R + Send, R: Send>(
+    edition: Edition,
+    threads: Option<usize>,
+    stderr: &Option<Arc<Mutex<Vec<u8>>>>,
+    f: F,
+) -> R {
+    use rayon::{ThreadPool, ThreadPoolBuilder};
+    use syntax;
+    use syntax_pos;
+
+    let gcx_ptr = &Lock::new(0);
+
+    let mut config = ThreadPoolBuilder::new()
+        .acquire_thread_handler(jobserver::acquire_thread)
+        .release_thread_handler(jobserver::release_thread)
+        .num_threads(Session::threads_from_count(threads))
+        .deadlock_handler(|| unsafe { ty::query::handle_deadlock() });
+
+    if let Some(size) = get_stack_size() {
+        config = config.stack_size(size);
+    }
+
+    let with_pool = move |pool: &ThreadPool| pool.install(move || f());
+
+    syntax::with_globals(edition, || {
+        syntax::GLOBALS.with(|syntax_globals| {
+            syntax_pos::GLOBALS.with(|syntax_pos_globals| {
+                // The main handler runs for each Rayon worker thread and sets up
+                // the thread local rustc uses. syntax_globals and syntax_pos_globals are
+                // captured and set on the new threads. ty::tls::with_thread_locals sets up
+                // thread local callbacks from libsyntax
+                let main_handler = move |worker: &mut dyn FnMut()| {
+                    syntax::GLOBALS.set(syntax_globals, || {
+                        syntax_pos::GLOBALS.set(syntax_pos_globals, || {
+                            if let Some(stderr) = stderr {
+                                io::set_panic(Some(box Sink(stderr.clone())));
+                            }
+                            ty::tls::with_thread_locals(|| {
+                                ty::tls::GCX_PTR.set(gcx_ptr, || worker())
+                            })
+                        })
+                    })
+                };
+
+                ThreadPool::scoped_pool(config, main_handler, with_pool).unwrap()
+            })
+        })
+    })
 }
 
 fn load_backend_from_dylib(path: &Path) -> fn() -> Box<dyn CodegenBackend> {
@@ -109,9 +276,6 @@ pub fn get_codegen_backend(sess: &Session) -> Box<dyn CodegenBackend> {
         let codegen_name = sess.opts.debugging_opts.codegen_backend.as_ref()
             .unwrap_or(&sess.target.target.options.codegen_backend);
         let backend = match &codegen_name[..] {
-            "metadata_only" => {
-                rustc_codegen_utils::codegen_backend::MetadataOnlyCodegenBackend::boxed
-            }
             filename if filename.contains(".") => {
                 load_backend_from_dylib(filename.as_ref())
             }
@@ -297,7 +461,7 @@ pub fn get_codegen_sysroot(backend_name: &str) -> fn() -> Box<dyn CodegenBackend
     }
 }
 
-pub fn compute_crate_disambiguator(session: &Session) -> CrateDisambiguator {
+pub(crate) fn compute_crate_disambiguator(session: &Session) -> CrateDisambiguator {
     use std::hash::Hasher;
 
     // The crate_disambiguator is a 128 bit hash. The disambiguator is fed
@@ -338,24 +502,24 @@ pub fn collect_crate_types(session: &Session, attrs: &[ast::Attribute]) -> Vec<c
     let attr_types: Vec<config::CrateType> = attrs
         .iter()
         .filter_map(|a| {
-            if a.check_name("crate_type") {
+            if a.check_name(sym::crate_type) {
                 match a.value_str() {
-                    Some(ref n) if *n == "rlib" => Some(config::CrateType::Rlib),
-                    Some(ref n) if *n == "dylib" => Some(config::CrateType::Dylib),
-                    Some(ref n) if *n == "cdylib" => Some(config::CrateType::Cdylib),
-                    Some(ref n) if *n == "lib" => Some(config::default_lib_output()),
-                    Some(ref n) if *n == "staticlib" => Some(config::CrateType::Staticlib),
-                    Some(ref n) if *n == "proc-macro" => Some(config::CrateType::ProcMacro),
-                    Some(ref n) if *n == "bin" => Some(config::CrateType::Executable),
-                    Some(ref n) => {
+                    Some(sym::rlib) => Some(config::CrateType::Rlib),
+                    Some(sym::dylib) => Some(config::CrateType::Dylib),
+                    Some(sym::cdylib) => Some(config::CrateType::Cdylib),
+                    Some(sym::lib) => Some(config::default_lib_output()),
+                    Some(sym::staticlib) => Some(config::CrateType::Staticlib),
+                    Some(sym::proc_dash_macro) => Some(config::CrateType::ProcMacro),
+                    Some(sym::bin) => Some(config::CrateType::Executable),
+                    Some(n) => {
                         let crate_types = vec![
-                            Symbol::intern("rlib"),
-                            Symbol::intern("dylib"),
-                            Symbol::intern("cdylib"),
-                            Symbol::intern("lib"),
-                            Symbol::intern("staticlib"),
-                            Symbol::intern("proc-macro"),
-                            Symbol::intern("bin")
+                            sym::rlib,
+                            sym::dylib,
+                            sym::cdylib,
+                            sym::lib,
+                            sym::staticlib,
+                            sym::proc_dash_macro,
+                            sym::bin
                         ];
 
                         if let ast::MetaItemKind::NameValue(spanned) = a.meta().unwrap().node {
@@ -557,7 +721,13 @@ impl<'a> ReplaceBodyWithLoop<'a> {
                                     _ => None,
                                 });
                                 any_involves_impl_trait(types.into_iter()) ||
-                                any_involves_impl_trait(data.bindings.iter().map(|b| &b.ty))
+                                data.constraints.iter().any(|c| {
+                                    match c.kind {
+                                        ast::AssocTyConstraintKind::Bound { .. } => true,
+                                        ast::AssocTyConstraintKind::Equality { ref ty } =>
+                                            involves_impl_trait(ty),
+                                    }
+                                })
                             },
                             Some(&ast::GenericArgs::Parenthesized(ref data)) => {
                                 any_involves_impl_trait(data.inputs.iter()) ||

@@ -1,16 +1,19 @@
 error[E0317]: if may be missing an else clause
   --> $DIR/issue-19991.rs:5:5
    |
-LL | /     if let Some(homura) = Some("madoka") { //~  ERROR missing an else clause
-LL | |                                            //~| expected type `()`
-LL | |                                            //~| found type `{integer}`
-LL | |                                            //~| expected (), found integer
+LL | /     if let Some(homura) = Some("madoka") {
+LL | |
+LL | |
+LL | |
 LL | |         765
+   | |         --- found here
 LL | |     };
    | |_____^ expected (), found integer
    |
    = note: expected type `()`
               found type `{integer}`
+   = note: `if` expressions without `else` evaluate to `()`
+   = help: consider adding an `else` block that evaluates to the expected type
 
 error: aborting due to previous error
 

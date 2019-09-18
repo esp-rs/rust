@@ -1,9 +1,8 @@
 //compile-pass
 
 struct Foo {
-    bar: for<'r> Fn(usize, &'r FnMut())
+    bar: dyn for<'r> Fn(usize, &'r dyn FnMut())
 }
 
 fn main() {
 }
-

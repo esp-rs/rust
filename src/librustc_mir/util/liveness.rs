@@ -29,7 +29,7 @@ use rustc::mir::visit::{
 };
 use rustc::mir::Local;
 use rustc::mir::*;
-use rustc::ty::{item_path, TyCtxt};
+use rustc::ty::{self, TyCtxt};
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
 use rustc_data_structures::work_queue::WorkQueue;
@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use crate::transform::MirSource;
 use crate::util::pretty::{dump_enabled, write_basic_block, write_mir_intro};
 
-pub type LiveVarSet<V> = BitSet<V>;
+pub type LiveVarSet = BitSet<Local>;
 
 /// This gives the result of the liveness analysis at the boundary of
 /// basic blocks.
@@ -48,66 +48,26 @@ pub type LiveVarSet<V> = BitSet<V>;
 /// liveness for. This is often `Local`, in which case we computed
 /// liveness for all variables -- but it can also be some other type,
 /// which indicates a subset of the variables within the graph.
-pub struct LivenessResult<V: Idx> {
+pub struct LivenessResult {
     /// Live variables on exit to each basic block. This is equal to
     /// the union of the `ins` for each successor.
-    pub outs: IndexVec<BasicBlock, LiveVarSet<V>>,
-}
-
-/// Defines the mapping to/from the MIR local variables (`Local`) to
-/// the "live variable indices" we are using in a particular
-/// computation.
-pub trait LiveVariableMap {
-    type LiveVar;
-
-    fn from_local(&self, local: Local) -> Option<Self::LiveVar>;
-    fn from_live_var(&self, local: Self::LiveVar) -> Local;
-    fn num_variables(&self) -> usize;
-}
-
-#[derive(Debug)]
-pub struct IdentityMap<'a, 'tcx: 'a> {
-    mir: &'a Mir<'tcx>,
-}
-
-impl<'a, 'tcx> IdentityMap<'a, 'tcx> {
-    pub fn new(mir: &'a Mir<'tcx>) -> Self {
-        Self { mir }
-    }
-}
-
-impl<'a, 'tcx> LiveVariableMap for IdentityMap<'a, 'tcx> {
-    type LiveVar = Local;
-
-    fn from_local(&self, local: Local) -> Option<Self::LiveVar> {
-        Some(local)
-    }
-
-    fn from_live_var(&self, local: Self::LiveVar) -> Local {
-        local
-    }
-
-    fn num_variables(&self) -> usize {
-        self.mir.local_decls.len()
-    }
+    pub outs: IndexVec<BasicBlock, LiveVarSet>,
 }
 
 /// Computes which local variables are live within the given function
-/// `mir`. The liveness mode `mode` determines what sorts of uses are
-/// considered to make a variable live (e.g., do drops count?).
-pub fn liveness_of_locals<'tcx, V: Idx>(
-    mir: &Mir<'tcx>,
-    map: &impl LiveVariableMap<LiveVar = V>,
-) -> LivenessResult<V> {
-    let num_live_vars = map.num_variables();
+/// `mir`, including drops.
+pub fn liveness_of_locals<'tcx>(
+    body: &Body<'tcx>,
+) -> LivenessResult {
+    let num_live_vars = body.local_decls.len();
 
-    let def_use: IndexVec<_, DefsUses<V>> = mir
+    let def_use: IndexVec<_, DefsUses> = body
         .basic_blocks()
         .iter()
-        .map(|b| block(map, b, num_live_vars))
+        .map(|b| block(b, num_live_vars))
         .collect();
 
-    let mut outs: IndexVec<_, LiveVarSet<V>> = mir
+    let mut outs: IndexVec<_, LiveVarSet> = body
         .basic_blocks()
         .indices()
         .map(|_| LiveVarSet::new_empty(num_live_vars))
@@ -115,11 +75,26 @@ pub fn liveness_of_locals<'tcx, V: Idx>(
 
     let mut bits = LiveVarSet::new_empty(num_live_vars);
 
-    // queue of things that need to be re-processed, and a set containing
-    // the things currently in the queue
-    let mut dirty_queue: WorkQueue<BasicBlock> = WorkQueue::with_all(mir.basic_blocks().len());
+    // The dirty queue contains the set of basic blocks whose entry sets have changed since they
+    // were last processed. At the start of the analysis, we initialize the queue in post-order to
+    // make it more likely that the entry set for a given basic block will have the effects of all
+    // its successors in the CFG applied before it is processed.
+    //
+    // FIXME(ecstaticmorse): Reverse post-order on the reverse CFG may generate a better iteration
+    // order when cycles are present, but the overhead of computing the reverse CFG may outweigh
+    // any benefits. Benchmark this and find out.
+    let mut dirty_queue: WorkQueue<BasicBlock> = WorkQueue::with_none(body.basic_blocks().len());
+    for (bb, _) in traversal::postorder(body) {
+        dirty_queue.insert(bb);
+    }
 
-    let predecessors = mir.predecessors();
+    // Add blocks which are not reachable from START_BLOCK to the work queue. These blocks will
+    // be processed after the ones added above.
+    for bb in body.basic_blocks().indices() {
+        dirty_queue.insert(bb);
+    }
+
+    let predecessors = body.predecessors();
 
     while let Some(bb) = dirty_queue.pop() {
         // bits = use ∪ (bits - def)
@@ -149,7 +124,7 @@ pub enum DefUse {
     Drop,
 }
 
-pub fn categorize<'tcx>(context: PlaceContext<'tcx>) -> Option<DefUse> {
+pub fn categorize(context: PlaceContext) -> Option<DefUse> {
     match context {
         ///////////////////////////////////////////////////////////////////////////
         // DEFS
@@ -186,10 +161,10 @@ pub fn categorize<'tcx>(context: PlaceContext<'tcx>) -> Option<DefUse> {
         // This won't affect the results since we use this analysis for generators
         // and we only care about the result at suspension points. Borrows cannot
         // cross suspension points so this behavior is unproblematic.
-        PlaceContext::MutatingUse(MutatingUseContext::Borrow(..)) |
-        PlaceContext::NonMutatingUse(NonMutatingUseContext::SharedBorrow(..)) |
-        PlaceContext::NonMutatingUse(NonMutatingUseContext::ShallowBorrow(..)) |
-        PlaceContext::NonMutatingUse(NonMutatingUseContext::UniqueBorrow(..)) |
+        PlaceContext::MutatingUse(MutatingUseContext::Borrow) |
+        PlaceContext::NonMutatingUse(NonMutatingUseContext::SharedBorrow) |
+        PlaceContext::NonMutatingUse(NonMutatingUseContext::ShallowBorrow) |
+        PlaceContext::NonMutatingUse(NonMutatingUseContext::UniqueBorrow) |
 
         PlaceContext::NonMutatingUse(NonMutatingUseContext::Inspect) |
         PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy) |
@@ -211,27 +186,23 @@ pub fn categorize<'tcx>(context: PlaceContext<'tcx>) -> Option<DefUse> {
     }
 }
 
-struct DefsUsesVisitor<'lv, V, M>
-where
-    V: Idx,
-    M: LiveVariableMap<LiveVar = V> + 'lv,
+struct DefsUsesVisitor
 {
-    map: &'lv M,
-    defs_uses: DefsUses<V>,
+    defs_uses: DefsUses,
 }
 
 #[derive(Eq, PartialEq, Clone)]
-struct DefsUses<V: Idx> {
-    defs: LiveVarSet<V>,
-    uses: LiveVarSet<V>,
+struct DefsUses {
+    defs: LiveVarSet,
+    uses: LiveVarSet,
 }
 
-impl<V: Idx> DefsUses<V> {
-    fn apply(&self, bits: &mut LiveVarSet<V>) -> bool {
+impl DefsUses {
+    fn apply(&self, bits: &mut LiveVarSet) -> bool {
         bits.subtract(&self.defs) | bits.union(&self.uses)
     }
 
-    fn add_def(&mut self, index: V) {
+    fn add_def(&mut self, index: Local) {
         // If it was used already in the block, remove that use
         // now that we found a definition.
         //
@@ -245,7 +216,7 @@ impl<V: Idx> DefsUses<V> {
         self.defs.insert(index);
     }
 
-    fn add_use(&mut self, index: V) {
+    fn add_use(&mut self, index: Local) {
         // Inverse of above.
         //
         // Example:
@@ -261,29 +232,22 @@ impl<V: Idx> DefsUses<V> {
     }
 }
 
-impl<'tcx, 'lv, V, M> Visitor<'tcx> for DefsUsesVisitor<'lv, V, M>
-where
-    V: Idx,
-    M: LiveVariableMap<LiveVar = V>,
+impl<'tcx> Visitor<'tcx> for DefsUsesVisitor
 {
-    fn visit_local(&mut self, &local: &Local, context: PlaceContext<'tcx>, _: Location) {
-        if let Some(v_index) = self.map.from_local(local) {
-            match categorize(context) {
-                Some(DefUse::Def) => self.defs_uses.add_def(v_index),
-                Some(DefUse::Use) | Some(DefUse::Drop) => self.defs_uses.add_use(v_index),
-                _ => (),
-            }
+    fn visit_local(&mut self, &local: &Local, context: PlaceContext, _: Location) {
+        match categorize(context) {
+            Some(DefUse::Def) => self.defs_uses.add_def(local),
+            Some(DefUse::Use) | Some(DefUse::Drop) => self.defs_uses.add_use(local),
+            _ => (),
         }
     }
 }
 
-fn block<'tcx, V: Idx>(
-    map: &impl LiveVariableMap<LiveVar = V>,
+fn block<'tcx>(
     b: &BasicBlockData<'tcx>,
     locals: usize,
-) -> DefsUses<V> {
+) -> DefsUses {
     let mut visitor = DefsUsesVisitor {
-        map,
         defs_uses: DefsUses {
             defs: LiveVarSet::new_empty(locals),
             uses: LiveVarSet::new_empty(locals),
@@ -297,44 +261,42 @@ fn block<'tcx, V: Idx>(
 
     // Visit the various parts of the basic block in reverse. If we go
     // forward, the logic in `add_def` and `add_use` would be wrong.
-    visitor.visit_terminator(BasicBlock::new(0), b.terminator(), dummy_location);
+    visitor.visit_terminator(b.terminator(), dummy_location);
     for statement in b.statements.iter().rev() {
-        visitor.visit_statement(BasicBlock::new(0), statement, dummy_location);
+        visitor.visit_statement(statement, dummy_location);
     }
 
     visitor.defs_uses
 }
 
-pub fn dump_mir<'a, 'tcx, V: Idx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+pub fn dump_mir<'tcx>(
+    tcx: TyCtxt<'tcx>,
     pass_name: &str,
     source: MirSource<'tcx>,
-    mir: &Mir<'tcx>,
-    map: &impl LiveVariableMap<LiveVar = V>,
-    result: &LivenessResult<V>,
+    body: &Body<'tcx>,
+    result: &LivenessResult,
 ) {
     if !dump_enabled(tcx, pass_name, source) {
         return;
     }
-    let node_path = item_path::with_forced_impl_filename_line(|| {
+    let node_path = ty::print::with_forced_impl_filename_line(|| {
         // see notes on #41697 below
-        tcx.item_path_str(source.def_id())
+        tcx.def_path_str(source.def_id())
     });
-    dump_matched_mir_node(tcx, pass_name, &node_path, source, mir, map, result);
+    dump_matched_mir_node(tcx, pass_name, &node_path, source, body, result);
 }
 
-fn dump_matched_mir_node<'a, 'tcx, V: Idx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+fn dump_matched_mir_node<'tcx>(
+    tcx: TyCtxt<'tcx>,
     pass_name: &str,
     node_path: &str,
     source: MirSource<'tcx>,
-    mir: &Mir<'tcx>,
-    map: &dyn LiveVariableMap<LiveVar = V>,
-    result: &LivenessResult<V>,
+    body: &Body<'tcx>,
+    result: &LivenessResult,
 ) {
     let mut file_path = PathBuf::new();
     file_path.push(Path::new(&tcx.sess.opts.debugging_opts.dump_mir_dir));
-    let item_id = tcx.hir().as_local_node_id(source.def_id()).unwrap();
+    let item_id = tcx.hir().as_local_hir_id(source.def_id()).unwrap();
     let file_name = format!("rustc.node{}{}-liveness.mir", item_id, pass_name);
     file_path.push(&file_name);
     let _ = fs::File::create(&file_path).and_then(|mut file| {
@@ -342,32 +304,30 @@ fn dump_matched_mir_node<'a, 'tcx, V: Idx>(
         writeln!(file, "// source = {:?}", source)?;
         writeln!(file, "// pass_name = {}", pass_name)?;
         writeln!(file, "")?;
-        write_mir_fn(tcx, source, mir, map, &mut file, result)?;
+        write_mir_fn(tcx, source, body, &mut file, result)?;
         Ok(())
     });
 }
 
-pub fn write_mir_fn<'a, 'tcx, V: Idx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+pub fn write_mir_fn<'tcx>(
+    tcx: TyCtxt<'tcx>,
     src: MirSource<'tcx>,
-    mir: &Mir<'tcx>,
-    map: &dyn LiveVariableMap<LiveVar = V>,
+    body: &Body<'tcx>,
     w: &mut dyn Write,
-    result: &LivenessResult<V>,
+    result: &LivenessResult,
 ) -> io::Result<()> {
-    write_mir_intro(tcx, src, mir, w)?;
-    for block in mir.basic_blocks().indices() {
-        let print = |w: &mut dyn Write, prefix, result: &IndexVec<BasicBlock, LiveVarSet<V>>| {
+    write_mir_intro(tcx, src, body, w)?;
+    for block in body.basic_blocks().indices() {
+        let print = |w: &mut dyn Write, prefix, result: &IndexVec<BasicBlock, LiveVarSet>| {
             let live: Vec<String> = result[block]
                 .iter()
-                .map(|v| map.from_live_var(v))
                 .map(|local| format!("{:?}", local))
                 .collect();
             writeln!(w, "{} {{{}}}", prefix, live.join(", "))
         };
-        write_basic_block(tcx, block, mir, &mut |_, _| Ok(()), w)?;
+        write_basic_block(tcx, block, body, &mut |_, _| Ok(()), w)?;
         print(w, "   ", &result.outs)?;
-        if block.index() + 1 != mir.basic_blocks().len() {
+        if block.index() + 1 != body.basic_blocks().len() {
             writeln!(w, "")?;
         }
     }

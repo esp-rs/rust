@@ -1,5 +1,5 @@
 use crate::cmp;
-use crate::io::{self, Error, ErrorKind, Result, IoVec, IoVecMut};
+use crate::io::{self, Error, ErrorKind, Result, IoSlice, IoSliceMut};
 use crate::mem;
 use crate::net::{SocketAddr, Shutdown};
 use crate::path::Path;
@@ -34,22 +34,16 @@ impl TcpStream {
         self.0.read(buf)
     }
 
-    pub fn read_vectored(&self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
-        match bufs.iter_mut().find(|b| !b.is_empty()) {
-            Some(buf) => self.read(buf),
-            None => Ok(0),
-        }
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        io::default_read_vectored(|b| self.read(b), bufs)
     }
 
     pub fn write(&self, buf: &[u8]) -> Result<usize> {
         self.0.write(buf)
     }
 
-    pub fn write_vectored(&self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
-        match bufs.iter().find(|b| !b.is_empty()) {
-            Some(buf) => self.write(buf),
-            None => Ok(0),
-        }
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        io::default_write_vectored(|b| self.write(b), bufs)
     }
 
     pub fn take_error(&self) -> Result<Option<Error>> {

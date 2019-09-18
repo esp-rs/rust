@@ -1,15 +1,15 @@
-error: attribute must be of the form `#[non_exhaustive]`
+error: malformed `non_exhaustive` attribute input
   --> $DIR/invalid-attribute.rs:3:1
    |
 LL | #[non_exhaustive(anything)]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: must be of the form: `#[non_exhaustive]`
 
 error[E0701]: attribute can only be applied to a struct or enum
   --> $DIR/invalid-attribute.rs:7:1
    |
 LL | #[non_exhaustive]
    | ^^^^^^^^^^^^^^^^^
-LL | //~^ ERROR attribute can only be applied to a struct or enum [E0701]
+LL |
 LL | trait Bar { }
    | ------------- not a struct or enum
 
@@ -18,7 +18,7 @@ error[E0701]: attribute can only be applied to a struct or enum
    |
 LL |   #[non_exhaustive]
    |   ^^^^^^^^^^^^^^^^^
-LL |   //~^ ERROR attribute can only be applied to a struct or enum [E0701]
+LL |
 LL | / union Baz {
 LL | |     f1: u16,
 LL | |     f2: u16

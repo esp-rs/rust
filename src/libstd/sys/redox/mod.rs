@@ -8,8 +8,6 @@ pub use self::rand::hashmap_random_keys;
 #[path = "../unix/alloc.rs"]
 pub mod alloc;
 pub mod args;
-#[cfg(feature = "backtrace")]
-pub mod backtrace;
 pub mod cmath;
 pub mod condvar;
 pub mod env;
@@ -22,7 +20,6 @@ pub mod memchr;
 pub mod mutex;
 pub mod net;
 pub mod os;
-pub mod os_str;
 pub mod path;
 pub mod pipe;
 pub mod process;
@@ -34,6 +31,8 @@ pub mod syscall;
 pub mod thread;
 pub mod thread_local;
 pub mod time;
+
+pub use crate::sys_common::os_str_bytes as os_str;
 
 #[cfg(not(test))]
 pub fn init() {}
