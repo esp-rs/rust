@@ -26,7 +26,7 @@ use rustc_errors::{Handler, Level, DiagnosticBuilder, FatalError, DiagnosticId};
 use rustc_errors::emitter::{Emitter};
 use rustc_target::spec::MergeFunctions;
 use syntax::attr;
-use syntax::ext::hygiene::Mark;
+use syntax::ext::hygiene::ExpnId;
 use syntax_pos::MultiSpan;
 use syntax_pos::symbol::{Symbol, sym};
 use jobserver::{Client, Acquired};
@@ -1345,12 +1345,9 @@ fn start_executing_work<B: ExtraBackendMethods>(
                     assert!(!started_lto);
                     started_lto = true;
 
-                    let needs_fat_lto =
-                        mem::replace(&mut needs_fat_lto, Vec::new());
-                    let needs_thin_lto =
-                        mem::replace(&mut needs_thin_lto, Vec::new());
-                    let import_only_modules =
-                        mem::replace(&mut lto_import_only_modules, Vec::new());
+                    let needs_fat_lto = mem::take(&mut needs_fat_lto);
+                    let needs_thin_lto = mem::take(&mut needs_thin_lto);
+                    let import_only_modules = mem::take(&mut lto_import_only_modules);
 
                     for (work, cost) in generate_lto_work(&cgcx, needs_fat_lto,
                                                           needs_thin_lto, import_only_modules) {
@@ -1557,7 +1554,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
             let total_llvm_time = Instant::now().duration_since(llvm_start_time);
             // This is the top-level timing for all of LLVM, set the time-depth
             // to zero.
-            set_time_depth(0);
+            set_time_depth(1);
             print_time_passes_entry(cgcx.time_passes,
                                     "LLVM passes",
                                     total_llvm_time);
@@ -1778,7 +1775,7 @@ impl SharedEmitterMain {
                     }
                 }
                 Ok(SharedEmitterMessage::InlineAsmError(cookie, msg)) => {
-                    match Mark::from_u32(cookie).expn_info() {
+                    match ExpnId::from_u32(cookie).expn_info() {
                         Some(ei) => sess.span_err(ei.call_site, &msg),
                         None     => sess.err(&msg),
                     }

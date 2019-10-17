@@ -89,7 +89,6 @@ impl_stable_hash_for!(enum ::syntax::ext::base::MacroKind {
     Bang,
     Attr,
     Derive,
-    ProcMacroStub,
 });
 
 
@@ -137,9 +136,10 @@ for ::syntax::attr::StabilityLevel {
                                           hasher: &mut StableHasher<W>) {
         mem::discriminant(self).hash_stable(hcx, hasher);
         match *self {
-            ::syntax::attr::StabilityLevel::Unstable { ref reason, ref issue } => {
+            ::syntax::attr::StabilityLevel::Unstable { ref reason, ref issue, ref is_soft } => {
                 reason.hash_stable(hcx, hasher);
                 issue.hash_stable(hcx, hasher);
+                is_soft.hash_stable(hcx, hasher);
             }
             ::syntax::attr::StabilityLevel::Stable { ref since } => {
                 since.hash_stable(hcx, hasher);
@@ -364,7 +364,8 @@ impl<'a> HashStable<StableHashingContext<'a>> for token::TokenKind {
             }
 
             token::DocComment(val) |
-            token::Shebang(val) => val.hash_stable(hcx, hasher),
+            token::Shebang(val) |
+            token::Unknown(val) => val.hash_stable(hcx, hasher),
         }
     }
 }
@@ -399,7 +400,7 @@ impl_stable_hash_for!(enum ::syntax_pos::hygiene::Transparency {
 
 impl_stable_hash_for!(struct ::syntax_pos::hygiene::ExpnInfo {
     call_site,
-    format,
+    kind,
     def_site,
     default_transparency,
     allow_internal_unstable,
@@ -408,18 +409,18 @@ impl_stable_hash_for!(struct ::syntax_pos::hygiene::ExpnInfo {
     edition
 });
 
-impl_stable_hash_for!(enum ::syntax_pos::hygiene::ExpnFormat {
-    MacroAttribute(sym),
-    MacroBang(sym),
-    CompilerDesugaring(kind)
+impl_stable_hash_for!(enum ::syntax_pos::hygiene::ExpnKind {
+    Root,
+    Macro(kind, descr),
+    Desugaring(kind)
 });
 
-impl_stable_hash_for!(enum ::syntax_pos::hygiene::CompilerDesugaringKind {
-    IfTemporary,
+impl_stable_hash_for!(enum ::syntax_pos::hygiene::DesugaringKind {
+    CondTemporary,
     Async,
     Await,
     QuestionMark,
-    ExistentialType,
+    OpaqueTy,
     ForLoop,
     TryBlock
 });

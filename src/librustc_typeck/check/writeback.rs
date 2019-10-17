@@ -9,10 +9,8 @@ use rustc::hir::def_id::{DefId, DefIndex};
 use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc::infer::InferCtxt;
 use rustc::ty::adjustment::{Adjust, Adjustment, PointerCast};
-use rustc::ty::fold::{BottomUpFolder, TypeFoldable, TypeFolder};
-use rustc::ty::subst::UnpackedKind;
+use rustc::ty::fold::{TypeFoldable, TypeFolder};
 use rustc::ty::{self, Ty, TyCtxt};
-use rustc::mir::interpret::ConstValue;
 use rustc::util::nodemap::DefIdSet;
 use rustc_data_structures::sync::Lrc;
 use std::mem;
@@ -34,7 +32,7 @@ use syntax_pos::Span;
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     pub fn resolve_type_vars_in_body(&self, body: &'tcx hir::Body) -> &'tcx ty::TypeckTables<'tcx> {
         let item_id = self.tcx.hir().body_owner(body.id());
-        let item_def_id = self.tcx.hir().local_def_id_from_hir_id(item_id);
+        let item_def_id = self.tcx.hir().local_def_id(item_id);
 
         // This attribute causes us to dump some writeback information
         // in the form of errors, which is uSymbolfor unit tests.
@@ -440,172 +438,58 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 
             debug_assert!(!instantiated_ty.has_escaping_bound_vars());
 
-            let generics = self.tcx().generics_of(def_id);
+            // Prevent:
+            // * `fn foo<T>() -> Foo<T>`
+            // * `fn foo<T: Bound + Other>() -> Foo<T>`
+            // from being defining.
 
-            let definition_ty = if generics.parent.is_some() {
-                // `impl Trait`
-                self.fcx.infer_opaque_definition_from_instantiation(
-                    def_id,
-                    opaque_defn,
-                    instantiated_ty,
-                )
-            } else {
-                // Prevent:
-                // * `fn foo<T>() -> Foo<T>`
-                // * `fn foo<T: Bound + Other>() -> Foo<T>`
-                // from being defining.
+            // Also replace all generic params with the ones from the opaque type
+            // definition so that
+            // ```rust
+            // type Foo<T> = impl Baz + 'static;
+            // fn foo<U>() -> Foo<U> { .. }
+            // ```
+            // figures out the concrete type with `U`, but the stored type is with `T`.
+            let definition_ty = self.fcx.infer_opaque_definition_from_instantiation(
+                def_id, opaque_defn, instantiated_ty, span);
 
-                // Also replace all generic params with the ones from the existential type
-                // definition so that
-                // ```rust
-                // existential type Foo<T>: 'static;
-                // fn foo<U>() -> Foo<U> { .. }
-                // ```
-                // figures out the concrete type with `U`, but the stored type is with `T`.
-                instantiated_ty.fold_with(&mut BottomUpFolder {
-                    tcx: self.tcx().global_tcx(),
-                    ty_op: |ty| {
-                        trace!("checking type {:?}", ty);
-                        // Find a type parameter.
-                        if let ty::Param(..) = ty.sty {
-                            // Look it up in the substitution list.
-                            assert_eq!(opaque_defn.substs.len(), generics.params.len());
-                            for (subst, param) in opaque_defn.substs.iter().zip(&generics.params) {
-                                if let UnpackedKind::Type(subst) = subst.unpack() {
-                                    if subst == ty {
-                                        // Found it in the substitution list; replace with the
-                                        // parameter from the existential type.
-                                        return self.tcx()
-                                            .global_tcx()
-                                            .mk_ty_param(param.index, param.name);
-                                    }
-                                }
-                            }
-                            self.tcx()
-                                .sess
-                                .struct_span_err(
-                                    span,
-                                    &format!(
-                                        "type parameter `{}` is part of concrete type but not used \
-                                         in parameter list for existential type",
-                                        ty,
-                                    ),
-                                )
-                                .emit();
-                            return self.tcx().types.err;
-                        }
-                        ty
-                    },
-                    lt_op: |region| {
-                        match region {
-                            // Skip static and bound regions: they don't require substitution.
-                            ty::ReStatic | ty::ReLateBound(..) => region,
-                            _ => {
-                                trace!("checking {:?}", region);
-                                for (subst, p) in opaque_defn.substs.iter().zip(&generics.params) {
-                                    if let UnpackedKind::Lifetime(subst) = subst.unpack() {
-                                        if subst == region {
-                                            // Found it in the substitution list; replace with the
-                                            // parameter from the existential type.
-                                            let reg = ty::EarlyBoundRegion {
-                                                def_id: p.def_id,
-                                                index: p.index,
-                                                name: p.name,
-                                            };
-                                            trace!("replace {:?} with {:?}", region, reg);
-                                            return self.tcx()
-                                                .global_tcx()
-                                                .mk_region(ty::ReEarlyBound(reg));
-                                        }
-                                    }
-                                }
-                                trace!("opaque_defn: {:#?}", opaque_defn);
-                                trace!("generics: {:#?}", generics);
-                                self.tcx()
-                                    .sess
-                                    .struct_span_err(
-                                        span,
-                                        "non-defining existential type use in defining scope",
-                                    )
-                                    .span_label(
-                                        span,
-                                        format!(
-                                            "lifetime `{}` is part of concrete type but not used \
-                                             in parameter list of existential type",
-                                            region,
-                                        ),
-                                    )
-                                    .emit();
-                                self.tcx().global_tcx().mk_region(ty::ReStatic)
-                            }
-                        }
-                    },
-                    ct_op: |ct| {
-                        trace!("checking const {:?}", ct);
-                        // Find a const parameter
-                        if let ConstValue::Param(..) = ct.val {
-                            // look it up in the substitution list
-                            assert_eq!(opaque_defn.substs.len(), generics.params.len());
-                            for (subst, param) in opaque_defn.substs.iter()
-                                                                    .zip(&generics.params) {
-                                if let UnpackedKind::Const(subst) = subst.unpack() {
-                                    if subst == ct {
-                                        // found it in the substitution list, replace with the
-                                        // parameter from the existential type
-                                        return self.tcx()
-                                            .global_tcx()
-                                            .mk_const_param(param.index, param.name, ct.ty);
-                                    }
-                                }
-                            }
-                            self.tcx()
-                                .sess
-                                .struct_span_err(
-                                    span,
-                                    &format!(
-                                        "const parameter `{}` is part of concrete type but not \
-                                            used in parameter list for existential type",
-                                        ct,
-                                    ),
-                                )
-                                .emit();
-                            return self.tcx().consts.err;
-                        }
-                        ct
-                    }
-                })
-            };
+            let mut skip_add = false;
 
             if let ty::Opaque(defin_ty_def_id, _substs) = definition_ty.sty {
                 if def_id == defin_ty_def_id {
-                    // Concrete type resolved to the existential type itself.
-                    // Force a cycle error.
-                    // FIXME(oli-obk): we could just not insert it into `concrete_existential_types`
-                    // which simply would make this use not a defining use.
-                    self.tcx().at(span).type_of(defin_ty_def_id);
+                    debug!("Skipping adding concrete definition for opaque type {:?} {:?}",
+                           opaque_defn, defin_ty_def_id);
+                    skip_add = true;
                 }
             }
 
             if !opaque_defn.substs.has_local_value() {
-                let new = ty::ResolvedOpaqueTy {
-                    concrete_type: definition_ty,
-                    substs: opaque_defn.substs,
-                };
+                // We only want to add an entry into `concrete_opaque_types`
+                // if we actually found a defining usage of this opaque type.
+                // Otherwise, we do nothing - we'll either find a defining usage
+                // in some other location, or we'll end up emitting an error due
+                // to the lack of defining usage
+                if !skip_add {
+                    let new = ty::ResolvedOpaqueTy {
+                        concrete_type: definition_ty,
+                        substs: opaque_defn.substs,
+                    };
 
-                let old = self.tables
-                    .concrete_existential_types
-                    .insert(def_id, new);
-                if let Some(old) = old {
-                    if old.concrete_type != definition_ty || old.substs != opaque_defn.substs {
-                        span_bug!(
-                            span,
-                            "visit_opaque_types tried to write \
-                            different types for the same existential type: {:?}, {:?}, {:?}, {:?}",
-                            def_id,
-                            definition_ty,
-                            opaque_defn,
-                            old,
-                        );
+                    let old = self.tables
+                        .concrete_opaque_types
+                        .insert(def_id, new);
+                    if let Some(old) = old {
+                        if old.concrete_type != definition_ty || old.substs != opaque_defn.substs {
+                            span_bug!(
+                                span,
+                                "visit_opaque_types tried to write different types for the same \
+                                opaque type: {:?}, {:?}, {:?}, {:?}",
+                                def_id,
+                                definition_ty,
+                                opaque_defn,
+                                old,
+                            );
+                        }
                     }
                 }
             } else {
@@ -646,7 +530,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
         let n_ty = self.fcx.node_ty(hir_id);
         let n_ty = self.resolve(&n_ty, &span);
         self.write_ty_to_tables(hir_id, n_ty);
-        debug!("Node {:?} has type {:?}", hir_id, n_ty);
+        debug!("node {:?} has type {:?}", hir_id, n_ty);
 
         // Resolve any substitutions
         if let Some(substs) = self.fcx.tables.borrow().node_substs_opt(hir_id) {
@@ -665,13 +549,13 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             .remove(hir_id);
         match adjustment {
             None => {
-                debug!("No adjustments for node {:?}", hir_id);
+                debug!("no adjustments for node {:?}", hir_id);
             }
 
             Some(adjustment) => {
                 let resolved_adjustment = self.resolve(&adjustment, &span);
                 debug!(
-                    "Adjustments for node {:?}: {:?}",
+                    "adjustments for node {:?}: {:?}",
                     hir_id, resolved_adjustment
                 );
                 self.tables
@@ -689,7 +573,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             .remove(hir_id);
         match adjustment {
             None => {
-                debug!("No pat_adjustments for node {:?}", hir_id);
+                debug!("no pat_adjustments for node {:?}", hir_id);
             }
 
             Some(adjustment) => {

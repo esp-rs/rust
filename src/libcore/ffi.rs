@@ -60,7 +60,10 @@ impl fmt::Debug for c_void {
 #[lang = "va_list"]
 pub struct VaListImpl<'f> {
     ptr: *mut c_void,
-    _marker: PhantomData<&'f c_void>,
+
+    // Invariant over `'f`, so each `VaListImpl<'f>` object is tied to
+    // the region of the function it's defined in
+    _marker: PhantomData<&'f mut &'f c_void>,
 }
 
 #[cfg(any(all(not(target_arch = "aarch64"), not(target_arch = "powerpc"),
@@ -96,7 +99,7 @@ pub struct VaListImpl<'f> {
     vr_top: *mut c_void,
     gr_offs: i32,
     vr_offs: i32,
-    _marker: PhantomData<&'f c_void>,
+    _marker: PhantomData<&'f mut &'f c_void>,
 }
 
 /// PowerPC ABI implementation of a `va_list`.
@@ -114,7 +117,7 @@ pub struct VaListImpl<'f> {
     reserved: u16,
     overflow_arg_area: *mut c_void,
     reg_save_area: *mut c_void,
-    _marker: PhantomData<&'f c_void>,
+    _marker: PhantomData<&'f mut &'f c_void>,
 }
 
 /// x86_64 ABI implementation of a `va_list`.
@@ -131,7 +134,7 @@ pub struct VaListImpl<'f> {
     fp_offset: i32,
     overflow_arg_area: *mut c_void,
     reg_save_area: *mut c_void,
-    _marker: PhantomData<&'f c_void>,
+    _marker: PhantomData<&'f mut &'f c_void>,
 }
 
 /// asm.js ABI implementation of a `va_list`.
@@ -148,7 +151,7 @@ pub struct VaListImpl<'f> {
 #[lang = "va_list"]
 pub struct VaListImpl<'f> {
     inner: [crate::mem::MaybeUninit<i32>; 4],
-    _marker: PhantomData<&'f c_void>,
+    _marker: PhantomData<&'f mut &'f c_void>,
 }
 
 #[cfg(all(target_arch = "asmjs", not(windows)))]
@@ -302,7 +305,6 @@ impl<T> sealed_trait::VaArgSafe for *const T {}
            reason = "the `c_variadic` feature has not been properly tested on \
                      all supported platforms",
            issue = "44930")]
-#[cfg(not(bootstrap))]
 impl<'f> VaListImpl<'f> {
     /// Advance to the next arg.
     #[inline]
@@ -324,7 +326,6 @@ impl<'f> VaListImpl<'f> {
            reason = "the `c_variadic` feature has not been properly tested on \
                      all supported platforms",
            issue = "44930")]
-#[cfg(not(bootstrap))]
 impl<'f> Clone for VaListImpl<'f> {
     #[inline]
     fn clone(&self) -> Self {
@@ -340,7 +341,6 @@ impl<'f> Clone for VaListImpl<'f> {
            reason = "the `c_variadic` feature has not been properly tested on \
                      all supported platforms",
            issue = "44930")]
-#[cfg(not(bootstrap))]
 impl<'f> Drop for VaListImpl<'f> {
     fn drop(&mut self) {
         // FIXME: this should call `va_end`, but there's no clean way to
@@ -359,15 +359,12 @@ impl<'f> Drop for VaListImpl<'f> {
 extern "rust-intrinsic" {
     /// Destroy the arglist `ap` after initialization with `va_start` or
     /// `va_copy`.
-    #[cfg(not(bootstrap))]
     fn va_end(ap: &mut VaListImpl<'_>);
 
     /// Copies the current location of arglist `src` to the arglist `dst`.
-    #[cfg(not(bootstrap))]
     fn va_copy<'f>(dest: *mut VaListImpl<'f>, src: &VaListImpl<'f>);
 
     /// Loads an argument of type `T` from the `va_list` `ap` and increment the
     /// argument `ap` points to.
-    #[cfg(not(bootstrap))]
     fn va_arg<T: sealed_trait::VaArgSafe>(ap: &mut VaListImpl<'_>) -> T;
 }

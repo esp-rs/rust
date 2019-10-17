@@ -667,7 +667,7 @@ impl EncodeContext<'tcx> {
         (id, md, attrs, vis): (hir::HirId, &hir::Mod, &[ast::Attribute], &hir::Visibility),
     ) -> Entry<'tcx> {
         let tcx = self.tcx;
-        let def_id = tcx.hir().local_def_id_from_hir_id(id);
+        let def_id = tcx.hir().local_def_id(id);
         debug!("EncodeContext::encode_info_for_mod({:?})", def_id);
 
         let data = ModData {
@@ -683,7 +683,7 @@ impl EncodeContext<'tcx> {
             span: self.lazy(&tcx.def_span(def_id)),
             attributes: self.encode_attributes(attrs),
             children: self.lazy_seq(md.item_ids.iter().map(|item_id| {
-                tcx.hir().local_def_id_from_hir_id(item_id.id).index
+                tcx.hir().local_def_id(item_id.id).index
             })),
             stability: self.encode_stability(def_id),
             deprecation: self.encode_deprecation(def_id),
@@ -868,8 +868,7 @@ impl EncodeContext<'tcx> {
                 }))
             }
             ty::AssocKind::Type => EntryKind::AssocType(container),
-            ty::AssocKind::Existential =>
-                span_bug!(ast_item.span, "existential type in trait"),
+            ty::AssocKind::OpaqueTy => span_bug!(ast_item.span, "opaque type in trait"),
         };
 
         Entry {
@@ -893,7 +892,7 @@ impl EncodeContext<'tcx> {
                         None
                     }
                 }
-                ty::AssocKind::Existential => unreachable!(),
+                ty::AssocKind::OpaqueTy => unreachable!(),
             },
             inherent_impls: LazySeq::empty(),
             variances: if trait_item.kind == ty::AssocKind::Method {
@@ -964,7 +963,7 @@ impl EncodeContext<'tcx> {
                     has_self: impl_item.method_has_self_argument,
                 }))
             }
-            ty::AssocKind::Existential => EntryKind::AssocExistential(container),
+            ty::AssocKind::OpaqueTy => EntryKind::AssocOpaqueTy(container),
             ty::AssocKind::Type => EntryKind::AssocType(container)
         };
 
@@ -980,8 +979,8 @@ impl EncodeContext<'tcx> {
                     let always_encode_mir = self.tcx.sess.opts.debugging_opts.always_encode_mir;
                     needs_inline || is_const_fn || always_encode_mir
                 },
-                hir::ImplItemKind::Existential(..) |
-                hir::ImplItemKind::Type(..) => false,
+                hir::ImplItemKind::OpaqueTy(..) |
+                hir::ImplItemKind::TyAlias(..) => false,
             };
 
         Entry {
@@ -1095,8 +1094,8 @@ impl EncodeContext<'tcx> {
             }
             hir::ItemKind::ForeignMod(_) => EntryKind::ForeignMod,
             hir::ItemKind::GlobalAsm(..) => EntryKind::GlobalAsm,
-            hir::ItemKind::Ty(..) => EntryKind::Type,
-            hir::ItemKind::Existential(..) => EntryKind::Existential,
+            hir::ItemKind::TyAlias(..) => EntryKind::Type,
+            hir::ItemKind::OpaqueTy(..) => EntryKind::OpaqueTy,
             hir::ItemKind::Enum(..) => EntryKind::Enum(get_repr_options(tcx, def_id)),
             hir::ItemKind::Struct(ref struct_def, _) => {
                 let variant = tcx.adt_def(def_id).non_enum_variant();
@@ -1105,7 +1104,7 @@ impl EncodeContext<'tcx> {
                 // for methods, write all the stuff get_trait_method
                 // needs to know
                 let ctor = struct_def.ctor_hir_id()
-                    .map(|ctor_hir_id| tcx.hir().local_def_id_from_hir_id(ctor_hir_id).index);
+                    .map(|ctor_hir_id| tcx.hir().local_def_id(ctor_hir_id).index);
 
                 let repr_options = get_repr_options(tcx, def_id);
 
@@ -1194,7 +1193,7 @@ impl EncodeContext<'tcx> {
                 hir::ItemKind::ForeignMod(ref fm) => {
                     self.lazy_seq(fm.items
                         .iter()
-                        .map(|foreign_item| tcx.hir().local_def_id_from_hir_id(
+                        .map(|foreign_item| tcx.hir().local_def_id(
                             foreign_item.hir_id).index))
                 }
                 hir::ItemKind::Enum(..) => {
@@ -1228,8 +1227,8 @@ impl EncodeContext<'tcx> {
                 hir::ItemKind::Static(..) |
                 hir::ItemKind::Const(..) |
                 hir::ItemKind::Fn(..) |
-                hir::ItemKind::Ty(..) |
-                hir::ItemKind::Existential(..) |
+                hir::ItemKind::TyAlias(..) |
+                hir::ItemKind::OpaqueTy(..) |
                 hir::ItemKind::Enum(..) |
                 hir::ItemKind::Struct(..) |
                 hir::ItemKind::Union(..) |
@@ -1248,12 +1247,12 @@ impl EncodeContext<'tcx> {
                 hir::ItemKind::Static(..) |
                 hir::ItemKind::Const(..) |
                 hir::ItemKind::Fn(..) |
-                hir::ItemKind::Ty(..) |
+                hir::ItemKind::TyAlias(..) |
                 hir::ItemKind::Enum(..) |
                 hir::ItemKind::Struct(..) |
                 hir::ItemKind::Union(..) |
                 hir::ItemKind::Impl(..) |
-                hir::ItemKind::Existential(..) |
+                hir::ItemKind::OpaqueTy(..) |
                 hir::ItemKind::Trait(..) => Some(self.encode_generics(def_id)),
                 hir::ItemKind::TraitAlias(..) => Some(self.encode_generics(def_id)),
                 _ => None,
@@ -1262,12 +1261,12 @@ impl EncodeContext<'tcx> {
                 hir::ItemKind::Static(..) |
                 hir::ItemKind::Const(..) |
                 hir::ItemKind::Fn(..) |
-                hir::ItemKind::Ty(..) |
+                hir::ItemKind::TyAlias(..) |
                 hir::ItemKind::Enum(..) |
                 hir::ItemKind::Struct(..) |
                 hir::ItemKind::Union(..) |
                 hir::ItemKind::Impl(..) |
-                hir::ItemKind::Existential(..) |
+                hir::ItemKind::OpaqueTy(..) |
                 hir::ItemKind::Trait(..) |
                 hir::ItemKind::TraitAlias(..) => Some(self.encode_predicates(def_id)),
                 _ => None,
@@ -1313,10 +1312,10 @@ impl EncodeContext<'tcx> {
     /// Serialize the text of exported macros
     fn encode_info_for_macro_def(&mut self, macro_def: &hir::MacroDef) -> Entry<'tcx> {
         use syntax::print::pprust;
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(macro_def.hir_id);
+        let def_id = self.tcx.hir().local_def_id(macro_def.hir_id);
         Entry {
             kind: EntryKind::MacroDef(self.lazy(&MacroDef {
-                body: pprust::tts_to_string(&macro_def.body.trees().collect::<Vec<_>>()),
+                body: pprust::tokens_to_string(macro_def.body.clone()),
                 legacy: macro_def.legacy,
             })),
             visibility: self.lazy(&ty::Visibility::Public),
@@ -1656,7 +1655,7 @@ impl Visitor<'tcx> for EncodeContext<'tcx> {
     }
     fn visit_item(&mut self, item: &'tcx hir::Item) {
         intravisit::walk_item(self, item);
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(item.hir_id);
+        let def_id = self.tcx.hir().local_def_id(item.hir_id);
         match item.node {
             hir::ItemKind::ExternCrate(_) |
             hir::ItemKind::Use(..) => {} // ignore these
@@ -1666,7 +1665,7 @@ impl Visitor<'tcx> for EncodeContext<'tcx> {
     }
     fn visit_foreign_item(&mut self, ni: &'tcx hir::ForeignItem) {
         intravisit::walk_foreign_item(self, ni);
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(ni.hir_id);
+        let def_id = self.tcx.hir().local_def_id(ni.hir_id);
         self.record(def_id,
                           EncodeContext::encode_info_for_foreign_item,
                           (def_id, ni));
@@ -1678,7 +1677,7 @@ impl Visitor<'tcx> for EncodeContext<'tcx> {
         intravisit::walk_variant(self, v, g, id);
 
         if let Some(ref discr) = v.node.disr_expr {
-            let def_id = self.tcx.hir().local_def_id_from_hir_id(discr.hir_id);
+            let def_id = self.tcx.hir().local_def_id(discr.hir_id);
             self.record(def_id, EncodeContext::encode_info_for_anon_const, def_id);
         }
     }
@@ -1691,7 +1690,7 @@ impl Visitor<'tcx> for EncodeContext<'tcx> {
         self.encode_info_for_ty(ty);
     }
     fn visit_macro_def(&mut self, macro_def: &'tcx hir::MacroDef) {
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(macro_def.hir_id);
+        let def_id = self.tcx.hir().local_def_id(macro_def.hir_id);
         self.record(def_id, EncodeContext::encode_info_for_macro_def, macro_def);
     }
 }
@@ -1710,7 +1709,7 @@ impl EncodeContext<'tcx> {
 
     fn encode_info_for_generics(&mut self, generics: &hir::Generics) {
         for param in &generics.params {
-            let def_id = self.tcx.hir().local_def_id_from_hir_id(param.hir_id);
+            let def_id = self.tcx.hir().local_def_id(param.hir_id);
             match param.kind {
                 GenericParamKind::Lifetime { .. } => continue,
                 GenericParamKind::Type { ref default, .. } => {
@@ -1730,7 +1729,7 @@ impl EncodeContext<'tcx> {
     fn encode_info_for_ty(&mut self, ty: &hir::Ty) {
         match ty.node {
             hir::TyKind::Array(_, ref length) => {
-                let def_id = self.tcx.hir().local_def_id_from_hir_id(length.hir_id);
+                let def_id = self.tcx.hir().local_def_id(length.hir_id);
                 self.record(def_id, EncodeContext::encode_info_for_anon_const, def_id);
             }
             _ => {}
@@ -1740,7 +1739,7 @@ impl EncodeContext<'tcx> {
     fn encode_info_for_expr(&mut self, expr: &hir::Expr) {
         match expr.node {
             hir::ExprKind::Closure(..) => {
-                let def_id = self.tcx.hir().local_def_id_from_hir_id(expr.hir_id);
+                let def_id = self.tcx.hir().local_def_id(expr.hir_id);
                 self.record(def_id, EncodeContext::encode_info_for_closure, def_id);
             }
             _ => {}
@@ -1752,7 +1751,7 @@ impl EncodeContext<'tcx> {
     /// so it's easier to do that here then to wait until we would encounter
     /// normally in the visitor walk.
     fn encode_addl_info_for_item(&mut self, item: &hir::Item) {
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(item.hir_id);
+        let def_id = self.tcx.hir().local_def_id(item.hir_id);
         match item.node {
             hir::ItemKind::Static(..) |
             hir::ItemKind::Const(..) |
@@ -1762,8 +1761,8 @@ impl EncodeContext<'tcx> {
             hir::ItemKind::GlobalAsm(..) |
             hir::ItemKind::ExternCrate(..) |
             hir::ItemKind::Use(..) |
-            hir::ItemKind::Ty(..) |
-            hir::ItemKind::Existential(..) |
+            hir::ItemKind::TyAlias(..) |
+            hir::ItemKind::OpaqueTy(..) |
             hir::ItemKind::TraitAlias(..) => {
                 // no sub-item recording needed in these cases
             }
@@ -1788,7 +1787,7 @@ impl EncodeContext<'tcx> {
 
                 // If the struct has a constructor, encode it.
                 if let Some(ctor_hir_id) = struct_def.ctor_hir_id() {
-                    let ctor_def_id = self.tcx.hir().local_def_id_from_hir_id(ctor_hir_id);
+                    let ctor_def_id = self.tcx.hir().local_def_id(ctor_hir_id);
                     self.record(ctor_def_id,
                                 EncodeContext::encode_struct_ctor,
                                 (def_id, ctor_def_id));
@@ -1823,7 +1822,7 @@ struct ImplVisitor<'tcx> {
 impl<'tcx, 'v> ItemLikeVisitor<'v> for ImplVisitor<'tcx> {
     fn visit_item(&mut self, item: &hir::Item) {
         if let hir::ItemKind::Impl(..) = item.node {
-            let impl_id = self.tcx.hir().local_def_id_from_hir_id(item.hir_id);
+            let impl_id = self.tcx.hir().local_def_id(item.hir_id);
             if let Some(trait_ref) = self.tcx.impl_trait_ref(impl_id) {
                 self.impls
                     .entry(trait_ref.def_id)
@@ -1863,7 +1862,7 @@ impl<'tcx, 'v> ItemLikeVisitor<'v> for ImplVisitor<'tcx> {
 // will allow us to slice the metadata to the precise length that we just
 // generated regardless of trailing bytes that end up in it.
 
-pub fn encode_metadata<'tcx>(tcx: TyCtxt<'tcx>) -> EncodedMetadata {
+pub fn encode_metadata(tcx: TyCtxt<'_>) -> EncodedMetadata {
     let mut encoder = opaque::Encoder::new(vec![]);
     encoder.emit_raw_bytes(METADATA_HEADER);
 
@@ -1905,7 +1904,7 @@ pub fn encode_metadata<'tcx>(tcx: TyCtxt<'tcx>) -> EncodedMetadata {
     EncodedMetadata { raw_data: result }
 }
 
-pub fn get_repr_options<'tcx>(tcx: TyCtxt<'tcx>, did: DefId) -> ReprOptions {
+pub fn get_repr_options(tcx: TyCtxt<'_>, did: DefId) -> ReprOptions {
     let ty = tcx.type_of(did);
     match ty.sty {
         ty::Adt(ref def, _) => return def.repr,

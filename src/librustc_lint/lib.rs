@@ -19,10 +19,6 @@
 
 #![recursion_limit="256"]
 
-#![deny(rust_2018_idioms)]
-#![deny(internal)]
-#![deny(unused_lifetimes)]
-
 #[macro_use]
 extern crate rustc;
 
@@ -31,6 +27,7 @@ mod nonstandard_style;
 pub mod builtin;
 mod types;
 mod unused;
+mod non_ascii_idents;
 
 use rustc::lint;
 use rustc::lint::{EarlyContext, LateContext, LateLintPass, EarlyLintPass, LintPass, LintArray};
@@ -62,6 +59,7 @@ use nonstandard_style::*;
 use builtin::*;
 use types::*;
 use unused::*;
+use non_ascii_idents::*;
 use rustc::lint::internal::*;
 
 /// Useful for other parts of the compiler.
@@ -74,7 +72,7 @@ pub fn provide(providers: &mut Providers<'_>) {
     };
 }
 
-fn lint_mod<'tcx>(tcx: TyCtxt<'tcx>, module_def_id: DefId) {
+fn lint_mod(tcx: TyCtxt<'_>, module_def_id: DefId) {
     lint::late_lint_mod(tcx, module_def_id, BuiltinCombinedModuleLateLintPass::new());
 }
 
@@ -97,6 +95,9 @@ macro_rules! early_lint_passes {
             EllipsisInclusiveRangePatterns: EllipsisInclusiveRangePatterns::default(),
             NonCamelCaseTypes: NonCamelCaseTypes,
             DeprecatedAttr: DeprecatedAttr::new(),
+            WhileTrue: WhileTrue,
+            NonAsciiIdents: NonAsciiIdents,
+            IncompleteFeatures: IncompleteFeatures,
         ]);
     )
 }
@@ -141,7 +142,6 @@ macro_rules! late_lint_mod_passes {
     ($macro:path, $args:tt) => (
         $macro!($args, [
             HardwiredLints: HardwiredLints,
-            WhileTrue: WhileTrue,
             ImproperCTypes: ImproperCTypes,
             VariantSizeDifferences: VariantSizeDifferences,
             BoxPointers: BoxPointers,
@@ -177,6 +177,7 @@ macro_rules! late_lint_mod_passes {
             UnreachablePub: UnreachablePub,
 
             ExplicitOutlivesRequirements: ExplicitOutlivesRequirements,
+            InvalidValue: InvalidValue,
         ]);
     )
 }
@@ -427,7 +428,17 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
             id: LintId::of(MUTABLE_BORROW_RESERVATION_CONFLICT),
             reference: "issue #59159 <https://github.com/rust-lang/rust/issues/59159>",
             edition: None,
-        }
+        },
+        FutureIncompatibleInfo {
+            id: LintId::of(INDIRECT_STRUCTURAL_MATCH),
+            reference: "issue #62411 <https://github.com/rust-lang/rust/issues/62411>",
+            edition: None,
+        },
+        FutureIncompatibleInfo {
+            id: LintId::of(SOFT_UNSTABLE),
+            reference: "issue #64266 <https://github.com/rust-lang/rust/issues/64266>",
+            edition: None,
+        },
         ]);
 
     // Register renamed and removed lints.
@@ -474,9 +485,9 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
     store.register_removed("resolve_trait_on_defaulted_unit",
         "converted into hard error, see https://github.com/rust-lang/rust/issues/48950");
     store.register_removed("private_no_mangle_fns",
-        "no longer a warning, #[no_mangle] functions always exported");
+        "no longer a warning, `#[no_mangle]` functions always exported");
     store.register_removed("private_no_mangle_statics",
-        "no longer a warning, #[no_mangle] statics always exported");
+        "no longer a warning, `#[no_mangle]` statics always exported");
     store.register_removed("bad_repr",
         "replaced with a generic attribute input check");
     store.register_removed("duplicate_matcher_binding_name",
@@ -487,15 +498,17 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
 
 pub fn register_internals(store: &mut lint::LintStore, sess: Option<&Session>) {
     store.register_early_pass(sess, false, false, box DefaultHashTypes::new());
+    store.register_early_pass(sess, false, false, box LintPassImpl);
     store.register_late_pass(sess, false, false, false, box TyTyKind);
     store.register_group(
         sess,
         false,
-        "internal",
+        "rustc::internal",
         None,
         vec![
             LintId::of(DEFAULT_HASH_TYPES),
             LintId::of(USAGE_OF_TY_TYKIND),
+            LintId::of(LINT_PASS_IMPL_WITHOUT_MACRO),
             LintId::of(TY_PASS_BY_REFERENCE),
             LintId::of(USAGE_OF_QUALIFIED_TY),
         ],

@@ -182,6 +182,12 @@ impl fmt::Debug for VarsOs {
 /// * Environment variable is not present
 /// * Environment variable is not valid unicode
 ///
+/// # Panics
+///
+/// This function may panic if `key` is empty, contains an ASCII equals sign
+/// `'='` or the NUL character `'\0'`, or when the value contains the NUL
+/// character.
+///
 /// # Examples
 ///
 /// ```
@@ -209,6 +215,12 @@ fn _var(key: &OsStr) -> Result<String, VarError> {
 /// [`None`] if the variable isn't set.
 ///
 /// [`None`]: ../option/enum.Option.html#variant.None
+///
+/// # Panics
+///
+/// This function may panic if `key` is empty, contains an ASCII equals sign
+/// `'='` or the NUL character `'\0'`, or when the value contains the NUL
+/// character.
 ///
 /// # Examples
 ///
@@ -973,6 +985,11 @@ mod arch {
 #[cfg(target_arch = "wasm32")]
 mod arch {
     pub const ARCH: &str = "wasm32";
+}
+
+#[cfg(target_arch = "hexagon")]
+mod arch {
+    pub const ARCH: &'static str = "hexagon";
 }
 
 #[cfg(test)]

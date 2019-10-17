@@ -12,6 +12,7 @@ pub use self::UnsafeSource::*;
 
 use crate::hir::def::{Res, DefKind};
 use crate::hir::def_id::{DefId, DefIndex, LocalDefId, CRATE_DEF_INDEX};
+use crate::hir::ptr::P;
 use crate::util::nodemap::{NodeMap, FxHashSet};
 use crate::mir::mono::Linkage;
 
@@ -23,7 +24,6 @@ use syntax::ast::{self, CrateSugar, Ident, Name, NodeId, AsmDialect};
 use syntax::ast::{Attribute, Label, LitKind, StrStyle, FloatTy, IntTy, UintTy};
 use syntax::attr::{InlineAttr, OptimizeAttr};
 use syntax::ext::hygiene::SyntaxContext;
-use syntax::ptr::P;
 use syntax::symbol::{Symbol, kw};
 use syntax::tokenstream::TokenStream;
 use syntax::util::parser::ExprPrecedence;
@@ -34,7 +34,7 @@ use rustc_data_structures::sync::{par_for_each_in, Send, Sync};
 use rustc_data_structures::thin_vec::ThinVec;
 use rustc_macros::HashStable;
 
-use serialize::{self, Encoder, Encodable, Decoder, Decodable};
+use rustc_serialize::{self, Encoder, Encodable, Decoder, Decodable};
 use std::collections::{BTreeSet, BTreeMap};
 use std::fmt;
 use smallvec::SmallVec;
@@ -63,6 +63,7 @@ pub mod lowering;
 pub mod map;
 pub mod pat_util;
 pub mod print;
+pub mod ptr;
 pub mod upvars;
 
 /// Uniquely identifies a node in the HIR of the current crate. It is
@@ -91,7 +92,7 @@ impl HirId {
     }
 }
 
-impl serialize::UseSpecializedEncodable for HirId {
+impl rustc_serialize::UseSpecializedEncodable for HirId {
     fn default_encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
         let HirId {
             owner,
@@ -103,7 +104,7 @@ impl serialize::UseSpecializedEncodable for HirId {
     }
 }
 
-impl serialize::UseSpecializedDecodable for HirId {
+impl rustc_serialize::UseSpecializedDecodable for HirId {
     fn default_decode<D: Decoder>(d: &mut D) -> Result<HirId, D::Error> {
         let owner = DefIndex::decode(d)?;
         let local_id = ItemLocalId::decode(d)?;
@@ -726,6 +727,8 @@ pub struct Crate {
     pub attrs: HirVec<Attribute>,
     pub span: Span,
     pub exported_macros: HirVec<MacroDef>,
+    // Attributes from non-exported macros, kept only for collecting the library feature list.
+    pub non_exported_macro_attrs: HirVec<Attribute>,
 
     // N.B., we use a BTreeMap here so that `visit_all_items` iterates
     // over the ids in increasing order. In principle it should not
@@ -1404,7 +1407,6 @@ impl Expr {
             ExprKind::Lit(_) => ExprPrecedence::Lit,
             ExprKind::Type(..) | ExprKind::Cast(..) => ExprPrecedence::Cast,
             ExprKind::DropTemps(ref expr, ..) => expr.precedence(),
-            ExprKind::While(..) => ExprPrecedence::While,
             ExprKind::Loop(..) => ExprPrecedence::Loop,
             ExprKind::Match(..) => ExprPrecedence::Match,
             ExprKind::Closure(..) => ExprPrecedence::Closure,
@@ -1463,7 +1465,6 @@ impl Expr {
             ExprKind::Break(..) |
             ExprKind::Continue(..) |
             ExprKind::Ret(..) |
-            ExprKind::While(..) |
             ExprKind::Loop(..) |
             ExprKind::Assign(..) |
             ExprKind::InlineAsm(..) |
@@ -1531,10 +1532,6 @@ pub enum ExprKind {
     /// This construct only exists to tweak the drop order in HIR lowering.
     /// An example of that is the desugaring of `for` loops.
     DropTemps(P<Expr>),
-    /// A while loop, with an optional label
-    ///
-    /// I.e., `'label: while expr { <block> }`.
-    While(P<Expr>, P<Block>, Option<Label>),
     /// A conditionless loop (can be exited with `break`, `continue`, or `return`).
     ///
     /// I.e., `'label: loop { <block> }`.
@@ -1652,6 +1649,8 @@ pub enum MatchSource {
     IfLetDesugar {
         contains_else_clause: bool,
     },
+    /// A `while _ { .. }` (which was desugared to a `loop { match _ { .. } }`).
+    WhileDesugar,
     /// A `while let _ = _ { .. }` (which was desugared to a
     /// `loop { match _ { .. } }`).
     WhileLetDesugar,
@@ -1668,10 +1667,23 @@ pub enum MatchSource {
 pub enum LoopSource {
     /// A `loop { .. }` loop.
     Loop,
+    /// A `while _ { .. }` loop.
+    While,
     /// A `while let _ = _ { .. }` loop.
     WhileLet,
     /// A `for _ in _ { .. }` loop.
     ForLoop,
+}
+
+impl LoopSource {
+    pub fn name(self) -> &'static str {
+        match self {
+            LoopSource::Loop => "loop",
+            LoopSource::While => "while",
+            LoopSource::WhileLet => "while let",
+            LoopSource::ForLoop => "for",
+        }
+    }
 }
 
 #[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
@@ -1803,7 +1815,7 @@ pub struct ImplItemId {
     pub hir_id: HirId,
 }
 
-/// Represents anything within an `impl` block
+/// Represents anything within an `impl` block.
 #[derive(RustcEncodable, RustcDecodable, Debug)]
 pub struct ImplItem {
     pub ident: Ident,
@@ -1820,14 +1832,14 @@ pub struct ImplItem {
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub enum ImplItemKind {
     /// An associated constant of the given type, set to the constant result
-    /// of the expression
+    /// of the expression.
     Const(P<Ty>, BodyId),
-    /// A method implementation with the given signature and body
+    /// A method implementation with the given signature and body.
     Method(MethodSig, BodyId),
-    /// An associated type
-    Type(P<Ty>),
-    /// An associated existential type
-    Existential(GenericBounds),
+    /// An associated type.
+    TyAlias(P<Ty>),
+    /// An associated `type = impl Trait`.
+    OpaqueTy(GenericBounds),
 }
 
 /// Bind a type to an associated type (i.e., `A = Foo`).
@@ -1910,20 +1922,20 @@ pub struct BareFnTy {
 }
 
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
-pub struct ExistTy {
+pub struct OpaqueTy {
     pub generics: Generics,
     pub bounds: GenericBounds,
     pub impl_trait_fn: Option<DefId>,
-    pub origin: ExistTyOrigin,
+    pub origin: OpaqueTyOrigin,
 }
 
-/// Where the existential type came from
+/// From whence the opaque type came.
 #[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
-pub enum ExistTyOrigin {
-    /// `existential type Foo: Trait;`
-    ExistentialType,
+pub enum OpaqueTyOrigin {
+    /// `type Foo = impl Trait;`
+    TypeAlias,
     /// `-> impl Trait`
-    ReturnImplTrait,
+    FnReturn,
     /// `async fn`
     AsyncFn,
 }
@@ -1950,7 +1962,7 @@ pub enum TyKind {
     ///
     /// Type parameters may be stored in each `PathSegment`.
     Path(QPath),
-    /// A type definition itself. This is currently only used for the `existential type`
+    /// A type definition itself. This is currently only used for the `type Foo = impl Trait`
     /// item that `impl Trait` in return position desugars to.
     ///
     /// The generic argument list contains the lifetimes (and in the future possibly parameters)
@@ -1979,13 +1991,15 @@ pub struct InlineAsmOutput {
     pub span: Span,
 }
 
+// NOTE(eddyb) This is used within MIR as well, so unlike the rest of the HIR,
+// it needs to be `Clone` and use plain `Vec<T>` instead of `HirVec<T>`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub struct InlineAsm {
     pub asm: Symbol,
     pub asm_str_style: StrStyle,
-    pub outputs: HirVec<InlineAsmOutput>,
-    pub inputs: HirVec<Symbol>,
-    pub clobbers: HirVec<Symbol>,
+    pub outputs: Vec<InlineAsmOutput>,
+    pub inputs: Vec<Symbol>,
+    pub clobbers: Vec<Symbol>,
     pub volatile: bool,
     pub alignstack: bool,
     pub dialect: AsmDialect,
@@ -1996,8 +2010,10 @@ pub struct InlineAsm {
 /// Represents an argument in a function header.
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub struct Arg {
-    pub pat: P<Pat>,
+    pub attrs: HirVec<Attribute>,
     pub hir_id: HirId,
+    pub pat: P<Pat>,
+    pub span: Span,
 }
 
 /// Represents the header (not the body) of a function declaration.
@@ -2217,8 +2233,8 @@ pub enum UseKind {
 /// within the resolution map.
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub struct TraitRef {
-    pub path: Path,
-    // Don't hash the ref_id. It is tracked via the thing it is used to access
+    pub path: P<Path>,
+    // Don't hash the `ref_id`. It is tracked via the thing it is used to access.
     #[stable_hasher(ignore)]
     pub hir_ref_id: HirId,
 }
@@ -2404,18 +2420,18 @@ pub enum ItemKind {
     /// Module-level inline assembly (from global_asm!)
     GlobalAsm(P<GlobalAsm>),
     /// A type alias, e.g., `type Foo = Bar<u8>`
-    Ty(P<Ty>, Generics),
-    /// An existential type definition, e.g., `existential type Foo: Bar;`
-    Existential(ExistTy),
+    TyAlias(P<Ty>, Generics),
+    /// An opaque `impl Trait` type alias, e.g., `type Foo = impl Bar;`
+    OpaqueTy(OpaqueTy),
     /// An enum definition, e.g., `enum Foo<A, B> {C<A>, D<B>}`
     Enum(EnumDef, Generics),
     /// A struct definition, e.g., `struct Foo<A> {x: A}`
     Struct(VariantData, Generics),
     /// A union definition, e.g., `union Foo<A, B> {x: A, y: B}`
     Union(VariantData, Generics),
-    /// Represents a Trait Declaration
+    /// A trait definition
     Trait(IsAuto, Unsafety, Generics, GenericBounds, HirVec<TraitItemRef>),
-    /// Represents a Trait Alias Declaration
+    /// A trait alias
     TraitAlias(Generics, GenericBounds),
 
     /// An implementation, eg `impl<A> Trait for Foo { .. }`
@@ -2439,8 +2455,8 @@ impl ItemKind {
             ItemKind::Mod(..) => "module",
             ItemKind::ForeignMod(..) => "foreign module",
             ItemKind::GlobalAsm(..) => "global asm",
-            ItemKind::Ty(..) => "type alias",
-            ItemKind::Existential(..) => "existential type",
+            ItemKind::TyAlias(..) => "type alias",
+            ItemKind::OpaqueTy(..) => "opaque type",
             ItemKind::Enum(..) => "enum",
             ItemKind::Struct(..) => "struct",
             ItemKind::Union(..) => "union",
@@ -2462,8 +2478,8 @@ impl ItemKind {
     pub fn generics(&self) -> Option<&Generics> {
         Some(match *self {
             ItemKind::Fn(_, _, ref generics, _) |
-            ItemKind::Ty(_, ref generics) |
-            ItemKind::Existential(ExistTy { ref generics, impl_trait_fn: None, .. }) |
+            ItemKind::TyAlias(_, ref generics) |
+            ItemKind::OpaqueTy(OpaqueTy { ref generics, impl_trait_fn: None, .. }) |
             ItemKind::Enum(_, ref generics) |
             ItemKind::Struct(_, ref generics) |
             ItemKind::Union(_, ref generics) |
@@ -2512,7 +2528,7 @@ pub enum AssocItemKind {
     Const,
     Method { has_self: bool },
     Type,
-    Existential,
+    OpaqueTy,
 }
 
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
@@ -2687,6 +2703,7 @@ impl CodegenFnAttrs {
 
 #[derive(Copy, Clone, Debug)]
 pub enum Node<'hir> {
+    Arg(&'hir Arg),
     Item(&'hir Item),
     ForeignItem(&'hir ForeignItem),
     TraitItem(&'hir TraitItem),

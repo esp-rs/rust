@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 struct Foo {
     foo: Option<&'static Foo>

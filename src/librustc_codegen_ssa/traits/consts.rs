@@ -17,6 +17,7 @@ pub trait ConstMethods<'tcx>: BackendTypes {
     fn const_u64(&self, i: u64) -> Self::Value;
     fn const_usize(&self, i: u64) -> Self::Value;
     fn const_u8(&self, i: u8) -> Self::Value;
+    fn const_real(&self, t: Self::Type, val: f64) -> Self::Value;
 
     fn const_struct(&self, elts: &[Self::Value], packed: bool) -> Self::Value;
 
@@ -34,7 +35,6 @@ pub trait ConstMethods<'tcx>: BackendTypes {
     fn from_const_alloc(
         &self,
         layout: layout::TyLayout<'tcx>,
-        align: layout::Align,
         alloc: &Allocation,
         offset: layout::Size,
     ) -> PlaceRef<'tcx, Self::Value>;

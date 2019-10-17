@@ -159,7 +159,7 @@ impl Inliner<'tcx> {
 
         // Simplify if we inlined anything.
         if changed {
-            debug!("Running simplify cfg on {:?}", self.source);
+            debug!("running simplify cfg on {:?}", self.source);
             CfgSimplifier::new(caller_body).simplify();
             remove_dead_blocks(caller_body);
         }
@@ -232,13 +232,6 @@ impl Inliner<'tcx> {
             return false;
         }
 
-        // Do not inline {u,i}128 lang items, codegen const eval depends
-        // on detecting calls to these lang items and intercepting them
-        if tcx.is_binop_lang_item(callsite.callee).is_some() {
-            debug!("    not inlining 128bit integer lang item");
-            return false;
-        }
-
         let codegen_fn_attrs = tcx.codegen_fn_attrs(callsite.callee);
 
         let hinted = match codegen_fn_attrs.inline {
@@ -247,7 +240,7 @@ impl Inliner<'tcx> {
             // need to check for first.
             attr::InlineAttr::Always => true,
             attr::InlineAttr::Never => {
-                debug!("#[inline(never)] present - not inlining");
+                debug!("`#[inline(never)]` present - not inlining");
                 return false
             }
             attr::InlineAttr::Hint => true,
@@ -397,7 +390,7 @@ impl Inliner<'tcx> {
         match terminator.kind {
             // FIXME: Handle inlining of diverging calls
             TerminatorKind::Call { args, destination: Some(destination), cleanup, .. } => {
-                debug!("Inlined {:?} into {:?}", callsite.callee, self.source);
+                debug!("inlined {:?} into {:?}", callsite.callee, self.source);
 
                 let mut local_map = IndexVec::with_capacity(callee_body.local_decls.len());
                 let mut scope_map = IndexVec::with_capacity(callee_body.source_scopes.len());
@@ -456,7 +449,7 @@ impl Inliner<'tcx> {
                 }
 
                 let dest = if dest_needs_borrow(&destination.0) {
-                    debug!("Creating temp for return destination");
+                    debug!("creating temp for return destination");
                     let dest = Rvalue::Ref(
                         self.tcx.lifetimes.re_erased,
                         BorrowKind::Mut { allow_two_phase_borrow: false },
@@ -603,14 +596,17 @@ impl Inliner<'tcx> {
         // FIXME: Analysis of the usage of the arguments to avoid
         // unnecessary temporaries.
 
-        if let Operand::Move(Place::Base(PlaceBase::Local(local))) = arg {
+        if let Operand::Move(Place {
+            base: PlaceBase::Local(local),
+            projection: None,
+        }) = arg {
             if caller_body.local_kind(local) == LocalKind::Temp {
                 // Reuse the operand if it's a temporary already
                 return local;
             }
         }
 
-        debug!("Creating temp for argument {:?}", arg);
+        debug!("creating temp for argument {:?}", arg);
         // Otherwise, create a temporary for the arg
         let arg = Rvalue::Use(arg);
 
@@ -659,7 +655,7 @@ struct Integrator<'a, 'tcx> {
 impl<'a, 'tcx> Integrator<'a, 'tcx> {
     fn update_target(&self, tgt: BasicBlock) -> BasicBlock {
         let new = BasicBlock::new(tgt.index() + self.block_idx);
-        debug!("Updating target `{:?}`, new: `{:?}`", tgt, new);
+        debug!("updating target `{:?}`, new: `{:?}`", tgt, new);
         new
     }
 }
@@ -671,7 +667,10 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
                    _location: Location) {
         if *local == RETURN_PLACE {
             match self.destination {
-                Place::Base(PlaceBase::Local(l)) => {
+                Place {
+                    base: PlaceBase::Local(l),
+                    projection: None,
+                } => {
                     *local = l;
                     return;
                 },
@@ -692,13 +691,20 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
                     _location: Location) {
 
         match place {
-            Place::Base(PlaceBase::Local(RETURN_PLACE)) => {
+            Place {
+                base: PlaceBase::Local(RETURN_PLACE),
+                projection: None,
+            } => {
                 // Return pointer; update the place itself
                 *place = self.destination.clone();
             },
-            Place::Base(
-                PlaceBase::Static(box Static { kind: StaticKind::Promoted(promoted), .. })
-            ) => {
+            Place {
+                base: PlaceBase::Static(box Static {
+                    kind: StaticKind::Promoted(promoted),
+                    ..
+                }),
+                projection: None,
+            } => {
                 if let Some(p) = self.promoted_map.get(*promoted).cloned() {
                     *promoted = p;
                 }

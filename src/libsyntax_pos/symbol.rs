@@ -7,7 +7,7 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_data_structures::newtype_index;
 use rustc_macros::symbols;
-use serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 
 use std::cmp::{PartialEq, Ordering, PartialOrd, Ord};
 use std::fmt;
@@ -16,6 +16,9 @@ use std::str;
 
 use crate::hygiene::SyntaxContext;
 use crate::{Span, DUMMY_SP, GLOBALS};
+
+#[cfg(test)]
+mod tests;
 
 symbols! {
     // After modifying this list adjust `is_special`, `is_used_keyword`/`is_unused_keyword`,
@@ -95,7 +98,6 @@ symbols! {
         Auto:               "auto",
         Catch:              "catch",
         Default:            "default",
-        Existential:        "existential",
         Union:              "union",
     }
 
@@ -141,11 +143,13 @@ symbols! {
         ArgumentV1,
         arm_target_feature,
         asm,
+        assert,
         associated_consts,
         associated_type_bounds,
         associated_type_defaults,
         associated_types,
         async_await,
+        async_closure,
         attr,
         attributes,
         attr_literals,
@@ -169,11 +173,13 @@ symbols! {
         cfg,
         cfg_attr,
         cfg_attr_multi,
+        cfg_doctest,
         cfg_target_feature,
         cfg_target_has_atomic,
         cfg_target_thread_local,
         cfg_target_vendor,
         char,
+        clippy,
         clone,
         Clone,
         clone_closures,
@@ -182,8 +188,10 @@ symbols! {
         cmp,
         cmpxchg16b_target_feature,
         cold,
+        column,
         compile_error,
         compiler_builtins,
+        concat,
         concat_idents,
         conservative_impl_trait,
         console,
@@ -193,6 +201,7 @@ symbols! {
         const_fn_union,
         const_generics,
         const_indexing,
+        const_in_array_repeat_expressions,
         const_let,
         const_panic,
         const_raw_ptr_deref,
@@ -201,6 +210,7 @@ symbols! {
         contents,
         context,
         convert,
+        Copy,
         copy_closures,
         core,
         core_intrinsics,
@@ -215,7 +225,10 @@ symbols! {
         custom_inner_attributes,
         custom_test_frameworks,
         c_variadic,
+        Debug,
+        declare_lint_pass,
         decl_macro,
+        Decodable,
         Default,
         default_lib_allocator,
         default_type_parameter_fallback,
@@ -232,6 +245,7 @@ symbols! {
         doc_keyword,
         doc_masked,
         doc_spotlight,
+        doctest,
         document_private_items,
         dotdoteq_in_patterns,
         dotdot_in_tuple_patterns,
@@ -250,9 +264,12 @@ symbols! {
         eh_personality,
         eh_unwind_resume,
         enable,
+        Encodable,
+        env,
         eq,
         err,
         Err,
+        Eq,
         Equal,
         except,
         exclusive_range_pattern,
@@ -281,6 +298,7 @@ symbols! {
         fmt_internals,
         fn_must_use,
         forbid,
+        format_args,
         format_args_nl,
         from,
         From,
@@ -325,12 +343,15 @@ symbols! {
         if_while_or_patterns,
         ignore,
         impl_header_lifetime_elision,
+        impl_lint_pass,
         impl_trait_in_bindings,
         import_shadowing,
         index,
         index_mut,
         in_band_lifetimes,
         include,
+        include_bytes,
+        include_str,
         inclusive_range_syntax,
         infer_outlives_requirements,
         infer_static_outlives_requirements,
@@ -359,6 +380,7 @@ symbols! {
         lhs,
         lib,
         lifetime,
+        line,
         link,
         linkage,
         link_args,
@@ -366,6 +388,7 @@ symbols! {
         link_llvm_intrinsics,
         link_name,
         link_section,
+        LintPass,
         lint_reasons,
         literal,
         local_inner_macros,
@@ -389,6 +412,7 @@ symbols! {
         match_beginning_vert,
         match_default_bindings,
         may_dangle,
+        mem,
         member_constraints,
         message,
         meta,
@@ -397,6 +421,7 @@ symbols! {
         mips_target_feature,
         mmx_target_feature,
         module,
+        module_path,
         more_struct_aliases,
         movbe_target_feature,
         must_use,
@@ -442,6 +467,7 @@ symbols! {
         optin_builtin_traits,
         option,
         Option,
+        option_env,
         opt_out_copy,
         or,
         Ord,
@@ -457,6 +483,7 @@ symbols! {
         parent_trait,
         partial_cmp,
         param_attrs,
+        PartialEq,
         PartialOrd,
         passes,
         pat,
@@ -485,6 +512,7 @@ symbols! {
         proc_macro_expr,
         proc_macro_gen,
         proc_macro_hygiene,
+        proc_macro_internals,
         proc_macro_mod,
         proc_macro_non_items,
         proc_macro_path_invoc,
@@ -527,20 +555,21 @@ symbols! {
         rust_2018_preview,
         rust_begin_unwind,
         rustc,
+        RustcDecodable,
+        RustcEncodable,
         rustc_allocator,
         rustc_allocator_nounwind,
         rustc_allow_const_fn_ptr,
         rustc_args_required_const,
         rustc_attrs,
+        rustc_builtin_macro,
         rustc_clean,
         rustc_const_unstable,
         rustc_conversion_suggestion,
-        rustc_copy_clone_marker,
         rustc_def_path,
         rustc_deprecated,
         rustc_diagnostic_macros,
         rustc_dirty,
-        rustc_doc_only_macro,
         rustc_dummy,
         rustc_dump_env_program_clauses,
         rustc_dump_program_clauses,
@@ -552,6 +581,7 @@ symbols! {
         rustc_layout,
         rustc_layout_scalar_valid_range_end,
         rustc_layout_scalar_valid_range_start,
+        rustc_macro_transparency,
         rustc_mir,
         rustc_nonnull_optimization_guaranteed,
         rustc_object_lifetime_default,
@@ -574,9 +604,9 @@ symbols! {
         rustc_synthetic,
         rustc_test_marker,
         rustc_then_this_would_need,
-        rustc_transparent_macro,
         rustc_variance,
         rustdoc,
+        rustfmt,
         rust_eh_personality,
         rust_eh_unwind_resume,
         rust_oom,
@@ -586,7 +616,6 @@ symbols! {
         _Self,
         self_in_typedefs,
         self_struct_ctor,
-        Send,
         should_panic,
         simd,
         simd_ffi,
@@ -594,6 +623,7 @@ symbols! {
         size,
         slice_patterns,
         slicing_syntax,
+        soft,
         Some,
         specialization,
         speed,
@@ -607,7 +637,9 @@ symbols! {
         static_nobundle,
         static_recursion,
         std,
+        std_inject,
         str,
+        stringify,
         stmt,
         stmt_expr_attributes,
         stop_after_dataflow,
@@ -648,6 +680,7 @@ symbols! {
         tuple_indexing,
         Ty,
         ty,
+        type_alias_impl_trait,
         TyCtxt,
         TyKind,
         type_alias_enum_variants,
@@ -664,11 +697,11 @@ symbols! {
         underscore_imports,
         underscore_lifetimes,
         uniform_paths,
+        uninitialized,
         universal_impl_trait,
         unmarked_api,
         unreachable_code,
         unrestricted_attribute_tokens,
-        unsafe_destructor_blind_to_params,
         unsafe_no_drop_flag,
         unsized_locals,
         unsized_tuple_coercion,
@@ -696,6 +729,7 @@ symbols! {
         windows,
         windows_subsystem,
         Yield,
+        zeroed,
     }
 }
 
@@ -1315,41 +1349,5 @@ impl Decodable for InternedString {
 impl Encodable for InternedString {
     fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
         self.with(|string| s.emit_str(string))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Globals;
-    use crate::edition;
-
-    #[test]
-    fn interner_tests() {
-        let mut i: Interner = Interner::default();
-        // first one is zero:
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        // re-use gets the same entry:
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        // different string gets a different #:
-        assert_eq!(i.intern("cat"), Symbol::new(1));
-        assert_eq!(i.intern("cat"), Symbol::new(1));
-        // dog is still at zero
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        let z = i.intern("zebra");
-        assert_eq!(i.gensymed(z), Symbol::new(SymbolIndex::MAX_AS_U32));
-        // gensym of same string gets new number:
-        assert_eq!(i.gensymed(z), Symbol::new(SymbolIndex::MAX_AS_U32 - 1));
-        // gensym of *existing* string gets new number:
-        let d = i.intern("dog");
-        assert_eq!(i.gensymed(d), Symbol::new(SymbolIndex::MAX_AS_U32 - 2));
-    }
-
-    #[test]
-    fn without_first_quote_test() {
-        GLOBALS.set(&Globals::new(edition::DEFAULT_EDITION), || {
-            let i = Ident::from_str("'break");
-            assert_eq!(i.without_first_quote().name, kw::Break);
-        });
     }
 }

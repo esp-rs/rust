@@ -8,7 +8,7 @@ use rustc::ty::subst::{Subst, InternalSubsts};
 use rustc::util::nodemap::{FxHashSet, FxHashMap};
 use rustc::mir::interpret::ConstValue;
 use rustc::middle::lang_items;
-use rustc::infer::opaque_types::may_define_existential_type;
+use rustc::infer::opaque_types::may_define_opaque_type;
 
 use syntax::ast;
 use syntax::feature_gate::{self, GateIssue};
@@ -68,7 +68,7 @@ impl<'tcx> CheckWfFcxBuilder<'tcx> {
 /// We do this check as a pre-pass before checking fn bodies because if these constraints are
 /// not included it frequently leads to confusing errors in fn bodies. So it's better to check
 /// the types first.
-pub fn check_item_well_formed<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
+pub fn check_item_well_formed(tcx: TyCtxt<'_>, def_id: DefId) {
     let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
     let item = tcx.hir().expect_item(hir_id);
 
@@ -95,7 +95,7 @@ pub fn check_item_well_formed<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
         // won't be allowed unless there's an *explicit* implementation of `Send`
         // for `T`
         hir::ItemKind::Impl(_, polarity, defaultness, _, ref trait_ref, ref self_ty, _) => {
-            let is_auto = tcx.impl_trait_ref(tcx.hir().local_def_id_from_hir_id(item.hir_id))
+            let is_auto = tcx.impl_trait_ref(tcx.hir().local_def_id(item.hir_id))
                                 .map_or(false, |trait_ref| tcx.trait_is_auto(trait_ref.def_id));
             if let (hir::Defaultness::Default { .. }, true) = (defaultness, is_auto) {
                 tcx.sess.span_err(item.span, "impls of auto traits cannot be default");
@@ -156,7 +156,7 @@ pub fn check_item_well_formed<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
     }
 }
 
-pub fn check_trait_item<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
+pub fn check_trait_item(tcx: TyCtxt<'_>, def_id: DefId) {
     let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
     let trait_item = tcx.hir().expect_trait_item(hir_id);
 
@@ -167,7 +167,7 @@ pub fn check_trait_item<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
     check_associated_item(tcx, trait_item.hir_id, trait_item.span, method_sig);
 }
 
-pub fn check_impl_item<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
+pub fn check_impl_item(tcx: TyCtxt<'_>, def_id: DefId) {
     let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
     let impl_item = tcx.hir().expect_impl_item(hir_id);
 
@@ -178,8 +178,8 @@ pub fn check_impl_item<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
     check_associated_item(tcx, impl_item.hir_id, impl_item.span, method_sig);
 }
 
-fn check_associated_item<'tcx>(
-    tcx: TyCtxt<'tcx>,
+fn check_associated_item(
+    tcx: TyCtxt<'_>,
     item_id: hir::HirId,
     span: Span,
     sig_if_method: Option<&hir::MethodSig>,
@@ -188,7 +188,7 @@ fn check_associated_item<'tcx>(
 
     let code = ObligationCauseCode::MiscObligation;
     for_id(tcx, item_id, span).with_fcx(|fcx, tcx| {
-        let item = fcx.tcx.associated_item(fcx.tcx.hir().local_def_id_from_hir_id(item_id));
+        let item = fcx.tcx.associated_item(fcx.tcx.hir().local_def_id(item_id));
 
         let (mut implied_bounds, self_ty) = match item.container {
             ty::TraitContainer(_) => (vec![], fcx.tcx.mk_self_type()),
@@ -218,8 +218,8 @@ fn check_associated_item<'tcx>(
                     fcx.register_wf_obligation(ty, span, code.clone());
                 }
             }
-            ty::AssocKind::Existential => {
-                // do nothing, existential types check themselves
+            ty::AssocKind::OpaqueTy => {
+                // Do nothing: opaque types check themselves.
             }
         }
 
@@ -231,8 +231,8 @@ fn for_item<'tcx>(tcx: TyCtxt<'tcx>, item: &hir::Item) -> CheckWfFcxBuilder<'tcx
     for_id(tcx, item.hir_id, item.span)
 }
 
-fn for_id<'tcx>(tcx: TyCtxt<'tcx>, id: hir::HirId, span: Span) -> CheckWfFcxBuilder<'tcx> {
-    let def_id = tcx.hir().local_def_id_from_hir_id(id);
+fn for_id(tcx: TyCtxt<'_>, id: hir::HirId, span: Span) -> CheckWfFcxBuilder<'_> {
+    let def_id = tcx.hir().local_def_id(id);
     CheckWfFcxBuilder {
         inherited: Inherited::build(tcx, def_id),
         id,
@@ -252,7 +252,7 @@ fn check_type_defn<'tcx, F>(
 {
     for_item(tcx, item).with_fcx(|fcx, fcx_tcx| {
         let variants = lookup_fields(fcx);
-        let def_id = fcx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
+        let def_id = fcx.tcx.hir().local_def_id(item.hir_id);
         let packed = fcx.tcx.adt_def(def_id).repr.packed();
 
         for variant in &variants {
@@ -317,10 +317,10 @@ fn check_type_defn<'tcx, F>(
     });
 }
 
-fn check_trait<'tcx>(tcx: TyCtxt<'tcx>, item: &hir::Item) {
+fn check_trait(tcx: TyCtxt<'_>, item: &hir::Item) {
     debug!("check_trait: {:?}", item.hir_id);
 
-    let trait_def_id = tcx.hir().local_def_id_from_hir_id(item.hir_id);
+    let trait_def_id = tcx.hir().local_def_id(item.hir_id);
 
     let trait_def = tcx.trait_def(trait_def_id);
     if trait_def.is_marker {
@@ -340,9 +340,9 @@ fn check_trait<'tcx>(tcx: TyCtxt<'tcx>, item: &hir::Item) {
     });
 }
 
-fn check_item_fn<'tcx>(tcx: TyCtxt<'tcx>, item: &hir::Item) {
+fn check_item_fn(tcx: TyCtxt<'_>, item: &hir::Item) {
     for_item(tcx, item).with_fcx(|fcx, tcx| {
-        let def_id = fcx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
+        let def_id = fcx.tcx.hir().local_def_id(item.hir_id);
         let sig = fcx.tcx.fn_sig(def_id);
         let sig = fcx.normalize_associated_types_in(item.span, &sig);
         let mut implied_bounds = vec![];
@@ -352,8 +352,8 @@ fn check_item_fn<'tcx>(tcx: TyCtxt<'tcx>, item: &hir::Item) {
     })
 }
 
-fn check_item_type<'tcx>(
-    tcx: TyCtxt<'tcx>,
+fn check_item_type(
+    tcx: TyCtxt<'_>,
     item_id: hir::HirId,
     ty_span: Span,
     allow_foreign_ty: bool,
@@ -361,12 +361,13 @@ fn check_item_type<'tcx>(
     debug!("check_item_type: {:?}", item_id);
 
     for_id(tcx, item_id, ty_span).with_fcx(|fcx, gcx| {
-        let ty = gcx.type_of(gcx.hir().local_def_id_from_hir_id(item_id));
+        let ty = gcx.type_of(gcx.hir().local_def_id(item_id));
         let item_ty = fcx.normalize_associated_types_in(ty_span, &ty);
 
         let mut forbid_unsized = true;
         if allow_foreign_ty {
-            if let ty::Foreign(_) = fcx.tcx.struct_tail(item_ty).sty {
+            let tail = fcx.tcx.struct_tail_erasing_lifetimes(item_ty, fcx.param_env);
+            if let ty::Foreign(_) = tail.sty {
                 forbid_unsized = false;
             }
         }
@@ -394,7 +395,7 @@ fn check_impl<'tcx>(
     debug!("check_impl: {:?}", item);
 
     for_item(tcx, item).with_fcx(|fcx, tcx| {
-        let item_def_id = fcx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
+        let item_def_id = fcx.tcx.hir().local_def_id(item.hir_id);
 
         match *ast_trait_ref {
             Some(ref ast_trait_ref) => {
@@ -559,7 +560,7 @@ fn check_where_clauses<'tcx, 'fcx>(
     let mut predicates = predicates.instantiate_identity(fcx.tcx);
 
     if let Some(return_ty) = return_ty {
-        predicates.predicates.extend(check_existential_types(tcx, fcx, def_id, span, return_ty));
+        predicates.predicates.extend(check_opaque_types(tcx, fcx, def_id, span, return_ty));
     }
 
     let predicates = fcx.normalize_associated_types_in(span, &predicates);
@@ -604,14 +605,14 @@ fn check_fn_or_method<'fcx, 'tcx>(
     check_where_clauses(tcx, fcx, span, def_id, Some(sig.output()));
 }
 
-/// Checks "defining uses" of existential types to ensure that they meet the restrictions laid for
-/// "higher-order pattern unification".
+/// Checks "defining uses" of opaque `impl Trait` types to ensure that they meet the restrictions
+/// laid for "higher-order pattern unification".
 /// This ensures that inference is tractable.
-/// In particular, definitions of existential types can only use other generics as arguments,
+/// In particular, definitions of opaque types can only use other generics as arguments,
 /// and they cannot repeat an argument. Example:
 ///
 /// ```rust
-/// existential type Foo<A, B>;
+/// type Foo<A, B> = impl Bar<A, B>;
 ///
 /// // Okay -- `Foo` is applied to two distinct, generic types.
 /// fn a<T, U>() -> Foo<T, U> { .. }
@@ -623,26 +624,26 @@ fn check_fn_or_method<'fcx, 'tcx>(
 /// fn b<T>() -> Foo<T, u32> { .. }
 /// ```
 ///
-fn check_existential_types<'fcx, 'tcx>(
+fn check_opaque_types<'fcx, 'tcx>(
     tcx: TyCtxt<'tcx>,
     fcx: &FnCtxt<'fcx, 'tcx>,
     fn_def_id: DefId,
     span: Span,
     ty: Ty<'tcx>,
 ) -> Vec<ty::Predicate<'tcx>> {
-    trace!("check_existential_types(ty={:?})", ty);
+    trace!("check_opaque_types(ty={:?})", ty);
     let mut substituted_predicates = Vec::new();
     ty.fold_with(&mut ty::fold::BottomUpFolder {
         tcx: fcx.tcx,
         ty_op: |ty| {
             if let ty::Opaque(def_id, substs) = ty.sty {
-                trace!("check_existential_types: opaque_ty, {:?}, {:?}", def_id, substs);
+                trace!("check_opaque_types: opaque_ty, {:?}, {:?}", def_id, substs);
                 let generics = tcx.generics_of(def_id);
-                // Only check named existential types defined in this crate.
+                // Only check named `impl Trait` types defined in this crate.
                 if generics.parent.is_none() && def_id.is_local() {
                     let opaque_hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
-                    if may_define_existential_type(tcx, fn_def_id, opaque_hir_id) {
-                        trace!("check_existential_types: may define, generics={:#?}", generics);
+                    if may_define_opaque_type(tcx, fn_def_id, opaque_hir_id) {
+                        trace!("check_opaque_types: may define, generics={:#?}", generics);
                         let mut seen: FxHashMap<_, Vec<_>> = FxHashMap::default();
                         for (subst, param) in substs.iter().zip(&generics.params) {
                             match subst.unpack() {
@@ -653,7 +654,7 @@ fn check_existential_types<'fcx, 'tcx>(
                                         tcx.sess
                                             .struct_span_err(
                                                 span,
-                                                "non-defining existential type use \
+                                                "non-defining opaque type use \
                                                  in defining scope",
                                             )
                                             .span_note(
@@ -675,14 +676,14 @@ fn check_existential_types<'fcx, 'tcx>(
                                             .sess
                                             .struct_span_err(
                                                 span,
-                                                "non-defining existential type use \
+                                                "non-defining opaque type use \
                                                     in defining scope",
                                             )
                                             .span_label(
                                                 param_span,
-                                                "cannot use static lifetime, use a bound lifetime \
+                                                "cannot use static lifetime; use a bound lifetime \
                                                 instead or remove the lifetime parameter from the \
-                                                existential type",
+                                                opaque type",
                                             )
                                             .emit();
                                     } else {
@@ -696,7 +697,7 @@ fn check_existential_types<'fcx, 'tcx>(
                                         tcx.sess
                                             .struct_span_err(
                                                 span,
-                                                "non-defining existential type use \
+                                                "non-defining opaque type use \
                                                 in defining scope",
                                             )
                                             .span_note(
@@ -718,7 +719,7 @@ fn check_existential_types<'fcx, 'tcx>(
                                     .sess
                                     .struct_span_err(
                                         span,
-                                        "non-defining existential type use \
+                                        "non-defining opaque type use \
                                             in defining scope",
                                     ).
                                     span_note(
@@ -728,21 +729,21 @@ fn check_existential_types<'fcx, 'tcx>(
                                     .emit();
                             }
                         }
-                    } // if may_define_existential_type
+                    } // if may_define_opaque_type
 
-                    // Now register the bounds on the parameters of the existential type
+                    // Now register the bounds on the parameters of the opaque type
                     // so the parameters given by the function need to fulfill them.
                     //
-                    //     existential type Foo<T: Bar>: 'static;
+                    //     type Foo<T: Bar> = impl Baz + 'static;
                     //     fn foo<U>() -> Foo<U> { .. *}
                     //
                     // becomes
                     //
-                    //     existential type Foo<T: Bar>: 'static;
+                    //     type Foo<T: Bar> = impl Baz + 'static;
                     //     fn foo<U: Bar>() -> Foo<U> { .. *}
                     let predicates = tcx.predicates_of(def_id);
                     trace!(
-                        "check_existential_types: may define, predicates={:#?}",
+                        "check_opaque_types: may define, predicates={:#?}",
                         predicates,
                     );
                     for &(pred, _) in predicates.predicates.iter() {
@@ -752,7 +753,7 @@ fn check_existential_types<'fcx, 'tcx>(
                             substituted_predicates.push(substituted_pred);
                         }
                     }
-                } // if is_named_existential_type
+                } // if is_named_opaque_type
             } // if let Opaque
             ty
         },
@@ -768,6 +769,10 @@ fn check_method_receiver<'fcx, 'tcx>(
     method: &ty::AssocItem,
     self_ty: Ty<'tcx>,
 ) {
+    const HELP_FOR_SELF_TYPE: &str =
+        "consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, \
+         `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one \
+         of the previous types except `Self`)";
     // Check that the method has a valid receiver type, given the type `Self`.
     debug!("check_method_receiver({:?}, self_ty={:?})",
            method, self_ty);
@@ -804,7 +809,7 @@ fn check_method_receiver<'fcx, 'tcx>(
             fcx.tcx.sess.diagnostic().mut_span_err(
                 span, &format!("invalid method receiver type: {:?}", receiver_ty)
             ).note("type of `self` must be `Self` or a type that dereferences to it")
-            .help("consider changing to `self`, `&self`, `&mut self`, or `self: Box<Self>`")
+            .help(HELP_FOR_SELF_TYPE)
             .code(DiagnosticId::Error("E0307".into()))
             .emit();
         }
@@ -822,14 +827,14 @@ fn check_method_receiver<'fcx, 'tcx>(
                             the `arbitrary_self_types` feature",
                         receiver_ty,
                     ),
-                ).help("consider changing to `self`, `&self`, `&mut self`, or `self: Box<Self>`")
+                ).help(HELP_FOR_SELF_TYPE)
                 .emit();
             } else {
                 // Report error; would not have worked with `arbitrary_self_types`.
                 fcx.tcx.sess.diagnostic().mut_span_err(
                     span, &format!("invalid method receiver type: {:?}", receiver_ty)
                 ).note("type must be `Self` or a type that dereferences to it")
-                .help("consider changing to `self`, `&self`, `&mut self`, or `self: Box<Self>`")
+                .help(HELP_FOR_SELF_TYPE)
                 .code(DiagnosticId::Error("E0307".into()))
                 .emit();
             }
@@ -943,7 +948,7 @@ fn check_variances_for_type_defn<'tcx>(
     item: &hir::Item,
     hir_generics: &hir::Generics,
 ) {
-    let item_def_id = tcx.hir().local_def_id_from_hir_id(item.hir_id);
+    let item_def_id = tcx.hir().local_def_id(item.hir_id);
     let ty = tcx.type_of(item_def_id);
     if tcx.has_error_field(ty) {
         return;
@@ -980,7 +985,7 @@ fn check_variances_for_type_defn<'tcx>(
     }
 }
 
-fn report_bivariance<'tcx>(tcx: TyCtxt<'tcx>, span: Span, param_name: ast::Name) {
+fn report_bivariance(tcx: TyCtxt<'_>, span: Span, param_name: ast::Name) {
     let mut err = error_392(tcx, span, param_name);
 
     let suggested_marker_id = tcx.lang_items().phantom_data();
@@ -1023,10 +1028,10 @@ fn reject_shadowing_parameters(tcx: TyCtxt<'_>, def_id: DefId) {
 
 /// Feature gates RFC 2056 -- trivial bounds, checking for global bounds that
 /// aren't true.
-fn check_false_global_bounds<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>, span: Span, id: hir::HirId) {
+fn check_false_global_bounds(fcx: &FnCtxt<'_, '_>, span: Span, id: hir::HirId) {
     let empty_env = ty::ParamEnv::empty();
 
-    let def_id = fcx.tcx.hir().local_def_id_from_hir_id(id);
+    let def_id = fcx.tcx.hir().local_def_id(id);
     let predicates = fcx.tcx.predicates_of(def_id).predicates
         .iter()
         .map(|(p, _)| *p)
@@ -1069,19 +1074,19 @@ impl CheckTypeWellFormedVisitor<'tcx> {
 impl ParItemLikeVisitor<'tcx> for CheckTypeWellFormedVisitor<'tcx> {
     fn visit_item(&self, i: &'tcx hir::Item) {
         debug!("visit_item: {:?}", i);
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(i.hir_id);
+        let def_id = self.tcx.hir().local_def_id(i.hir_id);
         self.tcx.ensure().check_item_well_formed(def_id);
     }
 
     fn visit_trait_item(&self, trait_item: &'tcx hir::TraitItem) {
         debug!("visit_trait_item: {:?}", trait_item);
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(trait_item.hir_id);
+        let def_id = self.tcx.hir().local_def_id(trait_item.hir_id);
         self.tcx.ensure().check_trait_item_well_formed(def_id);
     }
 
     fn visit_impl_item(&self, impl_item: &'tcx hir::ImplItem) {
         debug!("visit_impl_item: {:?}", impl_item);
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(impl_item.hir_id);
+        let def_id = self.tcx.hir().local_def_id(impl_item.hir_id);
         self.tcx.ensure().check_impl_item_well_formed(def_id);
     }
 }
@@ -1101,9 +1106,11 @@ struct AdtField<'tcx> {
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn non_enum_variant(&self, struct_def: &hir::VariantData) -> AdtVariant<'tcx> {
         let fields = struct_def.fields().iter().map(|field| {
-            let field_ty = self.tcx.type_of(self.tcx.hir().local_def_id_from_hir_id(field.hir_id));
+            let field_ty = self.tcx.type_of(self.tcx.hir().local_def_id(field.hir_id));
             let field_ty = self.normalize_associated_types_in(field.span,
                                                               &field_ty);
+            let field_ty = self.resolve_vars_if_possible(&field_ty);
+            debug!("non_enum_variant: type of field {:?} is {:?}", field, field_ty);
             AdtField { ty: field_ty, span: field.span }
         })
         .collect();
@@ -1135,11 +1142,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 }
 
-fn error_392<'tcx>(
-    tcx: TyCtxt<'tcx>,
+fn error_392(
+    tcx: TyCtxt<'_>,
     span: Span,
     param_name: ast::Name,
-) -> DiagnosticBuilder<'tcx> {
+) -> DiagnosticBuilder<'_> {
     let mut err = struct_span_err!(tcx.sess, span, E0392,
                   "parameter `{}` is never used", param_name);
     err.span_label(span, "unused parameter");

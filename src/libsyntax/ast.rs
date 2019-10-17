@@ -5,8 +5,8 @@ pub use UnsafeSource::*;
 pub use crate::symbol::{Ident, Symbol as Name};
 pub use crate::util::parser::ExprPrecedence;
 
-use crate::ext::hygiene::{Mark, SyntaxContext};
-use crate::parse::token;
+use crate::ext::hygiene::{ExpnId, SyntaxContext};
+use crate::parse::token::{self, DelimToken};
 use crate::print::pprust;
 use crate::ptr::P;
 use crate::source_map::{dummy_spanned, respan, Spanned};
@@ -22,10 +22,13 @@ use syntax_pos::{Span, DUMMY_SP};
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::Lrc;
-use serialize::{self, Decoder, Encoder};
+use rustc_serialize::{self, Decoder, Encoder};
 use std::fmt;
 
 pub use rustc_target::abi::FloatTy;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Copy)]
 pub struct Label {
@@ -50,8 +53,14 @@ impl fmt::Debug for Lifetime {
             f,
             "lifetime({}: {})",
             self.id,
-            pprust::lifetime_to_string(self)
+            self
         )
+    }
+}
+
+impl fmt::Display for Lifetime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.ident.name.as_str())
     }
 }
 
@@ -245,12 +254,12 @@ mod node_id_inner {
 pub use node_id_inner::NodeId;
 
 impl NodeId {
-    pub fn placeholder_from_mark(mark: Mark) -> Self {
-        NodeId::from_u32(mark.as_u32())
+    pub fn placeholder_from_expn_id(expn_id: ExpnId) -> Self {
+        NodeId::from_u32(expn_id.as_u32())
     }
 
-    pub fn placeholder_to_mark(self) -> Mark {
-        Mark::from_u32(self.as_u32())
+    pub fn placeholder_to_expn_id(self) -> ExpnId {
+        ExpnId::from_u32(self.as_u32())
     }
 }
 
@@ -260,13 +269,13 @@ impl fmt::Display for NodeId {
     }
 }
 
-impl serialize::UseSpecializedEncodable for NodeId {
+impl rustc_serialize::UseSpecializedEncodable for NodeId {
     fn default_encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
         s.emit_u32(self.as_u32())
     }
 }
 
-impl serialize::UseSpecializedDecodable for NodeId {
+impl rustc_serialize::UseSpecializedDecodable for NodeId {
     fn default_decode<D: Decoder>(d: &mut D) -> Result<NodeId, D::Error> {
         d.read_u32().map(NodeId::from_u32)
     }
@@ -513,21 +522,28 @@ impl fmt::Debug for Pat {
 }
 
 impl Pat {
+    /// Attempt reparsing the pattern as a type.
+    /// This is intended for use by diagnostics.
     pub(super) fn to_ty(&self) -> Option<P<Ty>> {
         let node = match &self.node {
+            // In a type expression `_` is an inference variable.
             PatKind::Wild => TyKind::Infer,
+            // An IDENT pattern with no binding mode would be valid as path to a type. E.g. `u32`.
             PatKind::Ident(BindingMode::ByValue(Mutability::Immutable), ident, None) => {
                 TyKind::Path(None, Path::from_ident(*ident))
             }
             PatKind::Path(qself, path) => TyKind::Path(qself.clone(), path.clone()),
             PatKind::Mac(mac) => TyKind::Mac(mac.clone()),
+            // `&mut? P` can be reinterpreted as `&mut? T` where `T` is `P` reparsed as a type.
             PatKind::Ref(pat, mutbl) => pat
                 .to_ty()
                 .map(|ty| TyKind::Rptr(None, MutTy { ty, mutbl: *mutbl }))?,
-            PatKind::Slice(pats, None, _) if pats.len() == 1 => {
-                pats[0].to_ty().map(TyKind::Slice)?
-            }
-            PatKind::Tuple(pats, None) => {
+            // A slice/array pattern `[P]` can be reparsed as `[T]`, an unsized array,
+            // when `P` can be reparsed as a type `T`.
+            PatKind::Slice(pats) if pats.len() == 1 => pats[0].to_ty().map(TyKind::Slice)?,
+            // A tuple pattern `(P0, .., Pn)` can be reparsed as `(T0, .., Tn)`
+            // assuming `T0` to `Tn` are all syntactically valid as types.
+            PatKind::Tuple(pats) => {
                 let mut tys = Vec::with_capacity(pats.len());
                 // FIXME(#48994) - could just be collected into an Option<Vec>
                 for pat in pats {
@@ -553,24 +569,28 @@ impl Pat {
             return false;
         }
 
-        match self.node {
-            PatKind::Ident(_, _, Some(ref p)) => p.walk(it),
-            PatKind::Struct(_, ref fields, _) => fields.iter().all(|field| field.node.pat.walk(it)),
-            PatKind::TupleStruct(_, ref s, _) | PatKind::Tuple(ref s, _) => {
+        match &self.node {
+            PatKind::Ident(_, _, Some(p)) => p.walk(it),
+            PatKind::Struct(_, fields, _) => fields.iter().all(|field| field.node.pat.walk(it)),
+            PatKind::TupleStruct(_, s) | PatKind::Tuple(s) | PatKind::Slice(s) => {
                 s.iter().all(|p| p.walk(it))
             }
-            PatKind::Box(ref s) | PatKind::Ref(ref s, _) | PatKind::Paren(ref s) => s.walk(it),
-            PatKind::Slice(ref before, ref slice, ref after) => {
-                before.iter().all(|p| p.walk(it))
-                    && slice.iter().all(|p| p.walk(it))
-                    && after.iter().all(|p| p.walk(it))
-            }
+            PatKind::Box(s) | PatKind::Ref(s, _) | PatKind::Paren(s) => s.walk(it),
             PatKind::Wild
+            | PatKind::Rest
             | PatKind::Lit(_)
             | PatKind::Range(..)
             | PatKind::Ident(..)
             | PatKind::Path(..)
             | PatKind::Mac(_) => true,
+        }
+    }
+
+    /// Is this a `..` pattern?
+    pub fn is_rest(&self) -> bool {
+        match self.node {
+            PatKind::Rest => true,
+            _ => false,
         }
     }
 }
@@ -624,9 +644,7 @@ pub enum PatKind {
     Struct(Path, Vec<Spanned<FieldPat>>, /* recovered */ bool),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
-    /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
-    /// `0 <= position <= subpats.len()`.
-    TupleStruct(Path, Vec<P<Pat>>, Option<usize>),
+    TupleStruct(Path, Vec<P<Pat>>),
 
     /// A possibly qualified path pattern.
     /// Unqualified path patterns `A::B::C` can legally refer to variants, structs, constants
@@ -635,9 +653,7 @@ pub enum PatKind {
     Path(Option<QSelf>, Path),
 
     /// A tuple pattern (`(a, b)`).
-    /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
-    /// `0 <= position <= subpats.len()`.
-    Tuple(Vec<P<Pat>>, Option<usize>),
+    Tuple(Vec<P<Pat>>),
 
     /// A `box` pattern.
     Box(P<Pat>),
@@ -651,9 +667,22 @@ pub enum PatKind {
     /// A range pattern (e.g., `1...2`, `1..=2` or `1..2`).
     Range(P<Expr>, P<Expr>, Spanned<RangeEnd>),
 
-    /// `[a, b, ..i, y, z]` is represented as:
-    ///     `PatKind::Slice(box [a, b], Some(i), box [y, z])`
-    Slice(Vec<P<Pat>>, Option<P<Pat>>, Vec<P<Pat>>),
+    /// A slice pattern `[a, b, c]`.
+    Slice(Vec<P<Pat>>),
+
+    /// A rest pattern `..`.
+    ///
+    /// Syntactically it is valid anywhere.
+    ///
+    /// Semantically however, it only has meaning immediately inside:
+    /// - a slice pattern: `[a, .., b]`,
+    /// - a binding pattern immediately inside a slice pattern: `[a, r @ ..]`,
+    /// - a tuple pattern: `(a, .., b)`,
+    /// - a tuple struct/variant pattern: `$path(a, .., b)`.
+    ///
+    /// In all of these cases, an additional restriction applies,
+    /// only one rest pattern may occur in the pattern sequences.
+    Rest,
 
     /// Parentheses in patterns used for grouping (i.e., `(PAT)`).
     Paren(P<Pat>),
@@ -1152,7 +1181,7 @@ pub enum ExprKind {
     /// preexisting defs.
     Async(CaptureBy, NodeId, P<Block>),
     /// An await expression (`my_future.await`).
-    Await(AwaitOrigin, P<Expr>),
+    Await(P<Expr>),
 
     /// A try block (`try { ... }`).
     TryBlock(P<Block>),
@@ -1255,15 +1284,6 @@ pub enum Movability {
     Movable,
 }
 
-/// Whether an `await` comes from `await!` or `.await` syntax.
-/// FIXME: this should be removed when support for legacy `await!` is removed.
-/// https://github.com/rust-lang/rust/issues/60610
-#[derive(Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, Copy)]
-pub enum AwaitOrigin {
-    FieldLike,
-    MacroLike,
-}
-
 pub type Mac = Spanned<Mac_>;
 
 /// Represents a macro invocation. The `Path` indicates which macro
@@ -1277,6 +1297,7 @@ pub struct Mac_ {
     pub path: Path,
     pub delim: MacDelimiter,
     pub tts: TokenStream,
+    pub prior_type_ascription: Option<(Span, bool)>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Debug)]
@@ -1289,6 +1310,16 @@ pub enum MacDelimiter {
 impl Mac_ {
     pub fn stream(&self) -> TokenStream {
         self.tts.clone()
+    }
+}
+
+impl MacDelimiter {
+    crate fn to_token(self) -> DelimToken {
+        match self {
+            MacDelimiter::Parenthesis => DelimToken::Paren,
+            MacDelimiter::Bracket => DelimToken::Bracket,
+            MacDelimiter::Brace => DelimToken::Brace,
+        }
     }
 }
 
@@ -1449,6 +1480,7 @@ pub enum TraitItemKind {
     Macro(Mac),
 }
 
+/// Represents anything within an `impl` block.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct ImplItem {
     pub id: NodeId,
@@ -1463,12 +1495,13 @@ pub struct ImplItem {
     pub tokens: Option<TokenStream>,
 }
 
+/// Represents various kinds of content within an `impl`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum ImplItemKind {
     Const(P<Ty>, P<Expr>),
     Method(MethodSig, P<Block>),
-    Type(P<Ty>),
-    Existential(GenericBounds),
+    TyAlias(P<Ty>),
+    OpaqueTy(GenericBounds),
     Macro(Mac),
 }
 
@@ -1671,7 +1704,7 @@ pub enum TyKind {
     ///
     /// The `NodeId` exists to prevent lowering from having to
     /// generate `NodeId`s on the fly, which would complicate
-    /// the generation of `existential type` items significantly.
+    /// the generation of opaque `type Foo = impl Trait` items significantly.
     ImplTrait(NodeId, GenericBounds),
     /// No-op; kept solely so that we can pretty-print faithfully.
     Paren(P<Ty>),
@@ -1760,6 +1793,7 @@ pub struct Arg {
     pub ty: P<Ty>,
     pub pat: P<Pat>,
     pub id: NodeId,
+    pub span: Span,
 }
 
 /// Alternative representation for `Arg`s describing `self` parameter of methods.
@@ -1818,6 +1852,7 @@ impl Arg {
                 node: PatKind::Ident(BindingMode::ByValue(mutbl), eself_ident, None),
                 span,
             }),
+            span,
             ty,
             id: DUMMY_NODE_ID,
         };
@@ -2066,9 +2101,7 @@ pub enum AttrStyle {
     Inner,
 }
 
-#[derive(
-    Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug, PartialOrd, Ord, Copy,
-)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Copy)]
 pub struct AttrId(pub usize);
 
 impl Idx for AttrId {
@@ -2077,6 +2110,18 @@ impl Idx for AttrId {
     }
     fn index(self) -> usize {
         self.0
+    }
+}
+
+impl rustc_serialize::Encodable for AttrId {
+    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
+        s.emit_unit()
+    }
+}
+
+impl rustc_serialize::Decodable for AttrId {
+    fn decode<D: Decoder>(d: &mut D) -> Result<AttrId, D::Error> {
+        d.read_nil().map(|_| crate::attr::mk_attr_id())
     }
 }
 
@@ -2292,11 +2337,11 @@ pub enum ItemKind {
     /// A type alias (`type` or `pub type`).
     ///
     /// E.g., `type Foo = Bar<u8>;`.
-    Ty(P<Ty>, Generics),
-    /// An existential type declaration (`existential type`).
+    TyAlias(P<Ty>, Generics),
+    /// An opaque `impl Trait` type alias.
     ///
-    /// E.g., `existential type Foo: Bar + Boo;`.
-    Existential(GenericBounds, Generics),
+    /// E.g., `type Foo = impl Bar + Boo;`.
+    OpaqueTy(GenericBounds, Generics),
     /// An enum definition (`enum` or `pub enum`).
     ///
     /// E.g., `enum Foo<A, B> { C<A>, D<B> }`.
@@ -2349,8 +2394,8 @@ impl ItemKind {
             ItemKind::Mod(..) => "module",
             ItemKind::ForeignMod(..) => "foreign module",
             ItemKind::GlobalAsm(..) => "global asm",
-            ItemKind::Ty(..) => "type alias",
-            ItemKind::Existential(..) => "existential type",
+            ItemKind::TyAlias(..) => "type alias",
+            ItemKind::OpaqueTy(..) => "opaque type",
             ItemKind::Enum(..) => "enum",
             ItemKind::Struct(..) => "struct",
             ItemKind::Union(..) => "union",
@@ -2392,18 +2437,5 @@ impl ForeignItemKind {
             ForeignItemKind::Ty => "foreign type",
             ForeignItemKind::Macro(..) => "macro in foreign module",
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serialize;
-
-    // Are ASTs encodable?
-    #[test]
-    fn check_asts_encodable() {
-        fn assert_encodable<T: serialize::Encodable>() {}
-        assert_encodable::<Crate>();
     }
 }

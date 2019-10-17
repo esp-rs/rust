@@ -364,7 +364,7 @@ where
         // been fully instantiated and hence the set of scopes we have
         // doesn't matter -- just to be sure, put an empty vector
         // in there.
-        let old_a_scopes = ::std::mem::replace(pair.vid_scopes(self), vec![]);
+        let old_a_scopes = ::std::mem::take(pair.vid_scopes(self));
 
         // Relate the generalized kind to the original one.
         let result = pair.relate_generalized_ty(self, generalized_ty);
@@ -501,6 +501,9 @@ where
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.infcx.tcx
     }
+
+    // FIXME(oli-obk): not sure how to get the correct ParamEnv
+    fn param_env(&self) -> ty::ParamEnv<'tcx> { ty::ParamEnv::empty() }
 
     fn tag(&self) -> &'static str {
         "nll::subtype"
@@ -830,6 +833,9 @@ where
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.infcx.tcx
     }
+
+    // FIXME(oli-obk): not sure how to get the correct ParamEnv
+    fn param_env(&self) -> ty::ParamEnv<'tcx> { ty::ParamEnv::empty() }
 
     fn tag(&self) -> &'static str {
         "nll::generalizer"

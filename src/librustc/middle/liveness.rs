@@ -93,12 +93,12 @@
 //!   It is the responsibility of typeck to ensure that there are no
 //!   `return` expressions in a function declared as diverging.
 
-use self::LoopKind::*;
 use self::LiveNodeKind::*;
 use self::VarKind::*;
 
 use crate::hir::def::*;
 use crate::hir::Node;
+use crate::hir::ptr::P;
 use crate::ty::{self, TyCtxt};
 use crate::ty::query::Providers;
 use crate::lint;
@@ -111,7 +111,6 @@ use std::io::prelude::*;
 use std::io;
 use std::rc::Rc;
 use syntax::ast;
-use syntax::ptr::P;
 use syntax::symbol::{kw, sym};
 use syntax_pos::Span;
 
@@ -119,14 +118,6 @@ use crate::hir;
 use crate::hir::{Expr, HirId};
 use crate::hir::def_id::DefId;
 use crate::hir::intravisit::{self, Visitor, FnKind, NestedVisitorMap};
-
-/// For use with `propagate_through_loop`.
-enum LoopKind<'a> {
-    /// An endless `loop` loop.
-    LoopLoop,
-    /// A `while` loop, with the given expression as condition.
-    WhileLoop(&'a Expr),
-}
 
 #[derive(Copy, Clone, PartialEq)]
 struct Variable(u32);
@@ -181,7 +172,7 @@ impl<'tcx> Visitor<'tcx> for IrMaps<'tcx> {
     fn visit_arm(&mut self, a: &'tcx hir::Arm) { visit_arm(self, a); }
 }
 
-fn check_mod_liveness<'tcx>(tcx: TyCtxt<'tcx>, module_def_id: DefId) {
+fn check_mod_liveness(tcx: TyCtxt<'_>, module_def_id: DefId) {
     tcx.hir().visit_item_likes_in_module(
         module_def_id,
         &mut IrMaps::new(tcx, module_def_id).as_deep_visitor(),
@@ -363,7 +354,7 @@ fn visit_fn<'tcx>(
     debug!("visit_fn");
 
     // swap in a new set of IR maps for this function body:
-    let def_id = ir.tcx.hir().local_def_id_from_hir_id(id);
+    let def_id = ir.tcx.hir().local_def_id(id);
     let mut fn_maps = IrMaps::new(ir.tcx, def_id);
 
     // Don't run unused pass for #[derive()]
@@ -494,7 +485,7 @@ fn visit_expr<'tcx>(ir: &mut IrMaps<'tcx>, expr: &'tcx Expr) {
         // in better error messages than just pointing at the closure
         // construction site.
         let mut call_caps = Vec::new();
-        let closure_def_id = ir.tcx.hir().local_def_id_from_hir_id(expr.hir_id);
+        let closure_def_id = ir.tcx.hir().local_def_id(expr.hir_id);
         if let Some(upvars) = ir.tcx.upvars(closure_def_id) {
             let parent_upvars = ir.tcx.upvars(ir.body_owner);
             call_caps.extend(upvars.iter().filter_map(|(&var_id, upvar)| {
@@ -517,7 +508,6 @@ fn visit_expr<'tcx>(ir: &mut IrMaps<'tcx>, expr: &'tcx Expr) {
 
       // live nodes required for interesting control flow:
       hir::ExprKind::Match(..) |
-      hir::ExprKind::While(..) |
       hir::ExprKind::Loop(..) => {
         ir.add_live_node_for_node(expr.hir_id, ExprNode(expr.span));
         intravisit::walk_expr(ir, expr);
@@ -1055,14 +1045,10 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                 })
             }
 
-            hir::ExprKind::While(ref cond, ref blk, _) => {
-                self.propagate_through_loop(expr, WhileLoop(&cond), &blk, succ)
-            }
-
             // Note that labels have been resolved, so we don't need to look
             // at the label ident
             hir::ExprKind::Loop(ref blk, _, _) => {
-                self.propagate_through_loop(expr, LoopLoop, &blk, succ)
+                self.propagate_through_loop(expr, &blk, succ)
             }
 
             hir::ExprKind::Match(ref e, ref arms, _) => {
@@ -1353,74 +1339,44 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
         }
     }
 
-    fn propagate_through_loop(&mut self,
-                              expr: &Expr,
-                              kind: LoopKind<'_>,
-                              body: &hir::Block,
-                              succ: LiveNode)
-                              -> LiveNode {
+    fn propagate_through_loop(
+        &mut self,
+        expr: &Expr,
+        body: &hir::Block,
+        succ: LiveNode
+    ) -> LiveNode {
         /*
-
         We model control flow like this:
 
-              (cond) <--+
-                |       |
-                v       |
-          +-- (expr)    |
-          |     |       |
-          |     v       |
-          |   (body) ---+
-          |
-          |
-          v
-        (succ)
+              (expr) <-+
+                |      |
+                v      |
+              (body) --+
 
+        Note that a `continue` expression targeting the `loop` will have a successor of `expr`.
+        Meanwhile, a `break` expression will have a successor of `succ`.
         */
-
 
         // first iteration:
         let mut first_merge = true;
         let ln = self.live_node(expr.hir_id, expr.span);
         self.init_empty(ln, succ);
-        match kind {
-            LoopLoop => {}
-            _ => {
-                // If this is not a `loop` loop, then it's possible we bypass
-                // the body altogether. Otherwise, the only way is via a `break`
-                // in the loop body.
-                self.merge_from_succ(ln, succ, first_merge);
-                first_merge = false;
-            }
-        }
         debug!("propagate_through_loop: using id for loop body {} {}",
                expr.hir_id, self.ir.tcx.hir().hir_to_pretty_string(body.hir_id));
 
         self.break_ln.insert(expr.hir_id, succ);
 
-        let cond_ln = match kind {
-            LoopLoop => ln,
-            WhileLoop(ref cond) => self.propagate_through_expr(&cond, ln),
-        };
+        self.cont_ln.insert(expr.hir_id, ln);
 
-        self.cont_ln.insert(expr.hir_id, cond_ln);
-
-        let body_ln = self.propagate_through_block(body, cond_ln);
+        let body_ln = self.propagate_through_block(body, ln);
 
         // repeat until fixed point is reached:
         while self.merge_from_succ(ln, body_ln, first_merge) {
             first_merge = false;
-
-            let new_cond_ln = match kind {
-                LoopLoop => ln,
-                WhileLoop(ref cond) => {
-                    self.propagate_through_expr(&cond, ln)
-                }
-            };
-            assert_eq!(cond_ln, new_cond_ln);
-            assert_eq!(body_ln, self.propagate_through_block(body, cond_ln));
+            assert_eq!(body_ln, self.propagate_through_block(body, ln));
         }
 
-        cond_ln
+        ln
     }
 }
 
@@ -1520,7 +1476,7 @@ fn check_expr<'a, 'tcx>(this: &mut Liveness<'a, 'tcx>, expr: &'tcx Expr) {
 
         // no correctness conditions related to liveness
         hir::ExprKind::Call(..) | hir::ExprKind::MethodCall(..) |
-        hir::ExprKind::Match(..) | hir::ExprKind::While(..) | hir::ExprKind::Loop(..) |
+        hir::ExprKind::Match(..) | hir::ExprKind::Loop(..) |
         hir::ExprKind::Index(..) | hir::ExprKind::Field(..) |
         hir::ExprKind::Array(..) | hir::ExprKind::Tup(..) | hir::ExprKind::Binary(..) |
         hir::ExprKind::Cast(..) | hir::ExprKind::DropTemps(..) | hir::ExprKind::Unary(..) |

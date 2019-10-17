@@ -124,6 +124,8 @@ rustc_queries! {
                 mir.map(|x| &*tcx.arena.alloc(x))
             }
         }
+
+        query promoted_mir(key: DefId) -> &'tcx IndexVec<mir::Promoted, mir::Body<'tcx>> { }
     }
 
     TypeChecking {
@@ -422,11 +424,6 @@ rustc_queries! {
                 "const-evaluating `{}`",
                 tcx.def_path_str(key.value.instance.def.def_id())
             }
-            cache_on_disk_if(_, opt_result) {
-                // Only store results without errors
-                // FIXME: We never store these
-                opt_result.map_or(true, |r| r.is_ok())
-            }
         }
 
         /// Results of evaluating const items or constants embedded in
@@ -464,7 +461,7 @@ rustc_queries! {
     }
 
     TypeChecking {
-        query check_match(key: DefId) -> () {
+        query check_match(key: DefId) -> SignalledError {
             cache_on_disk_if { key.is_local() }
         }
 
@@ -646,11 +643,11 @@ rustc_queries! {
         }
         query is_sanitizer_runtime(_: CrateNum) -> bool {
             fatal_cycle
-            desc { "query a crate is #![sanitizer_runtime]" }
+            desc { "query a crate is `#![sanitizer_runtime]`" }
         }
         query is_profiler_runtime(_: CrateNum) -> bool {
             fatal_cycle
-            desc { "query a crate is #![profiler_runtime]" }
+            desc { "query a crate is `#![profiler_runtime]`" }
         }
         query panic_strategy(_: CrateNum) -> PanicStrategy {
             fatal_cycle
@@ -658,7 +655,7 @@ rustc_queries! {
         }
         query is_no_builtins(_: CrateNum) -> bool {
             fatal_cycle
-            desc { "test whether a crate has #![no_builtins]" }
+            desc { "test whether a crate has `#![no_builtins]`" }
         }
         query symbol_mangling_version(_: CrateNum) -> SymbolManglingVersion {
             fatal_cycle

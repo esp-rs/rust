@@ -5,16 +5,9 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
 #![feature(crate_visibility_modifier)]
-#![allow(unused_attributes)]
 #![cfg_attr(unix, feature(libc))]
 #![feature(nll)]
 #![feature(optin_builtin_traits)]
-#![deny(rust_2018_idioms)]
-#![deny(internal)]
-#![deny(unused_lifetimes)]
-
-#[allow(unused_extern_crates)]
-extern crate serialize as rustc_serialize; // used by deriving
 
 pub use emitter::ColorConfig;
 
@@ -230,7 +223,8 @@ impl CodeSuggestion {
                         }
                     }
                     if let Some(cur_line) = fm.get_line(cur_lo.line - 1) {
-                        buf.push_str(&cur_line[..cur_lo.col.to_usize()]);
+                        let end = std::cmp::min(cur_line.len(), cur_lo.col.to_usize());
+                        buf.push_str(&cur_line[..end]);
                     }
                 }
                 buf.push_str(&part.snippet);
@@ -438,14 +432,14 @@ impl Handler {
         self.err_count.store(0, SeqCst);
     }
 
-    pub fn struct_dummy<'a>(&'a self) -> DiagnosticBuilder<'a> {
+    pub fn struct_dummy(&self) -> DiagnosticBuilder<'_> {
         DiagnosticBuilder::new(self, Level::Cancelled, "")
     }
 
-    pub fn struct_span_warn<'a, S: Into<MultiSpan>>(&'a self,
-                                                    sp: S,
-                                                    msg: &str)
-                                                    -> DiagnosticBuilder<'a> {
+    pub fn struct_span_warn<S: Into<MultiSpan>>(&self,
+                                                sp: S,
+                                                msg: &str)
+                                                -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Warning, msg);
         result.set_span(sp);
         if !self.flags.can_emit_warnings {
@@ -453,11 +447,11 @@ impl Handler {
         }
         result
     }
-    pub fn struct_span_warn_with_code<'a, S: Into<MultiSpan>>(&'a self,
-                                                              sp: S,
-                                                              msg: &str,
-                                                              code: DiagnosticId)
-                                                              -> DiagnosticBuilder<'a> {
+    pub fn struct_span_warn_with_code<S: Into<MultiSpan>>(&self,
+                                                          sp: S,
+                                                          msg: &str,
+                                                          code: DiagnosticId)
+                                                          -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Warning, msg);
         result.set_span(sp);
         result.code(code);
@@ -466,63 +460,63 @@ impl Handler {
         }
         result
     }
-    pub fn struct_warn<'a>(&'a self, msg: &str) -> DiagnosticBuilder<'a> {
+    pub fn struct_warn(&self, msg: &str) -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Warning, msg);
         if !self.flags.can_emit_warnings {
             result.cancel();
         }
         result
     }
-    pub fn struct_span_err<'a, S: Into<MultiSpan>>(&'a self,
-                                                   sp: S,
-                                                   msg: &str)
-                                                   -> DiagnosticBuilder<'a> {
+    pub fn struct_span_err<S: Into<MultiSpan>>(&self,
+                                               sp: S,
+                                               msg: &str)
+                                               -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Error, msg);
         result.set_span(sp);
         result
     }
-    pub fn struct_span_err_with_code<'a, S: Into<MultiSpan>>(&'a self,
-                                                             sp: S,
-                                                             msg: &str,
-                                                             code: DiagnosticId)
-                                                             -> DiagnosticBuilder<'a> {
+    pub fn struct_span_err_with_code<S: Into<MultiSpan>>(&self,
+                                                         sp: S,
+                                                         msg: &str,
+                                                         code: DiagnosticId)
+                                                         -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Error, msg);
         result.set_span(sp);
         result.code(code);
         result
     }
     // FIXME: This method should be removed (every error should have an associated error code).
-    pub fn struct_err<'a>(&'a self, msg: &str) -> DiagnosticBuilder<'a> {
+    pub fn struct_err(&self, msg: &str) -> DiagnosticBuilder<'_> {
         DiagnosticBuilder::new(self, Level::Error, msg)
     }
-    pub fn struct_err_with_code<'a>(
-        &'a self,
+    pub fn struct_err_with_code(
+        &self,
         msg: &str,
         code: DiagnosticId,
-    ) -> DiagnosticBuilder<'a> {
+    ) -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Error, msg);
         result.code(code);
         result
     }
-    pub fn struct_span_fatal<'a, S: Into<MultiSpan>>(&'a self,
-                                                     sp: S,
-                                                     msg: &str)
-                                                     -> DiagnosticBuilder<'a> {
+    pub fn struct_span_fatal<S: Into<MultiSpan>>(&self,
+                                                 sp: S,
+                                                 msg: &str)
+                                                 -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Fatal, msg);
         result.set_span(sp);
         result
     }
-    pub fn struct_span_fatal_with_code<'a, S: Into<MultiSpan>>(&'a self,
-                                                               sp: S,
-                                                               msg: &str,
-                                                               code: DiagnosticId)
-                                                               -> DiagnosticBuilder<'a> {
+    pub fn struct_span_fatal_with_code<S: Into<MultiSpan>>(&self,
+                                                           sp: S,
+                                                           msg: &str,
+                                                           code: DiagnosticId)
+                                                           -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Fatal, msg);
         result.set_span(sp);
         result.code(code);
         result
     }
-    pub fn struct_fatal<'a>(&'a self, msg: &str) -> DiagnosticBuilder<'a> {
+    pub fn struct_fatal(&self, msg: &str) -> DiagnosticBuilder<'_> {
         DiagnosticBuilder::new(self, Level::Fatal, msg)
     }
 
@@ -563,10 +557,10 @@ impl Handler {
     pub fn span_err<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
         self.emit(&sp.into(), msg, Error);
     }
-    pub fn mut_span_err<'a, S: Into<MultiSpan>>(&'a self,
-                                                sp: S,
-                                                msg: &str)
-                                                -> DiagnosticBuilder<'a> {
+    pub fn mut_span_err<S: Into<MultiSpan>>(&self,
+                                            sp: S,
+                                            msg: &str)
+                                            -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Error, msg);
         result.set_span(sp);
         result
@@ -605,10 +599,10 @@ impl Handler {
     pub fn span_note_without_error<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
         self.emit(&sp.into(), msg, Note);
     }
-    pub fn span_note_diag<'a>(&'a self,
-                              sp: Span,
-                              msg: &str)
-                              -> DiagnosticBuilder<'a> {
+    pub fn span_note_diag(&self,
+                          sp: Span,
+                          msg: &str)
+                          -> DiagnosticBuilder<'_> {
         let mut db = DiagnosticBuilder::new(self, Note, msg);
         db.set_span(sp);
         db

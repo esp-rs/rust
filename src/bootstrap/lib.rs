@@ -103,8 +103,9 @@
 //! More documentation can be found in each respective module below, and you can
 //! also check out the `src/bootstrap/README.md` file for more information.
 
-#![deny(rust_2018_idioms)]
-#![deny(warnings)]
+// NO-RUSTC-WRAPPER
+#![deny(warnings, rust_2018_idioms, unused_lifetimes)]
+
 #![feature(core_intrinsics)]
 #![feature(drain_filter)]
 
@@ -124,11 +125,11 @@ use std::os::unix::fs::symlink as symlink_file;
 use std::os::windows::fs::symlink_file;
 
 use build_helper::{
-    mtime, output, run_silent, run_suppressed, t, try_run_silent, try_run_suppressed,
+    mtime, output, run, run_suppressed, t, try_run, try_run_suppressed,
 };
 use filetime::FileTime;
 
-use crate::util::{exe, libdir, OutputFolder, CiEnv};
+use crate::util::{exe, libdir, CiEnv};
 
 mod cc_detect;
 mod channel;
@@ -539,9 +540,7 @@ impl Build {
             Mode::Rustc => "-rustc",
             Mode::Codegen => "-codegen",
             Mode::ToolBootstrap => "-bootstrap-tools",
-            Mode::ToolStd => "-tools",
-            Mode::ToolTest => "-tools",
-            Mode::ToolRustc => "-tools",
+            Mode::ToolStd | Mode::ToolTest | Mode::ToolRustc => "-tools",
         };
         self.out.join(&*compiler.host)
                 .join(format!("stage{}{}", compiler.stage, suffix))
@@ -681,7 +680,7 @@ impl Build {
     fn run(&self, cmd: &mut Command) {
         if self.config.dry_run { return; }
         self.verbose(&format!("running: {:?}", cmd));
-        run_silent(cmd)
+        run(cmd)
     }
 
     /// Runs a command, printing out nice contextual information if it fails.
@@ -697,7 +696,7 @@ impl Build {
     fn try_run(&self, cmd: &mut Command) -> bool {
         if self.config.dry_run { return true; }
         self.verbose(&format!("running: {:?}", cmd));
-        try_run_silent(cmd)
+        try_run(cmd)
     }
 
     /// Runs a command, printing out nice contextual information if it fails.
@@ -1092,19 +1091,6 @@ impl Build {
         }
     }
 
-    /// Fold the output of the commands after this method into a group. The fold
-    /// ends when the returned object is dropped. Folding can only be used in
-    /// the Travis CI environment.
-    pub fn fold_output<D, F>(&self, name: F) -> Option<OutputFolder>
-        where D: Into<String>, F: FnOnce() -> D
-    {
-        if !self.config.dry_run && self.ci_env == CiEnv::Travis {
-            Some(OutputFolder::new(name().into()))
-        } else {
-            None
-        }
-    }
-
     /// Updates the actual toolstate of a tool.
     ///
     /// The toolstates are saved to the file specified by the key
@@ -1325,7 +1311,7 @@ fn chmod(path: &Path, perms: u32) {
 fn chmod(_path: &Path, _perms: u32) {}
 
 
-impl<'a> Compiler {
+impl Compiler {
     pub fn with_stage(mut self, stage: u32) -> Compiler {
         self.stage = stage;
         self

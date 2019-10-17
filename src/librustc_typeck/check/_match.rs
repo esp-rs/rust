@@ -5,6 +5,7 @@ use errors::{Applicability, DiagnosticBuilder};
 use rustc::hir::{self, PatKind, Pat, ExprKind};
 use rustc::hir::def::{Res, DefKind, CtorKind};
 use rustc::hir::pat_util::EnumerateAndAdjustIterator;
+use rustc::hir::ptr::P;
 use rustc::infer;
 use rustc::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc::traits::{ObligationCause, ObligationCauseCode};
@@ -12,10 +13,9 @@ use rustc::ty::{self, Ty, TypeFoldable};
 use rustc::ty::subst::Kind;
 use syntax::ast;
 use syntax::source_map::Spanned;
-use syntax::ptr::P;
 use syntax::util::lev_distance::find_best_match_for_name;
 use syntax_pos::Span;
-use syntax_pos::hygiene::CompilerDesugaringKind;
+use syntax_pos::hygiene::DesugaringKind;
 
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::cmp;
@@ -88,7 +88,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // For each ampersand peeled off, update the binding mode and push the original
             // type into the adjustments vector.
             //
-            // See the examples in `run-pass/match-defbm*.rs`.
+            // See the examples in `ui/match-defbm*.rs`.
             let mut pat_adjustments = vec![];
             while let ty::Ref(_, inner_ty, inner_mutability) = exp_ty.sty {
                 debug!("inspecting {:?}", exp_ty);
@@ -180,7 +180,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // then that's equivalent to there existing a LUB.
                 if let Some(mut err) = self.demand_suptype_diag(pat.span, expected, pat_ty) {
                     err.emit_unless(discrim_span
-                        .filter(|&s| s.is_compiler_desugaring(CompilerDesugaringKind::IfTemporary))
+                        .filter(|&s| {
+                            // In the case of `if`- and `while`-expressions we've already checked
+                            // that `scrutinee: bool`. We know that the pattern is `true`,
+                            // so an error here would be a duplicate and from the wrong POV.
+                            s.is_desugaring(DesugaringKind::CondTemporary)
+                        })
                         .is_some());
                 }
 
@@ -191,7 +196,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 let rhs_ty = self.check_expr(end);
 
                 // Check that both end-points are of numeric or char type.
-                let numeric_or_char = |ty: Ty<'_>| ty.is_numeric() || ty.is_char();
+                let numeric_or_char = |ty: Ty<'_>| {
+                    ty.is_numeric()
+                    || ty.is_char()
+                    || ty.references_error()
+                };
                 let lhs_compat = numeric_or_char(lhs_ty);
                 let rhs_compat = numeric_or_char(rhs_ty);
 
@@ -414,7 +423,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 let expected_ty = self.structurally_resolved_type(pat.span, expected);
                 let (inner_ty, slice_ty) = match expected_ty.sty {
                     ty::Array(inner_ty, size) => {
-                        if let Some(size) = size.assert_usize(tcx) {
+                        if let Some(size) = size.try_eval_usize(tcx, self.param_env) {
                             let min_len = before.len() as u64 + after.len() as u64;
                             if slice.is_none() {
                                 if min_len != size {
@@ -458,7 +467,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 match ty.sty {
                                     ty::Array(..) | ty::Slice(..) => {
                                         err.help("the semantics of slice patterns changed \
-                                                  recently; see issue #23121");
+                                                  recently; see issue #62254");
                                     }
                                     _ => {}
                                 }
@@ -546,21 +555,18 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ) {
         let tcx = self.tcx;
         if let PatKind::Binding(..) = inner.node {
-            let parent_id = tcx.hir().get_parent_node(pat.hir_id);
-            let parent = tcx.hir().get(parent_id);
-            debug!("inner {:?} pat {:?} parent {:?}", inner, pat, parent);
-            match parent {
-                hir::Node::Item(hir::Item { node: hir::ItemKind::Fn(..), .. }) |
-                hir::Node::ForeignItem(hir::ForeignItem {
-                    node: hir::ForeignItemKind::Fn(..), ..
-                }) |
-                hir::Node::TraitItem(hir::TraitItem { node: hir::TraitItemKind::Method(..), .. }) |
-                hir::Node::ImplItem(hir::ImplItem { node: hir::ImplItemKind::Method(..), .. }) => {
-                    // this pat is likely an argument
+            let binding_parent_id = tcx.hir().get_parent_node(pat.hir_id);
+            let binding_parent = tcx.hir().get(binding_parent_id);
+            debug!("inner {:?} pat {:?} parent {:?}", inner, pat, binding_parent);
+            match binding_parent {
+                hir::Node::Arg(hir::Arg { span, .. }) => {
                     if let Ok(snippet) = tcx.sess.source_map().span_to_snippet(inner.span) {
-                        // FIXME: turn into structured suggestion, will need a span that also
-                        // includes the the arg's type.
-                        err.help(&format!("did you mean `{}: &{}`?", snippet, expected));
+                        err.span_suggestion(
+                            *span,
+                            &format!("did you mean `{}`", snippet),
+                            format!(" &{}", expected),
+                            Applicability::MachineApplicable,
+                        );
                     }
                 }
                 hir::Node::Arm(_) |
@@ -624,14 +630,15 @@ https://doc.rust-lang.org/reference/types.html#trait-objects");
         let tcx = self.tcx;
 
         use hir::MatchSource::*;
-        let (source_if, if_no_else, if_desugar) = match match_src {
+        let (source_if, if_no_else, force_scrutinee_bool) = match match_src {
             IfDesugar { contains_else_clause } => (true, !contains_else_clause, true),
             IfLetDesugar { contains_else_clause } => (true, !contains_else_clause, false),
+            WhileDesugar => (false, false, true),
             _ => (false, false, false),
         };
 
         // Type check the descriminant and get its type.
-        let discrim_ty = if if_desugar {
+        let discrim_ty = if force_scrutinee_bool {
             // Here we want to ensure:
             //
             // 1. That default match bindings are *not* accepted in the condition of an
@@ -651,7 +658,7 @@ https://doc.rust-lang.org/reference/types.html#trait-objects");
             return tcx.types.never;
         }
 
-        self.warn_arms_when_scrutinee_diverges(arms, source_if);
+        self.warn_arms_when_scrutinee_diverges(arms, match_src);
 
         // Otherwise, we have to union together the types that the
         // arms produce and so forth.
@@ -726,7 +733,7 @@ https://doc.rust-lang.org/reference/types.html#trait-objects");
             if source_if {
                 let then_expr = &arms[0].body;
                 match (i, if_no_else) {
-                    (0, _) => coercion.coerce(self, &self.misc(span), then_expr, arm_ty),
+                    (0, _) => coercion.coerce(self, &self.misc(span), &arm.body, arm_ty),
                     (_, true) => self.if_fallback_coercion(span, then_expr, &mut coercion),
                     (_, _) => {
                         let then_ty = prior_arm_ty.unwrap();
@@ -771,9 +778,14 @@ https://doc.rust-lang.org/reference/types.html#trait-objects");
 
     /// When the previously checked expression (the scrutinee) diverges,
     /// warn the user about the match arms being unreachable.
-    fn warn_arms_when_scrutinee_diverges(&self, arms: &'tcx [hir::Arm], source_if: bool) {
+    fn warn_arms_when_scrutinee_diverges(&self, arms: &'tcx [hir::Arm], source: hir::MatchSource) {
         if self.diverges.get().always() {
-            let msg = if source_if { "block in `if` expression" } else { "arm" };
+            use hir::MatchSource::*;
+            let msg = match source {
+                IfDesugar { .. } | IfLetDesugar { .. } => "block in `if` expression",
+                WhileDesugar { .. } | WhileLetDesugar { .. } => "block in `while` expression",
+                _ => "arm",
+            };
             for arm in arms {
                 self.warn_if_unreachable(arm.body.hir_id, arm.body.span, msg);
             }

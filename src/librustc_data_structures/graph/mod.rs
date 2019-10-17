@@ -8,7 +8,7 @@ pub mod scc;
 pub mod vec_graph;
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 pub trait DirectedGraph {
     type Node: Idx;
@@ -26,10 +26,10 @@ pub trait WithSuccessors: DirectedGraph
 where
     Self: for<'graph> GraphSuccessors<'graph, Item = <Self as DirectedGraph>::Node>,
 {
-    fn successors<'graph>(
-        &'graph self,
+    fn successors(
+        &self,
         node: Self::Node,
-    ) -> <Self as GraphSuccessors<'graph>>::Iter;
+    ) -> <Self as GraphSuccessors<'_>>::Iter;
 
     fn depth_first_search(&self, from: Self::Node) -> iterate::DepthFirstSearch<'_, Self>
     where
@@ -39,6 +39,7 @@ where
     }
 }
 
+#[allow(unused_lifetimes)]
 pub trait GraphSuccessors<'graph> {
     type Item;
     type Iter: Iterator<Item = Self::Item>;
@@ -48,12 +49,13 @@ pub trait WithPredecessors: DirectedGraph
 where
     Self: for<'graph> GraphPredecessors<'graph, Item = <Self as DirectedGraph>::Node>,
 {
-    fn predecessors<'graph>(
-        &'graph self,
+    fn predecessors(
+        &self,
         node: Self::Node,
-    ) -> <Self as GraphPredecessors<'graph>>::Iter;
+    ) -> <Self as GraphPredecessors<'_>>::Iter;
 }
 
+#[allow(unused_lifetimes)]
 pub trait GraphPredecessors<'graph> {
     type Item;
     type Iter: Iterator<Item = Self::Item>;

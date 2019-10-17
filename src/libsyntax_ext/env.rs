@@ -5,7 +5,6 @@
 
 use syntax::ast::{self, Ident, GenericArg};
 use syntax::ext::base::{self, *};
-use syntax::ext::build::AstBuilder;
 use syntax::symbol::{kw, sym, Symbol};
 use syntax_pos::Span;
 use syntax::tokenstream;
@@ -21,7 +20,7 @@ pub fn expand_option_env<'cx>(cx: &'cx mut ExtCtxt<'_>,
         Some(v) => v,
     };
 
-    let sp = sp.apply_mark(cx.current_expansion.mark);
+    let sp = sp.apply_mark(cx.current_expansion.id);
     let e = match env::var(&*var.as_str()) {
         Err(..) => {
             let lt = cx.lifetime(sp, Ident::with_empty_ctxt(kw::StaticLifetime));

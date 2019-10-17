@@ -675,7 +675,7 @@ impl<'tcx> ScopeTree {
                     &format!("free_scope: {:?} not recognized by the \
                               region scope tree for {:?} / {:?}",
                              param_owner,
-                             self.root_parent.map(|id| tcx.hir().local_def_id_from_hir_id(id)),
+                             self.root_parent.map(|id| tcx.hir().local_def_id(id)),
                              self.root_body.map(|hir_id| DefId::local(hir_id.owner))));
             }
 
@@ -912,11 +912,6 @@ fn resolve_expr<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, expr: &'tcx h
             }
 
             hir::ExprKind::Loop(ref body, _, _) => {
-                terminating(body.hir_id.local_id);
-            }
-
-            hir::ExprKind::While(ref expr, ref body, _) => {
-                terminating(expr.hir_id.local_id);
                 terminating(body.hir_id.local_id);
             }
 
@@ -1375,7 +1370,7 @@ impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
 
         let outer_ec = mem::replace(&mut self.expr_and_pat_count, 0);
         let outer_cx = self.cx;
-        let outer_ts = mem::replace(&mut self.terminating_scopes, FxHashSet::default());
+        let outer_ts = mem::take(&mut self.terminating_scopes);
         self.terminating_scopes.insert(body.value.hir_id.local_id);
 
         if let Some(root_id) = self.cx.root_id {
@@ -1446,7 +1441,7 @@ impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
     }
 }
 
-fn region_scope_tree<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> &'tcx ScopeTree {
+fn region_scope_tree(tcx: TyCtxt<'_>, def_id: DefId) -> &ScopeTree {
     let closure_base_def_id = tcx.closure_base_def_id(def_id);
     if closure_base_def_id != def_id {
         return tcx.region_scope_tree(closure_base_def_id);

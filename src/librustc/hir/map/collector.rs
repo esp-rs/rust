@@ -119,6 +119,7 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
                 span,
                 // These fields are handled separately:
                 exported_macros: _,
+                non_exported_macro_attrs: _,
                 items: _,
                 trait_items: _,
                 impl_items: _,
@@ -360,6 +361,14 @@ impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
         self.currently_in_body = true;
         self.visit_body(self.krate.body(id));
         self.currently_in_body = prev_in_body;
+    }
+
+    fn visit_arg(&mut self, arg: &'hir Arg) {
+        let node = Node::Arg(arg);
+        self.insert(arg.pat.span, arg.hir_id, node);
+        self.with_parent(arg.hir_id, |this| {
+            intravisit::walk_arg(this, arg);
+        });
     }
 
     fn visit_item(&mut self, i: &'hir Item) {

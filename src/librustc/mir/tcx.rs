@@ -57,7 +57,7 @@ impl<'tcx> PlaceTy<'tcx> {
     /// `PlaceElem`, where we can just use the `Ty` that is already
     /// stored inline on field projection elems.
     pub fn projection_ty(self, tcx: TyCtxt<'tcx>, elem: &PlaceElem<'tcx>) -> PlaceTy<'tcx> {
-        self.projection_ty_core(tcx, elem, |_, _, ty| ty)
+        self.projection_ty_core(tcx, ty::ParamEnv::empty(), elem, |_, _, ty| ty)
     }
 
     /// `place_ty.projection_ty_core(tcx, elem, |...| { ... })`
@@ -68,6 +68,7 @@ impl<'tcx> PlaceTy<'tcx> {
     pub fn projection_ty_core<V, T>(
         self,
         tcx: TyCtxt<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
         elem: &ProjectionElem<V, T>,
         mut handle_field: impl FnMut(&Self, &Field, &T) -> Ty<'tcx>,
     ) -> PlaceTy<'tcx>
@@ -90,7 +91,7 @@ impl<'tcx> PlaceTy<'tcx> {
             ProjectionElem::Subslice { from, to } => {
                 PlaceTy::from_ty(match self.ty.sty {
                     ty::Array(inner, size) => {
-                        let size = size.unwrap_usize(tcx);
+                        let size = size.eval_usize(tcx, param_env);
                         let len = size - (from as u64) - (to as u64);
                         tcx.mk_array(inner, len)
                     }
@@ -118,11 +119,15 @@ BraceStructTypeFoldableImpl! {
 }
 
 impl<'tcx> Place<'tcx> {
-    pub fn ty<D>(&self, local_decls: &D, tcx: TyCtxt<'tcx>) -> PlaceTy<'tcx>
-    where
-        D: HasLocalDecls<'tcx>,
+    pub fn ty_from<D>(
+        base: &PlaceBase<'tcx>,
+        projection: &Option<Box<Projection<'tcx>>>,
+        local_decls: &D,
+        tcx: TyCtxt<'tcx>
+    ) -> PlaceTy<'tcx>
+        where D: HasLocalDecls<'tcx>
     {
-        self.iterate(|place_base, place_projections| {
+        Place::iterate_over(base, projection, |place_base, place_projections| {
             let mut place_ty = place_base.ty(local_decls);
 
             for proj in place_projections {
@@ -131,6 +136,13 @@ impl<'tcx> Place<'tcx> {
 
             place_ty
         })
+    }
+
+    pub fn ty<D>(&self, local_decls: &D, tcx: TyCtxt<'tcx>) -> PlaceTy<'tcx>
+    where
+        D: HasLocalDecls<'tcx>,
+    {
+        Place::ty_from(&self.base, &self.projection, local_decls, tcx)
     }
 }
 

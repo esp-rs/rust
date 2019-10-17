@@ -206,7 +206,7 @@ impl Assertion {
     }
 }
 
-pub fn check_dirty_clean_annotations<'tcx>(tcx: TyCtxt<'tcx>) {
+pub fn check_dirty_clean_annotations(tcx: TyCtxt<'_>) {
     // can't add `#[rustc_dirty]` etc without opting in to this feature
     if !tcx.features().rustc_attrs {
         return;
@@ -354,7 +354,7 @@ impl DirtyCleanVisitor<'tcx> {
                     HirItem::GlobalAsm(..) => ("ItemGlobalAsm", LABELS_HIR_ONLY),
 
                     // A type alias, e.g., `type Foo = Bar<u8>`
-                    HirItem::Ty(..) => ("ItemTy", LABELS_HIR_ONLY),
+                    HirItem::TyAlias(..) => ("ItemTy", LABELS_HIR_ONLY),
 
                     // An enum definition, e.g., `enum Foo<A, B> {C<A>, D<B>}`
                     HirItem::Enum(..) => ("ItemEnum", LABELS_ADT),
@@ -405,8 +405,8 @@ impl DirtyCleanVisitor<'tcx> {
                 match item.node {
                     ImplItemKind::Method(..) => ("Node::ImplItem", LABELS_FN_IN_IMPL),
                     ImplItemKind::Const(..) => ("NodeImplConst", LABELS_CONST_IN_IMPL),
-                    ImplItemKind::Type(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
-                    ImplItemKind::Existential(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
+                    ImplItemKind::TyAlias(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
+                    ImplItemKind::OpaqueTy(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
                 }
             },
             _ => self.tcx.sess.span_fatal(
@@ -500,7 +500,7 @@ impl DirtyCleanVisitor<'tcx> {
     }
 
     fn check_item(&mut self, item_id: hir::HirId, item_span: Span) {
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(item_id);
+        let def_id = self.tcx.hir().local_def_id(item_id);
         for attr in self.tcx.get_attrs(def_id).iter() {
             let assertion = match self.assertion_maybe(item_id, attr) {
                 Some(a) => a,
@@ -610,7 +610,7 @@ impl FindAllAttrs<'tcx> {
         for attr in &self.found_attrs {
             if !checked_attrs.contains(&attr.id) {
                 self.tcx.sess.span_err(attr.span, &format!("found unchecked \
-                    #[rustc_dirty]/#[rustc_clean] attribute"));
+                    `#[rustc_dirty]` / `#[rustc_clean]` attribute"));
             }
         }
     }

@@ -33,8 +33,11 @@ pub struct Flags {
     pub rustc_error_format: Option<String>,
     pub dry_run: bool,
 
-    // true => deny
-    pub warnings: Option<bool>,
+    // This overrides the deny-warnings configuation option,
+    // which passes -Dwarnings to the compiler invocations.
+    //
+    // true => deny, false => allow
+    pub deny_warnings: Option<bool>,
 }
 
 pub enum Subcommand {
@@ -327,7 +330,7 @@ Arguments:
     This subcommand accepts a number of paths to directories to tests that
     should be compiled and run. For example:
 
-        ./x.py test src/test/run-pass
+        ./x.py test src/test/ui
         ./x.py test src/libstd --test-args hash_map
         ./x.py test src/libstd --stage 0 --no-doc
         ./x.py test src/test/ui --bless
@@ -468,7 +471,7 @@ Arguments:
                 .into_iter()
                 .map(|p| p.into())
                 .collect::<Vec<_>>(),
-            warnings: matches.opt_str("warnings").map(|v| v == "deny"),
+            deny_warnings: parse_deny_warnings(&matches),
         }
     }
 }
@@ -548,4 +551,19 @@ fn split(s: &[String]) -> Vec<String> {
         .flat_map(|s| s.split(','))
         .map(|s| s.to_string())
         .collect()
+}
+
+fn parse_deny_warnings(matches: &getopts::Matches) -> Option<bool> {
+    match matches.opt_str("warnings").as_ref().map(|v| v.as_str()) {
+        Some("deny") => Some(true),
+        Some("allow") => Some(false),
+        Some(value) => {
+            eprintln!(
+                r#"invalid value for --warnings: {:?}, expected "allow" or "deny""#,
+                value,
+                );
+            process::exit(1);
+        },
+        None => None,
+    }
 }

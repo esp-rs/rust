@@ -31,7 +31,7 @@ use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 use std::{slice, vec};
 
-use serialize::{Encodable, Decodable, Encoder, Decoder};
+use rustc_serialize::{Encodable, Decodable, Encoder, Decoder};
 
 use rustc_data_structures::stable_hasher::{StableHasher, StableHasherResult,
                                            HashStable};
@@ -41,11 +41,11 @@ pub struct P<T: ?Sized> {
     ptr: Box<T>
 }
 
-#[allow(non_snake_case)]
 /// Construct a `P<T>` from a `T` value.
+#[allow(non_snake_case)]
 pub fn P<T: 'static>(value: T) -> P<T> {
     P {
-        ptr: Box::new(value)
+        ptr: box value
     }
 }
 

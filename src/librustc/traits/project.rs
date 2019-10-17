@@ -1492,7 +1492,7 @@ fn confirm_impl_candidate<'cx, 'tcx>(
         };
     }
     let substs = translate_substs(selcx.infcx(), param_env, impl_def_id, substs, assoc_ty.node);
-    let ty = if let ty::AssocKind::Existential = assoc_ty.item.kind {
+    let ty = if let ty::AssocKind::OpaqueTy = assoc_ty.item.kind {
         let item_substs = InternalSubsts::identity_for_item(tcx, assoc_ty.item.def_id);
         tcx.mk_opaque(assoc_ty.item.def_id, item_substs)
     } else {
@@ -1509,8 +1509,8 @@ fn confirm_impl_candidate<'cx, 'tcx>(
 ///
 /// Based on the "projection mode", this lookup may in fact only examine the
 /// topmost impl. See the comments for `Reveal` for more details.
-fn assoc_ty_def<'cx, 'tcx>(
-    selcx: &SelectionContext<'cx, 'tcx>,
+fn assoc_ty_def(
+    selcx: &SelectionContext<'_, '_>,
     impl_def_id: DefId,
     assoc_ty_def_id: DefId,
 ) -> specialization_graph::NodeItem<ty::AssocItem> {

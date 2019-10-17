@@ -16,6 +16,9 @@ use std::path::Path;
 
 use regex::Regex;
 
+#[cfg(test)]
+mod tests;
+
 mod version;
 use version::Version;
 
@@ -143,7 +146,7 @@ pub fn check(path: &Path, bad: &mut bool, verbose: bool) -> CollectedFeatures {
         println!("Expected a gate test for the feature '{}'.", name);
         println!("Hint: create a failing test file named 'feature-gate-{}.rs'\
                 \n      in the 'ui' test suite, with its failures due to\
-                \n      missing usage of #![feature({})].", name, name);
+                \n      missing usage of `#![feature({})]`.", name, name);
         println!("Hint: If you already have such a test and don't want to rename it,\
                 \n      you can also add a // gate-test-{} line to the test file.",
                  name);
@@ -201,14 +204,6 @@ fn find_attr_val<'a>(line: &'a str, attr: &str) -> Option<&'a str> {
     r.captures(line)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str())
-}
-
-#[test]
-fn test_find_attr_val() {
-    let s = r#"#[unstable(feature = "checked_duration_since", issue = "58402")]"#;
-    assert_eq!(find_attr_val(s, "feature"), Some("checked_duration_since"));
-    assert_eq!(find_attr_val(s, "issue"), Some("58402"));
-    assert_eq!(find_attr_val(s, "since"), None);
 }
 
 fn test_filen_gate(filen_underscore: &str, features: &mut Features) -> bool {
@@ -344,7 +339,7 @@ fn get_and_check_lib_features(base_src_path: &Path,
                 Ok((name, f)) => {
                     let mut check_features = |f: &Feature, list: &Features, display: &str| {
                         if let Some(ref s) = list.get(name) {
-                            if f.tracking_issue != s.tracking_issue {
+                            if f.tracking_issue != s.tracking_issue && f.level != Status::Stable {
                                 tidy_error!(bad,
                                             "{}:{}: mismatches the `issue` in {}",
                                             file.display(),

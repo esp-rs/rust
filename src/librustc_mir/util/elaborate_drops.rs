@@ -584,10 +584,13 @@ where
             (Rvalue::Ref(
                 tcx.lifetimes.re_erased,
                 BorrowKind::Mut { allow_two_phase_borrow: false },
-                Place::Projection(Box::new(Projection {
-                    base: Place::Base(PlaceBase::Local(cur)),
-                    elem: ProjectionElem::Deref,
-                }))
+                Place {
+                    base: PlaceBase::Local(cur),
+                    projection: Some(Box::new(Projection {
+                        base: None,
+                        elem: ProjectionElem::Deref,
+                    })),
+                }
              ),
              Rvalue::BinaryOp(BinOp::Offset, move_(&Place::from(cur)), one))
         } else {
@@ -801,8 +804,8 @@ where
                 let tys : Vec<_> = substs.upvar_tys(def_id, self.tcx()).collect();
                 self.open_drop_for_tuple(&tys)
             }
-            ty::Tuple(tys) => {
-                let tys: Vec<_> = tys.iter().map(|k| k.expect_ty()).collect();
+            ty::Tuple(..) => {
+                let tys: Vec<_> = ty.tuple_fields().collect();
                 self.open_drop_for_tuple(&tys)
             }
             ty::Adt(def, substs) => {
@@ -818,7 +821,7 @@ where
                 self.complete_drop(Some(DropFlagMode::Deep), succ, unwind)
             }
             ty::Array(ety, size) => {
-                let size = size.assert_usize(self.tcx());
+                let size = size.try_eval_usize(self.tcx(), self.elaborator.param_env());
                 self.open_drop_for_array(ety, size)
             },
             ty::Slice(ety) => self.open_drop_for_array(ety, None),

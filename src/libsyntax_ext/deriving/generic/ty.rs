@@ -6,7 +6,6 @@ pub use Ty::*;
 
 use syntax::ast::{self, Expr, GenericParamKind, Generics, Ident, SelfKind, GenericArg};
 use syntax::ext::base::ExtCtxt;
-use syntax::ext::build::AstBuilder;
 use syntax::source_map::{respan, DUMMY_SP};
 use syntax::ptr::P;
 use syntax_pos::Span;
@@ -18,6 +17,7 @@ pub enum PtrTy<'a> {
     /// &'lifetime mut
     Borrowed(Option<&'a str>, ast::Mutability),
     /// *mut
+    #[allow(dead_code)]
     Raw(ast::Mutability),
 }
 
@@ -39,10 +39,10 @@ pub enum PathKind {
 }
 
 impl<'a> Path<'a> {
-    pub fn new<'r>(path: Vec<&'r str>) -> Path<'r> {
+    pub fn new(path: Vec<&str>) -> Path<'_> {
         Path::new_(path, None, Vec::new(), PathKind::Std)
     }
-    pub fn new_local<'r>(path: &'r str) -> Path<'r> {
+    pub fn new_local(path: &str) -> Path<'_> {
         Path::new_(vec![path], None, Vec::new(), PathKind::Local)
     }
     pub fn new_<'r>(path: Vec<&'r str>,
@@ -85,7 +85,7 @@ impl<'a> Path<'a> {
             PathKind::Global => cx.path_all(span, true, idents, params, Vec::new()),
             PathKind::Local => cx.path_all(span, false, idents, params, Vec::new()),
             PathKind::Std => {
-                let def_site = DUMMY_SP.apply_mark(cx.current_expansion.mark);
+                let def_site = DUMMY_SP.apply_mark(cx.current_expansion.id);
                 idents.insert(0, Ident::new(kw::DollarCrate, def_site));
                 cx.path_all(span, false, idents, params, Vec::new())
             }
@@ -107,17 +107,10 @@ pub enum Ty<'a> {
     Tuple(Vec<Ty<'a>>),
 }
 
-/// A const expression. Supports literals and blocks.
-#[derive(Clone, Eq, PartialEq)]
-pub enum Const {
-    Literal,
-    Block,
-}
-
 pub fn borrowed_ptrty<'r>() -> PtrTy<'r> {
     Borrowed(None, ast::Mutability::Immutable)
 }
-pub fn borrowed<'r>(ty: Box<Ty<'r>>) -> Ty<'r> {
+pub fn borrowed(ty: Box<Ty<'_>>) -> Ty<'_> {
     Ptr(ty, borrowed_ptrty())
 }
 

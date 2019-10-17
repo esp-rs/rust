@@ -103,8 +103,8 @@
 //!
 //! ```rust
 //! # #![feature(rustc_private)]
-//! extern crate serialize;
-//! use serialize::json::{self, ToJson, Json};
+//! extern crate serialize as rustc_serialize;
+//! use rustc_serialize::json::{self, ToJson, Json};
 //!
 //! // A custom data structure
 //! struct ComplexNum {
@@ -120,7 +120,7 @@
 //! }
 //!
 //! // Only generate `RustcEncodable` trait implementation
-//! #[derive(Encodable)]
+//! #[derive(RustcEncodable)]
 //! pub struct ComplexNumRecord {
 //!     uid: u8,
 //!     dsc: String,
@@ -143,12 +143,12 @@
 //!
 //! ```rust
 //! # #![feature(rustc_private)]
-//! extern crate serialize;
+//! extern crate serialize as rustc_serialize;
 //! use std::collections::BTreeMap;
-//! use serialize::json::{self, Json, ToJson};
+//! use rustc_serialize::json::{self, Json, ToJson};
 //!
-//! // Only generate `Decodable` trait implementation
-//! #[derive(Decodable)]
+//! // Only generate `RustcDecodable` trait implementation
+//! #[derive(RustcDecodable)]
 //! pub struct TestStruct {
 //!     data_int: u8,
 //!     data_str: String,
@@ -1031,7 +1031,7 @@ impl Json {
 
      /// If the Json value is an Object, returns the value associated with the provided key.
     /// Otherwise, returns None.
-    pub fn find<'a>(&'a self, key: &str) -> Option<&'a Json>{
+    pub fn find(&self, key: &str) -> Option<&Json> {
         match *self {
             Json::Object(ref map) => map.get(key),
             _ => None
@@ -1052,7 +1052,7 @@ impl Json {
     /// If the Json value is an Object, performs a depth-first search until
     /// a value associated with the provided key is found. If no value is found
     /// or the Json value is not an Object, returns `None`.
-    pub fn search<'a>(&'a self, key: &str) -> Option<&'a Json> {
+    pub fn search(&self, key: &str) -> Option<&Json> {
         match self {
             &Json::Object(ref map) => {
                 match map.get(key) {

@@ -79,17 +79,18 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             ExprKind::LogicalOp { op, lhs, rhs } => {
                 // And:
                 //
-                // [block: If(lhs)] -true-> [else_block: dest = (rhs)]
-                //        | (false)
-                //  [shortcurcuit_block: dest = false]
+                // [block: If(lhs)] -true-> [else_block: If(rhs)] -true-> [true_block]
+                //        |                          | (false)
+                //        +----------false-----------+------------------> [false_block]
                 //
                 // Or:
                 //
-                // [block: If(lhs)] -false-> [else_block: dest = (rhs)]
-                //        | (true)
-                //  [shortcurcuit_block: dest = true]
+                // [block: If(lhs)] -false-> [else_block: If(rhs)] -true-> [true_block]
+                //        | (true)                   | (false)
+                //  [true_block]               [false_block]
 
-                let (shortcircuit_block, mut else_block, join_block) = (
+                let (true_block, false_block, mut else_block, join_block) = (
+                    this.cfg.start_new_block(),
                     this.cfg.start_new_block(),
                     this.cfg.start_new_block(),
                     this.cfg.start_new_block(),
@@ -97,60 +98,54 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                 let lhs = unpack!(block = this.as_local_operand(block, lhs));
                 let blocks = match op {
-                    LogicalOp::And => (else_block, shortcircuit_block),
-                    LogicalOp::Or => (shortcircuit_block, else_block),
+                    LogicalOp::And => (else_block, false_block),
+                    LogicalOp::Or => (true_block, else_block),
                 };
                 let term = TerminatorKind::if_(this.hir.tcx(), lhs, blocks.0, blocks.1);
                 this.cfg.terminate(block, source_info, term);
 
+                let rhs = unpack!(else_block = this.as_local_operand(else_block, rhs));
+                let term = TerminatorKind::if_(this.hir.tcx(), rhs, true_block, false_block);
+                this.cfg.terminate(else_block, source_info, term);
+
                 this.cfg.push_assign_constant(
-                    shortcircuit_block,
+                    true_block,
                     source_info,
                     destination,
                     Constant {
                         span: expr_span,
                         ty: this.hir.bool_ty(),
                         user_ty: None,
-                        literal: match op {
-                            LogicalOp::And => this.hir.false_literal(),
-                            LogicalOp::Or => this.hir.true_literal(),
-                        },
+                        literal: this.hir.true_literal(),
                     },
                 );
+
+                this.cfg.push_assign_constant(
+                    false_block,
+                    source_info,
+                    destination,
+                    Constant {
+                        span: expr_span,
+                        ty: this.hir.bool_ty(),
+                        user_ty: None,
+                        literal: this.hir.false_literal(),
+                    },
+                );
+
                 this.cfg.terminate(
-                    shortcircuit_block,
+                    true_block,
                     source_info,
                     TerminatorKind::Goto { target: join_block },
                 );
-
-                let rhs = unpack!(else_block = this.as_local_operand(else_block, rhs));
-                this.cfg.push_assign(
-                    else_block,
-                    source_info,
-                    destination,
-                    Rvalue::Use(rhs),
-                );
                 this.cfg.terminate(
-                    else_block,
+                    false_block,
                     source_info,
                     TerminatorKind::Goto { target: join_block },
                 );
 
                 join_block.unit()
             }
-            ExprKind::Loop {
-                condition: opt_cond_expr,
-                body,
-            } => {
-                // [block] --> [loop_block] -/eval. cond./-> [loop_block_end] -1-> [exit_block]
-                //                  ^                               |
-                //                  |                               0
-                //                  |                               |
-                //                  |                               v
-                //           [body_block_end] <-/eval. body/-- [body_block]
-                //
-                // If `opt_cond_expr` is `None`, then the graph is somewhat simplified:
-                //
+            ExprKind::Loop { body } => {
                 // [block]
                 //    |
                 //   [loop_block] -> [body_block] -/eval. body/-> [body_block_end]
@@ -177,33 +172,16 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     destination.clone(),
                     move |this| {
                         // conduct the test, if necessary
-                        let body_block;
-                        if let Some(cond_expr) = opt_cond_expr {
-                            let cond_expr = this.hir.mirror(cond_expr);
-                            let (true_block, false_block)
-                                = this.test_bool(loop_block, cond_expr, source_info);
-                            body_block = true_block;
-
-                            // if the test is false, there's no `break` to assign `destination`, so
-                            // we have to do it
-                            this.cfg.push_assign_unit(false_block, source_info, destination);
-                            this.cfg.terminate(
-                                false_block,
-                                source_info,
-                                TerminatorKind::Goto { target: exit_block },
-                            );
-                        } else {
-                            body_block = this.cfg.start_new_block();
-                            let diverge_cleanup = this.diverge_cleanup();
-                            this.cfg.terminate(
-                                loop_block,
-                                source_info,
-                                TerminatorKind::FalseUnwind {
-                                    real_target: body_block,
-                                    unwind: Some(diverge_cleanup),
-                                },
-                            )
-                        }
+                        let body_block = this.cfg.start_new_block();
+                        let diverge_cleanup = this.diverge_cleanup();
+                        this.cfg.terminate(
+                            loop_block,
+                            source_info,
+                            TerminatorKind::FalseUnwind {
+                                real_target: body_block,
+                                unwind: Some(diverge_cleanup),
+                            },
+                        );
 
                         // The “return” value of the loop body must always be an unit. We therefore
                         // introduce a unit temporary as the destination for the loop body.
@@ -325,7 +303,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 // Create a "fake" temporary variable so that we check that the
                 // value is Sized. Usually, this is caught in type checking, but
                 // in the case of box expr there is no such check.
-                if let Place::Projection(..) = destination {
+                if destination.projection.is_some() {
                     this.local_decls
                         .push(LocalDecl::new_temp(expr.ty, expr.span));
                 }

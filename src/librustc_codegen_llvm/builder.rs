@@ -144,7 +144,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
-    fn build_sibling_block<'b>(&self, name: &'b str) -> Self {
+    fn build_sibling_block(&self, name: &str) -> Self {
         Builder::new_block(self.cx, self.llfn(), name)
     }
 
@@ -215,7 +215,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         funclet: Option<&Funclet<'ll>>,
     ) -> &'ll Value {
 
-        debug!("Invoke {:?} with args ({:?})",
+        debug!("invoke {:?} with args ({:?})",
                llfn,
                args);
 
@@ -1035,7 +1035,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         funclet: Option<&Funclet<'ll>>,
     ) -> &'ll Value {
 
-        debug!("Call {:?} with args ({:?})",
+        debug!("call {:?} with args ({:?})",
                llfn,
                args);
 
@@ -1153,11 +1153,14 @@ impl Builder<'a, 'll, 'tcx> {
         }
     }
 
+    pub fn vector_reduce_fadd(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
+        unsafe { llvm::LLVMRustBuildVectorReduceFAdd(self.llbuilder, acc, src) }
+    }
+    pub fn vector_reduce_fmul(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
+        unsafe { llvm::LLVMRustBuildVectorReduceFMul(self.llbuilder, acc, src) }
+    }
     pub fn vector_reduce_fadd_fast(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
         unsafe {
-            // FIXME: add a non-fast math version once
-            // https://bugs.llvm.org/show_bug.cgi?id=36732
-            // is fixed.
             let instr = llvm::LLVMRustBuildVectorReduceFAdd(self.llbuilder, acc, src);
             llvm::LLVMRustSetHasUnsafeAlgebra(instr);
             instr
@@ -1165,9 +1168,6 @@ impl Builder<'a, 'll, 'tcx> {
     }
     pub fn vector_reduce_fmul_fast(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
         unsafe {
-            // FIXME: add a non-fast math version once
-            // https://bugs.llvm.org/show_bug.cgi?id=36732
-            // is fixed.
             let instr = llvm::LLVMRustBuildVectorReduceFMul(self.llbuilder, acc, src);
             llvm::LLVMRustSetHasUnsafeAlgebra(instr);
             instr
@@ -1238,7 +1238,7 @@ impl Builder<'a, 'll, 'tcx> {
         if dest_ptr_ty == stored_ptr_ty {
             ptr
         } else {
-            debug!("Type mismatch in store. \
+            debug!("type mismatch in store. \
                     Expected {:?}, got {:?}; inserting bitcast",
                    dest_ptr_ty, stored_ptr_ty);
             self.bitcast(ptr, stored_ptr_ty)
@@ -1274,7 +1274,7 @@ impl Builder<'a, 'll, 'tcx> {
             .map(|(i, (expected_ty, &actual_val))| {
                 let actual_ty = self.val_ty(actual_val);
                 if expected_ty != actual_ty {
-                    debug!("Type mismatch in function call of {:?}. \
+                    debug!("type mismatch in function call of {:?}. \
                             Expected {:?} for param {}, got {:?}; injecting bitcast",
                            llfn, expected_ty, i, actual_ty);
                     self.bitcast(actual_val, expected_ty)

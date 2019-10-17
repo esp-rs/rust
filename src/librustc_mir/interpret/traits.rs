@@ -1,10 +1,10 @@
 use rustc::ty::{self, Ty, Instance};
 use rustc::ty::layout::{Size, Align, LayoutOf};
-use rustc::mir::interpret::{Scalar, Pointer, InterpResult, PointerArithmetic};
+use rustc::mir::interpret::{Scalar, Pointer, InterpResult, PointerArithmetic,};
 
-use super::{InterpretCx, InterpError, Machine, MemoryKind};
+use super::{InterpCx, Machine, MemoryKind, FnVal};
 
-impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     /// Creates a dynamic vtable for the given type and vtable origin. This is used only for
     /// objects.
     ///
@@ -56,7 +56,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
         let tcx = &*self.tcx;
 
         let drop = Instance::resolve_drop_in_place(*tcx, ty);
-        let drop = self.memory.create_fn_alloc(drop);
+        let drop = self.memory.create_fn_alloc(FnVal::Instance(drop));
 
         // no need to do any alignment checks on the memory accesses below, because we know the
         // allocation is correctly aligned as we created it above. Also we're only offsetting by
@@ -83,8 +83,8 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
                     self.param_env,
                     def_id,
                     substs,
-                ).ok_or_else(|| InterpError::TooGeneric)?;
-                let fn_ptr = self.memory.create_fn_alloc(instance);
+                ).ok_or_else(|| err_inval!(TooGeneric))?;
+                let fn_ptr = self.memory.create_fn_alloc(FnVal::Instance(instance));
                 let method_ptr = vtable.offset(ptr_size * (3 + i as u64), self)?;
                 self.memory
                     .get_mut(method_ptr.alloc_id)?
@@ -112,8 +112,10 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
         let drop_fn = self.memory
             .get(vtable.alloc_id)?
             .read_ptr_sized(self, vtable)?
-            .to_ptr()?;
-        let drop_instance = self.memory.get_fn(drop_fn)?;
+            .not_undef()?;
+        // We *need* an instance here, no other kind of function value, to be able
+        // to determine the type.
+        let drop_instance = self.memory.get_fn(drop_fn)?.as_instance()?;
         trace!("Found drop fn: {:?}", drop_instance);
         let fn_sig = drop_instance.ty(*self.tcx).fn_sig(*self.tcx);
         let fn_sig = self.tcx.normalize_erasing_late_bound_regions(self.param_env, &fn_sig);

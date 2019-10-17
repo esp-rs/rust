@@ -314,12 +314,12 @@ pub(crate) trait DataflowResultsConsumer<'a, 'tcx: 'a> {
 
     fn visit_statement_entry(&mut self,
                              _loc: Location,
-                             _stmt: &Statement<'tcx>,
+                             _stmt: &'a Statement<'tcx>,
                              _flow_state: &Self::FlowState) {}
 
     fn visit_terminator_entry(&mut self,
                               _loc: Location,
-                              _term: &Terminator<'tcx>,
+                              _term: &'a Terminator<'tcx>,
                               _flow_state: &Self::FlowState) {}
 
     // Main entry point: this drives the processing of results.
@@ -333,6 +333,8 @@ pub(crate) trait DataflowResultsConsumer<'a, 'tcx: 'a> {
     }
 
     fn process_basic_block(&mut self, bb: BasicBlock, flow_state: &mut Self::FlowState) {
+        self.visit_block_entry(bb, flow_state);
+
         let BasicBlockData { ref statements, ref terminator, is_cleanup: _ } =
             self.body()[bb];
         let mut location = Location { block: bb, statement_index: 0 };
@@ -587,10 +589,8 @@ impl<E:Idx> GenKillSet<E> {
         self.gen_set.insert(e);
         self.kill_set.remove(e);
     }
-    fn gen_all<I>(&mut self, i: I)
-        where I: IntoIterator,
-              I::Item: Borrow<E>
-    {
+
+    fn gen_all(&mut self, i: impl IntoIterator<Item: Borrow<E>>) {
         for j in i {
             self.gen(*j.borrow());
         }
@@ -601,10 +601,7 @@ impl<E:Idx> GenKillSet<E> {
         self.kill_set.insert(e);
     }
 
-    fn kill_all<I>(&mut self, i: I)
-        where I: IntoIterator,
-              I::Item: Borrow<E>
-    {
+    fn kill_all(&mut self, i: impl IntoIterator<Item: Borrow<E>>) {
         for j in i {
             self.kill(*j.borrow());
         }

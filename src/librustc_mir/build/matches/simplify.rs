@@ -28,7 +28,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                                     candidate: &mut Candidate<'pat, 'tcx>) {
         // repeatedly simplify match pairs until fixed point is reached
         loop {
-            let match_pairs = mem::replace(&mut candidate.match_pairs, vec![]);
+            let match_pairs = mem::take(&mut candidate.match_pairs);
             let mut changed = false;
             for match_pair in match_pairs {
                 match self.simplify_match_pair(match_pair, candidate) {
@@ -161,7 +161,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             PatternKind::Variant { adt_def, substs, variant_index, ref subpatterns } => {
                 let irrefutable = adt_def.variants.iter_enumerated().all(|(i, v)| {
                     i == variant_index || {
-                        self.hir.tcx().features().never_type &&
                         self.hir.tcx().features().exhaustive_patterns &&
                         !v.uninhabited_from(self.hir.tcx(), substs, adt_def.adt_kind()).is_empty()
                     }

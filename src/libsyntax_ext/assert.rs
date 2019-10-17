@@ -3,7 +3,6 @@ use errors::{Applicability, DiagnosticBuilder};
 use syntax::ast::{self, *};
 use syntax::source_map::Spanned;
 use syntax::ext::base::*;
-use syntax::ext::build::AstBuilder;
 use syntax::parse::token::{self, TokenKind};
 use syntax::parse::parser::Parser;
 use syntax::print::pprust;
@@ -25,7 +24,7 @@ pub fn expand_assert<'cx>(
         }
     };
 
-    let sp = sp.apply_mark(cx.current_expansion.mark);
+    let sp = sp.apply_mark(cx.current_expansion.id);
     let panic_call = Mac_ {
         path: Path::from_ident(Ident::new(sym::panic, sp)),
         tts: custom_message.unwrap_or_else(|| {
@@ -38,6 +37,7 @@ pub fn expand_assert<'cx>(
             ))
         }).into(),
         delim: MacDelimiter::Parenthesis,
+        prior_type_ascription: None,
     };
     let if_expr = cx.expr_if(
         sp,
@@ -131,7 +131,7 @@ fn parse_assert<'a>(
     Ok(Assert { cond_expr, custom_message })
 }
 
-fn parse_custom_message<'a>(parser: &mut Parser<'a>) -> Option<TokenStream> {
+fn parse_custom_message(parser: &mut Parser<'_>) -> Option<TokenStream> {
     let ts = parser.parse_tokens();
     if !ts.is_empty() {
         Some(ts)

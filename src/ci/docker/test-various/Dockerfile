@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   cmake \
   sudo \
   gdb \
+  libssl-dev \
+  pkg-config \
   xz-utils \
   wget \
   patch
@@ -41,7 +43,6 @@ ENV WASM_TARGETS=wasm32-unknown-unknown
 ENV WASM_SCRIPT python2.7 /checkout/x.py test --target $WASM_TARGETS \
   src/test/run-make \
   src/test/ui \
-  src/test/run-pass \
   src/test/compile-fail \
   src/test/mir-opt \
   src/test/codegen-units \

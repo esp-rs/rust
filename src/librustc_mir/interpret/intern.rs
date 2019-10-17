@@ -4,9 +4,7 @@
 //! memory, we need to extract all memory allocations to the global memory pool so they stay around.
 
 use rustc::ty::{Ty, TyCtxt, ParamEnv, self};
-use rustc::mir::interpret::{
-    InterpResult, ErrorHandled,
-};
+use rustc::mir::interpret::{InterpResult, ErrorHandled};
 use rustc::hir;
 use rustc::hir::def_id::DefId;
 use super::validity::RefTracking;
@@ -16,7 +14,7 @@ use syntax::ast::Mutability;
 use syntax_pos::Span;
 
 use super::{
-    ValueVisitor, MemoryKind, Pointer, AllocId, MPlaceTy, InterpError, Scalar,
+    ValueVisitor, MemoryKind, Pointer, AllocId, MPlaceTy, Scalar,
 };
 use crate::const_eval::{CompileTimeInterpreter, CompileTimeEvalContext};
 
@@ -146,7 +144,9 @@ for
             let value = self.ecx.read_immediate(mplace.into())?;
             // Handle trait object vtables
             if let Ok(meta) = value.to_meta() {
-                if let ty::Dynamic(..) = self.ecx.tcx.struct_tail(referenced_ty).sty {
+                if let ty::Dynamic(..) =
+                    self.ecx.tcx.struct_tail_erasing_lifetimes(referenced_ty, self.param_env).sty
+                {
                     if let Ok(vtable) = meta.unwrap().to_ptr() {
                         // explitly choose `Immutable` here, since vtables are immutable, even
                         // if the reference of the fat pointer is mutable
@@ -176,7 +176,8 @@ for
                     (InternMode::ConstBase, hir::Mutability::MutMutable) |
                     (InternMode::Const, hir::Mutability::MutMutable) => {
                         match referenced_ty.sty {
-                            ty::Array(_, n) if n.unwrap_usize(self.ecx.tcx.tcx) == 0 => {}
+                            ty::Array(_, n)
+                                if n.eval_usize(self.ecx.tcx.tcx, self.param_env) == 0 => {}
                             ty::Slice(_)
                                 if value.to_meta().unwrap().unwrap().to_usize(self.ecx)? == 0 => {}
                             _ => bug!("const qualif failed to prevent mutable references"),
@@ -291,7 +292,7 @@ pub fn intern_const_alloc_recursive(
         if let Err(error) = interned {
             // This can happen when e.g. the tag of an enum is not a valid discriminant. We do have
             // to read enum discriminants in order to find references in enum variant fields.
-            if let InterpError::ValidationFailure(_) = error.kind {
+            if let err_unsup!(ValidationFailure(_)) = error.kind {
                 let err = crate::const_eval::error_to_const_error(&ecx, error);
                 match err.struct_error(ecx.tcx, "it is undefined behavior to use this value") {
                     Ok(mut diag) => {
@@ -326,9 +327,7 @@ pub fn intern_const_alloc_recursive(
             }
         } else if ecx.memory().dead_alloc_map.contains_key(&alloc_id) {
             // dangling pointer
-            return err!(ValidationFailure(
-                "encountered dangling pointer in final constant".into(),
-            ))
+            throw_unsup!(ValidationFailure("encountered dangling pointer in final constant".into()))
         }
     }
     Ok(())

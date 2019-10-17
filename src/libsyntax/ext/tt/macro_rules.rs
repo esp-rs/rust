@@ -2,7 +2,7 @@ use crate::edition::Edition;
 use crate::ext::base::{DummyResult, ExtCtxt, MacResult, TTMacroExpander};
 use crate::ext::base::{SyntaxExtension, SyntaxExtensionKind};
 use crate::ext::expand::{AstFragment, AstFragmentKind};
-use crate::ext::hygiene::Transparency;
+use crate::ext::tt::macro_check;
 use crate::ext::tt::macro_parser::{parse, parse_failure_msg};
 use crate::ext::tt::macro_parser::{Error, Failure, Success};
 use crate::ext::tt::macro_parser::{MatchedNonterminal, MatchedSeq};
@@ -15,11 +15,11 @@ use crate::parse::token::{self, NtTT, Token};
 use crate::parse::{Directory, ParseSess};
 use crate::symbol::{kw, sym, Symbol};
 use crate::tokenstream::{DelimSpan, TokenStream, TokenTree};
-use crate::{ast, attr};
+use crate::{ast, attr, attr::TransparencyError};
 
-use errors::FatalError;
+use errors::{DiagnosticBuilder, FatalError};
 use log::debug;
-use syntax_pos::{symbol::Ident, Span};
+use syntax_pos::Span;
 
 use rustc_data_structures::fx::FxHashMap;
 use std::borrow::Cow;
@@ -41,6 +41,18 @@ pub struct ParserAnyMacro<'a> {
     /// The ident of the macro we're parsing
     macro_ident: ast::Ident,
     arm_span: Span,
+}
+
+pub fn annotate_err_with_kind(err: &mut DiagnosticBuilder<'_>, kind: AstFragmentKind, span: Span) {
+    match kind {
+        AstFragmentKind::Ty => {
+            err.span_label(span, "this macro call doesn't expand to a type");
+        }
+        AstFragmentKind::Pat => {
+            err.span_label(span, "this macro call doesn't expand to a pattern");
+        }
+        _ => {}
+    };
 }
 
 impl<'a> ParserAnyMacro<'a> {
@@ -70,6 +82,32 @@ impl<'a> ParserAnyMacro<'a> {
             } else if !parser.sess.source_map().span_to_filename(parser.token.span).is_real() {
                 e.span_label(site_span, "in this macro invocation");
             }
+            match kind {
+                AstFragmentKind::Pat if macro_ident.name == sym::vec => {
+                    let mut suggestion = None;
+                    if let Ok(code) = parser.sess.source_map().span_to_snippet(site_span) {
+                        if let Some(bang) = code.find('!') {
+                            suggestion = Some(code[bang + 1..].to_string());
+                        }
+                    }
+                    if let Some(suggestion) = suggestion {
+                        e.span_suggestion(
+                            site_span,
+                            "use a slice pattern here instead",
+                            suggestion,
+                            Applicability::MachineApplicable,
+                        );
+                    } else {
+                        e.span_label(
+                            site_span,
+                            "use a slice pattern here instead",
+                        );
+                    }
+                    e.help("for more information, see https://doc.rust-lang.org/edition-guide/\
+                            rust-2018/slice-patterns.html");
+                }
+                _ => annotate_err_with_kind(&mut e, kind, site_span),
+            };
             e
         }));
 
@@ -89,6 +127,7 @@ impl<'a> ParserAnyMacro<'a> {
 
 struct MacroRulesMacroExpander {
     name: ast::Ident,
+    span: Span,
     lhses: Vec<quoted::TokenTree>,
     rhses: Vec<quoted::TokenTree>,
     valid: bool,
@@ -100,12 +139,11 @@ impl TTMacroExpander for MacroRulesMacroExpander {
         cx: &'cx mut ExtCtxt<'_>,
         sp: Span,
         input: TokenStream,
-        def_span: Option<Span>,
     ) -> Box<dyn MacResult + 'cx> {
         if !self.valid {
             return DummyResult::any(sp);
         }
-        generic_extension(cx, sp, def_span, self.name, input, &self.lhses, &self.rhses)
+        generic_extension(cx, sp, self.span, self.name, input, &self.lhses, &self.rhses)
     }
 }
 
@@ -118,7 +156,7 @@ fn trace_macros_note(cx: &mut ExtCtxt<'_>, sp: Span, message: String) {
 fn generic_extension<'cx>(
     cx: &'cx mut ExtCtxt<'_>,
     sp: Span,
-    def_span: Option<Span>,
+    def_span: Span,
     name: ast::Ident,
     arg: TokenStream,
     lhses: &[quoted::TokenTree],
@@ -173,6 +211,7 @@ fn generic_extension<'cx>(
                 let mut p = Parser::new(cx.parse_sess(), tts, Some(directory), true, false, None);
                 p.root_module_name =
                     cx.current_expansion.module.mod_path.last().map(|id| id.as_str().to_string());
+                p.last_type_ascription = cx.current_expansion.prior_type_ascription;
 
                 p.process_potential_macro_variable();
                 // Let the context choose how to interpret the result.
@@ -200,10 +239,8 @@ fn generic_extension<'cx>(
     let span = token.span.substitute_dummy(sp);
     let mut err = cx.struct_span_err(span, &parse_failure_msg(&token));
     err.span_label(span, label);
-    if let Some(sp) = def_span {
-        if cx.source_map().span_to_filename(sp).is_real() && !sp.is_dummy() {
-            err.span_label(cx.source_map().def_span(sp), "when calling this macro");
-        }
+    if !def_span.is_dummy() && cx.source_map().span_to_filename(def_span).is_real() {
+        err.span_label(cx.source_map().def_span(def_span), "when calling this macro");
     }
 
     // Check whether there's a missing comma in this macro call, like `println!("{}" a);`
@@ -276,7 +313,7 @@ pub fn compile(
                     if body.legacy { token::Semi } else { token::Comma },
                     def.span,
                 )),
-                op: quoted::KleeneOp::OneOrMore,
+                kleene: quoted::KleeneToken::new(quoted::KleeneOp::OneOrMore, def.span),
                 num_captures: 2,
             }),
         ),
@@ -284,9 +321,12 @@ pub fn compile(
         quoted::TokenTree::Sequence(
             DelimSpan::dummy(),
             Lrc::new(quoted::SequenceRepetition {
-                tts: vec![quoted::TokenTree::token(token::Semi, def.span)],
+                tts: vec![quoted::TokenTree::token(
+                    if body.legacy { token::Semi } else { token::Comma },
+                    def.span,
+                )],
                 separator: None,
-                op: quoted::KleeneOp::ZeroOrMore,
+                kleene: quoted::KleeneToken::new(quoted::KleeneOp::ZeroOrMore, def.span),
                 num_captures: 0,
             }),
         ),
@@ -310,7 +350,7 @@ pub fn compile(
     let mut valid = true;
 
     // Extract the arguments:
-    let lhses = match *argument_map[&lhs_nm] {
+    let lhses = match argument_map[&lhs_nm] {
         MatchedSeq(ref s, _) => s
             .iter()
             .map(|m| {
@@ -337,7 +377,7 @@ pub fn compile(
         _ => sess.span_diagnostic.span_bug(def.span, "wrong-structured lhs"),
     };
 
-    let rhses = match *argument_map[&rhs_nm] {
+    let rhses = match argument_map[&rhs_nm] {
         MatchedSeq(ref s, _) => s
             .iter()
             .map(|m| {
@@ -369,24 +409,28 @@ pub fn compile(
     // don't abort iteration early, so that errors for multiple lhses can be reported
     for lhs in &lhses {
         valid &= check_lhs_no_empty_seq(sess, slice::from_ref(lhs));
-        valid &= check_lhs_duplicate_matcher_bindings(
-            sess,
-            slice::from_ref(lhs),
-            &mut FxHashMap::default(),
-            def.id,
-        );
     }
 
-    let expander: Box<_> =
-        Box::new(MacroRulesMacroExpander { name: def.ident, lhses, rhses, valid });
+    // We use CRATE_NODE_ID instead of `def.id` otherwise we may emit buffered lints for a node id
+    // that is not lint-checked and trigger the "failed to process buffered lint here" bug.
+    valid &= macro_check::check_meta_variables(sess, ast::CRATE_NODE_ID, def.span, &lhses, &rhses);
 
-    let default_transparency = if attr::contains_name(&def.attrs, sym::rustc_transparent_macro) {
-        Transparency::Transparent
-    } else if body.legacy {
-        Transparency::SemiTransparent
-    } else {
-        Transparency::Opaque
-    };
+    let expander: Box<_> =
+        Box::new(MacroRulesMacroExpander { name: def.ident, span: def.span, lhses, rhses, valid });
+
+    let (default_transparency, transparency_error) =
+        attr::find_transparency(&def.attrs, body.legacy);
+    match transparency_error {
+        Some(TransparencyError::UnknownTransparency(value, span)) =>
+            sess.span_diagnostic.span_err(
+                span, &format!("unknown macro transparency: `{}`", value)
+            ),
+        Some(TransparencyError::MultipleTransparencyAttrs(old_span, new_span)) =>
+            sess.span_diagnostic.span_err(
+                vec![old_span, new_span], "multiple macro transparency attributes"
+            ),
+        None => {}
+    }
 
     let allow_internal_unstable =
         attr::find_by_name(&def.attrs, sym::allow_internal_unstable).map(|attr| {
@@ -417,8 +461,6 @@ pub fn compile(
                 })
         });
 
-    let allow_internal_unsafe = attr::contains_name(&def.attrs, sym::allow_internal_unsafe);
-
     let mut local_inner_macros = false;
     if let Some(macro_export) = attr::find_by_name(&def.attrs, sym::macro_export) {
         if let Some(l) = macro_export.meta_item_list() {
@@ -426,25 +468,21 @@ pub fn compile(
         }
     }
 
-    let unstable_feature =
-        attr::find_stability(&sess, &def.attrs, def.span).and_then(|stability| {
-            if let attr::StabilityLevel::Unstable { issue, .. } = stability.level {
-                Some((stability.feature, issue))
-            } else {
-                None
-            }
-        });
+    let is_builtin = attr::contains_name(&def.attrs, sym::rustc_builtin_macro);
 
     SyntaxExtension {
         kind: SyntaxExtensionKind::LegacyBang(expander),
-        def_info: Some((def.id, def.span)),
+        span: def.span,
         default_transparency,
         allow_internal_unstable,
-        allow_internal_unsafe,
+        allow_internal_unsafe: attr::contains_name(&def.attrs, sym::allow_internal_unsafe),
         local_inner_macros,
-        unstable_feature,
+        stability: attr::find_stability(&sess, &def.attrs, def.span),
+        deprecation: attr::find_deprecation(&sess, &def.attrs, def.span),
         helper_attrs: Vec::new(),
         edition,
+        is_builtin,
+        is_derive_copy: is_builtin && def.ident.name == sym::Copy,
     }
 }
 
@@ -484,8 +522,8 @@ fn check_lhs_no_empty_seq(sess: &ParseSess, tts: &[quoted::TokenTree]) -> bool {
                     && seq.tts.iter().all(|seq_tt| match *seq_tt {
                         TokenTree::MetaVarDecl(_, _, id) => id.name == sym::vis,
                         TokenTree::Sequence(_, ref sub_seq) => {
-                            sub_seq.op == quoted::KleeneOp::ZeroOrMore
-                                || sub_seq.op == quoted::KleeneOp::ZeroOrOne
+                            sub_seq.kleene.op == quoted::KleeneOp::ZeroOrMore
+                                || sub_seq.kleene.op == quoted::KleeneOp::ZeroOrOne
                         }
                         _ => false,
                     })
@@ -498,45 +536,6 @@ fn check_lhs_no_empty_seq(sess: &ParseSess, tts: &[quoted::TokenTree]) -> bool {
                     return false;
                 }
             }
-        }
-    }
-
-    true
-}
-
-/// Check that the LHS contains no duplicate matcher bindings. e.g. `$a:expr, $a:expr` would be
-/// illegal, since it would be ambiguous which `$a` to use if we ever needed to.
-fn check_lhs_duplicate_matcher_bindings(
-    sess: &ParseSess,
-    tts: &[quoted::TokenTree],
-    metavar_names: &mut FxHashMap<Ident, Span>,
-    node_id: ast::NodeId,
-) -> bool {
-    use self::quoted::TokenTree;
-    for tt in tts {
-        match *tt {
-            TokenTree::MetaVarDecl(span, name, _kind) => {
-                if let Some(&prev_span) = metavar_names.get(&name) {
-                    sess.span_diagnostic
-                        .struct_span_err(span, "duplicate matcher binding")
-                        .span_note(prev_span, "previous declaration was here")
-                        .emit();
-                    return false;
-                } else {
-                    metavar_names.insert(name, span);
-                }
-            }
-            TokenTree::Delimited(_, ref del) => {
-                if !check_lhs_duplicate_matcher_bindings(sess, &del.tts, metavar_names, node_id) {
-                    return false;
-                }
-            }
-            TokenTree::Sequence(_, ref seq) => {
-                if !check_lhs_duplicate_matcher_bindings(sess, &seq.tts, metavar_names, node_id) {
-                    return false;
-                }
-            }
-            _ => {}
         }
     }
 
@@ -635,8 +634,8 @@ impl FirstSets {
 
                         // Reverse scan: Sequence comes before `first`.
                         if subfirst.maybe_empty
-                            || seq_rep.op == quoted::KleeneOp::ZeroOrMore
-                            || seq_rep.op == quoted::KleeneOp::ZeroOrOne
+                            || seq_rep.kleene.op == quoted::KleeneOp::ZeroOrMore
+                            || seq_rep.kleene.op == quoted::KleeneOp::ZeroOrOne
                         {
                             // If sequence is potentially empty, then
                             // union them (preserving first emptiness).
@@ -672,38 +671,37 @@ impl FirstSets {
                     return first;
                 }
                 TokenTree::Sequence(sp, ref seq_rep) => {
-                    match self.first.get(&sp.entire()) {
-                        Some(&Some(ref subfirst)) => {
-                            // If the sequence contents can be empty, then the first
-                            // token could be the separator token itself.
-
-                            if let (Some(sep), true) = (&seq_rep.separator, subfirst.maybe_empty) {
-                                first.add_one_maybe(TokenTree::Token(sep.clone()));
-                            }
-
-                            assert!(first.maybe_empty);
-                            first.add_all(subfirst);
-                            if subfirst.maybe_empty
-                                || seq_rep.op == quoted::KleeneOp::ZeroOrMore
-                                || seq_rep.op == quoted::KleeneOp::ZeroOrOne
-                            {
-                                // continue scanning for more first
-                                // tokens, but also make sure we
-                                // restore empty-tracking state
-                                first.maybe_empty = true;
-                                continue;
-                            } else {
-                                return first;
-                            }
-                        }
-
+                    let subfirst_owned;
+                    let subfirst = match self.first.get(&sp.entire()) {
+                        Some(&Some(ref subfirst)) => subfirst,
                         Some(&None) => {
-                            panic!("assume all sequences have (unique) spans for now");
+                            subfirst_owned = self.first(&seq_rep.tts[..]);
+                            &subfirst_owned
                         }
-
                         None => {
                             panic!("We missed a sequence during FirstSets construction");
                         }
+                    };
+
+                    // If the sequence contents can be empty, then the first
+                    // token could be the separator token itself.
+                    if let (Some(sep), true) = (&seq_rep.separator, subfirst.maybe_empty) {
+                        first.add_one_maybe(TokenTree::Token(sep.clone()));
+                    }
+
+                    assert!(first.maybe_empty);
+                    first.add_all(subfirst);
+                    if subfirst.maybe_empty
+                        || seq_rep.kleene.op == quoted::KleeneOp::ZeroOrMore
+                        || seq_rep.kleene.op == quoted::KleeneOp::ZeroOrOne
+                    {
+                        // Continue scanning for more first
+                        // tokens, but also make sure we
+                        // restore empty-tracking state.
+                        first.maybe_empty = true;
+                        continue;
+                    } else {
+                        return first;
                     }
                 }
             }
@@ -795,7 +793,7 @@ impl TokenSet {
 }
 
 // Checks that `matcher` is internally consistent and that it
-// can legally by followed by a token N, for all N in `follow`.
+// can legally be followed by a token `N`, for all `N` in `follow`.
 // (If `follow` is empty, then it imposes no constraint on
 // the `matcher`.)
 //

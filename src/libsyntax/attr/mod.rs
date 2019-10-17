@@ -2,17 +2,14 @@
 
 mod builtin;
 
-pub use builtin::{
-    cfg_matches, contains_feature_attr, eval_condition, find_crate_name, find_deprecation,
-    find_repr_attrs, find_stability, find_unwind_attr, Deprecation, InlineAttr, OptimizeAttr,
-    IntType, ReprAttr, RustcDeprecation, Stability, StabilityLevel, UnwindAttr,
-};
+pub use builtin::*;
 pub use IntType::*;
 pub use ReprAttr::*;
 pub use StabilityLevel::*;
+pub use crate::ast::Attribute;
 
 use crate::ast;
-use crate::ast::{AttrId, Attribute, AttrStyle, Name, Ident, Path, PathSegment};
+use crate::ast::{AttrId, AttrStyle, Name, Ident, Path, PathSegment};
 use crate::ast::{MetaItem, MetaItemKind, NestedMetaItem};
 use crate::ast::{Lit, LitKind, Expr, Item, Local, Stmt, StmtKind, GenericParam};
 use crate::mut_visit::visit_clobber;
@@ -34,7 +31,7 @@ use std::iter;
 use std::ops::DerefMut;
 
 pub fn mark_used(attr: &Attribute) {
-    debug!("Marking {:?} as used.", attr);
+    debug!("marking {:?} as used", attr);
     GLOBALS.with(|globals| {
         globals.used_attrs.lock().insert(attr.id);
     });
@@ -47,7 +44,7 @@ pub fn is_used(attr: &Attribute) -> bool {
 }
 
 pub fn mark_known(attr: &Attribute) {
-    debug!("Marking {:?} as known.", attr);
+    debug!("marking {:?} as known", attr);
     GLOBALS.with(|globals| {
         globals.known_attrs.lock().insert(attr.id);
     });
@@ -60,7 +57,7 @@ pub fn is_known(attr: &Attribute) -> bool {
 }
 
 pub fn is_known_lint_tool(m_item: Ident) -> bool {
-    ["clippy"].contains(&m_item.as_str().as_ref())
+    [sym::clippy, sym::rustc].contains(&m_item.name)
 }
 
 impl NestedMetaItem {
@@ -332,13 +329,14 @@ impl Attribute {
             let meta = mk_name_value_item_str(
                 Ident::with_empty_ctxt(sym::doc),
                 dummy_spanned(Symbol::intern(&strip_doc_comment_decoration(&comment.as_str()))));
-            let mut attr = if self.style == ast::AttrStyle::Outer {
-                mk_attr_outer(self.span, self.id, meta)
-            } else {
-                mk_attr_inner(self.span, self.id, meta)
-            };
-            attr.is_sugared_doc = true;
-            f(&attr)
+            f(&Attribute {
+                id: self.id,
+                style: self.style,
+                path: meta.path,
+                tokens: meta.node.tokens(meta.span),
+                is_sugared_doc: true,
+                span: self.span,
+            })
         } else {
             f(self)
         }
@@ -349,16 +347,17 @@ impl Attribute {
 
 pub fn mk_name_value_item_str(ident: Ident, value: Spanned<Symbol>) -> MetaItem {
     let lit_kind = LitKind::Str(value.node, ast::StrStyle::Cooked);
-    mk_name_value_item(ident.span.to(value.span), ident, lit_kind, value.span)
+    mk_name_value_item(ident, lit_kind, value.span)
 }
 
-pub fn mk_name_value_item(span: Span, ident: Ident, lit_kind: LitKind, lit_span: Span) -> MetaItem {
+pub fn mk_name_value_item(ident: Ident, lit_kind: LitKind, lit_span: Span) -> MetaItem {
     let lit = Lit::from_lit_kind(lit_kind, lit_span);
+    let span = ident.span.to(lit_span);
     MetaItem { path: Path::from_ident(ident), span, node: MetaItemKind::NameValue(lit) }
 }
 
-pub fn mk_list_item(span: Span, ident: Ident, items: Vec<NestedMetaItem>) -> MetaItem {
-    MetaItem { path: Path::from_ident(ident), span, node: MetaItemKind::List(items) }
+pub fn mk_list_item(ident: Ident, items: Vec<NestedMetaItem>) -> MetaItem {
+    MetaItem { path: Path::from_ident(ident), span: ident.span, node: MetaItemKind::List(items) }
 }
 
 pub fn mk_word_item(ident: Ident) -> MetaItem {
@@ -369,7 +368,7 @@ pub fn mk_nested_word_item(ident: Ident) -> NestedMetaItem {
     NestedMetaItem::MetaItem(mk_word_item(ident))
 }
 
-pub fn mk_attr_id() -> AttrId {
+crate fn mk_attr_id() -> AttrId {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
@@ -380,46 +379,36 @@ pub fn mk_attr_id() -> AttrId {
     AttrId(id)
 }
 
-/// Returns an inner attribute with the given value.
-pub fn mk_attr_inner(span: Span, id: AttrId, item: MetaItem) -> Attribute {
-    mk_spanned_attr_inner(span, id, item)
-}
-
 /// Returns an inner attribute with the given value and span.
-pub fn mk_spanned_attr_inner(sp: Span, id: AttrId, item: MetaItem) -> Attribute {
+pub fn mk_attr_inner(item: MetaItem) -> Attribute {
     Attribute {
-        id,
+        id: mk_attr_id(),
         style: ast::AttrStyle::Inner,
         path: item.path,
         tokens: item.node.tokens(item.span),
         is_sugared_doc: false,
-        span: sp,
+        span: item.span,
     }
 }
 
-/// Returns an outer attribute with the given value.
-pub fn mk_attr_outer(span: Span, id: AttrId, item: MetaItem) -> Attribute {
-    mk_spanned_attr_outer(span, id, item)
-}
-
 /// Returns an outer attribute with the given value and span.
-pub fn mk_spanned_attr_outer(sp: Span, id: AttrId, item: MetaItem) -> Attribute {
+pub fn mk_attr_outer(item: MetaItem) -> Attribute {
     Attribute {
-        id,
+        id: mk_attr_id(),
         style: ast::AttrStyle::Outer,
         path: item.path,
         tokens: item.node.tokens(item.span),
         is_sugared_doc: false,
-        span: sp,
+        span: item.span,
     }
 }
 
-pub fn mk_sugared_doc_attr(id: AttrId, text: Symbol, span: Span) -> Attribute {
+pub fn mk_sugared_doc_attr(text: Symbol, span: Span) -> Attribute {
     let style = doc_comment_style(&text.as_str());
     let lit_kind = LitKind::Str(text, ast::StrStyle::Cooked);
     let lit = Lit::from_lit_kind(lit_kind, span);
     Attribute {
-        id,
+        id: mk_attr_id(),
         style,
         path: Path::from_ident(Ident::with_empty_ctxt(sym::doc).with_span_pos(span)),
         tokens: MetaItemKind::NameValue(lit).tokens(span),
@@ -440,12 +429,12 @@ pub fn contains_name(attrs: &[Attribute], name: Symbol) -> bool {
     })
 }
 
-pub fn find_by_name<'a>(attrs: &'a [Attribute], name: Symbol) -> Option<&'a Attribute> {
+pub fn find_by_name(attrs: &[Attribute], name: Symbol) -> Option<&Attribute> {
     attrs.iter().find(|attr| attr.check_name(name))
 }
 
-pub fn filter_by_name<'a>(attrs: &'a [Attribute], name: Symbol)
-    -> impl Iterator<Item = &'a Attribute> {
+pub fn filter_by_name(attrs: &[Attribute], name: Symbol)
+                      -> impl Iterator<Item=&Attribute> {
     attrs.iter().filter(move |attr| attr.check_name(name))
 }
 

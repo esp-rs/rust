@@ -13,7 +13,7 @@ use rustc::mir::{
 use rustc::mir::visit::{
     Visitor, PlaceContext, MutatingUseContext, MutVisitor, NonMutatingUseContext,
 };
-use rustc::mir::interpret::{InterpError, Scalar, GlobalId, InterpResult};
+use rustc::mir::interpret::{Scalar, GlobalId, InterpResult, PanicInfo};
 use rustc::ty::{self, Instance, ParamEnv, Ty, TyCtxt};
 use syntax_pos::{Span, DUMMY_SP};
 use rustc::ty::subst::InternalSubsts;
@@ -23,7 +23,7 @@ use rustc::ty::layout::{
 };
 
 use crate::interpret::{
-    self, InterpretCx, ScalarMaybeUndef, Immediate, OpTy,
+    self, InterpCx, ScalarMaybeUndef, Immediate, OpTy,
     ImmTy, MemoryKind, StackPopCleanup, LocalValue, LocalState,
 };
 use crate::const_eval::{
@@ -117,7 +117,7 @@ type Const<'tcx> = OpTy<'tcx>;
 
 /// Finds optimization opportunities on the MIR.
 struct ConstPropagator<'mir, 'tcx> {
-    ecx: InterpretCx<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>,
+    ecx: InterpCx<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>,
     tcx: TyCtxt<'tcx>,
     source: MirSource<'tcx>,
     can_const_prop: IndexVec<Local, bool>,
@@ -202,7 +202,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
 
         // If the local is `Unitialized` or `Dead` then we haven't propagated a value into it.
         //
-        // `InterpretCx::access_local()` mostly takes care of this for us however, for ZSTs,
+        // `InterpCx::access_local()` mostly takes care of this for us however, for ZSTs,
         // it will synthesize a value for us. In doing so, that will cause the
         // `get_const(l).is_empty()` assert right before we call `set_const()` in `visit_statement`
         // to fail.
@@ -258,94 +258,14 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                 let diagnostic = error_to_const_error(&self.ecx, error);
                 use rustc::mir::interpret::InterpError::*;
                 match diagnostic.error {
-                    // don't report these, they make no sense in a const prop context
-                    | MachineError(_)
-                    | Exit(_)
-                    // at runtime these transformations might make sense
-                    // FIXME: figure out the rules and start linting
-                    | FunctionAbiMismatch(..)
-                    | FunctionArgMismatch(..)
-                    | FunctionRetMismatch(..)
-                    | FunctionArgCountMismatch
-                    // fine at runtime, might be a register address or sth
-                    | ReadBytesAsPointer
-                    // fine at runtime
-                    | ReadForeignStatic
-                    | Unimplemented(_)
-                    // don't report const evaluator limits
-                    | StackFrameLimitReached
-                    | NoMirFor(..)
-                    | InlineAsm
-                    => {},
-
-                    | InvalidMemoryAccess
-                    | DanglingPointerDeref
-                    | DoubleFree
-                    | InvalidFunctionPointer
-                    | InvalidBool
-                    | InvalidDiscriminant(..)
-                    | PointerOutOfBounds { .. }
-                    | InvalidNullPointerUsage
-                    | ValidationFailure(..)
-                    | InvalidPointerMath
-                    | ReadUndefBytes(_)
-                    | DeadLocal
-                    | InvalidBoolOp(_)
-                    | DerefFunctionPointer
-                    | ExecuteMemory
-                    | Intrinsic(..)
-                    | InvalidChar(..)
-                    | AbiViolation(_)
-                    | AlignmentCheckFailed{..}
-                    | CalledClosureAsFunction
-                    | VtableForArgumentlessMethod
-                    | ModifiedConstantMemory
-                    | ModifiedStatic
-                    | AssumptionNotHeld
-                    // FIXME: should probably be removed and turned into a bug! call
-                    | TypeNotPrimitive(_)
-                    | ReallocatedWrongMemoryKind(_, _)
-                    | DeallocatedWrongMemoryKind(_, _)
-                    | ReallocateNonBasePtr
-                    | DeallocateNonBasePtr
-                    | IncorrectAllocationInformation(..)
-                    | UnterminatedCString(_)
-                    | HeapAllocZeroBytes
-                    | HeapAllocNonPowerOfTwoAlignment(_)
-                    | Unreachable
-                    | ReadFromReturnPointer
-                    | GeneratorResumedAfterReturn
-                    | GeneratorResumedAfterPanic
-                    | ReferencedConstant
-                    | InfiniteLoop
-                    => {
-                        // FIXME: report UB here
-                    },
-
-                    | OutOfTls
-                    | TlsOutOfBounds
-                    | PathNotFound(_)
-                    => bug!("these should not be in rustc, but in miri's machine errors"),
-
-                    | Layout(_)
-                    | UnimplementedTraitSelection
-                    | TypeckError
-                    | TooGeneric
-                    // these are just noise
-                    => {},
-
-                    // non deterministic
-                    | ReadPointerAsBytes
-                    // FIXME: implement
-                    => {},
-
-                    | Panic { .. }
-                    | BoundsCheck{..}
-                    | Overflow(_)
-                    | OverflowNeg
-                    | DivisionByZero
-                    | RemainderByZero
-                    => {
+                    Exit(_) => bug!("the CTFE program cannot exit"),
+                    Unsupported(_)
+                    | UndefinedBehavior(_)
+                    | InvalidProgram(_)
+                    | ResourceExhaustion(_) => {
+                        // Ignore these errors.
+                    }
+                    Panic(_) => {
                         diagnostic.report_as_lint(
                             self.ecx.tcx,
                             "this expression will panic at runtime",
@@ -522,7 +442,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                             // Need to do overflow check here: For actual CTFE, MIR
                             // generation emits code that does this before calling the op.
                             if prim.to_bits()? == (1 << (prim.layout.size.bits() - 1)) {
-                                return err!(OverflowNeg);
+                                throw_panic!(OverflowNeg)
                             }
                         }
                         UnOp::Not => {
@@ -600,7 +520,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                     )
                 } else {
                     if overflow {
-                        let err = InterpError::Overflow(op).into();
+                        let err = err_panic!(Overflow(op)).into();
                         let _: Option<()> = self.use_ecx(source_info, |_| Err(err));
                         return None;
                     }
@@ -781,7 +701,10 @@ impl<'mir, 'tcx> MutVisitor<'tcx> for ConstPropagator<'mir, 'tcx> {
                 .ty;
             if let Ok(place_layout) = self.tcx.layout_of(self.param_env.and(place_ty)) {
                 if let Some(value) = self.const_prop(rval, place_layout, statement.source_info) {
-                    if let Place::Base(PlaceBase::Local(local)) = *place {
+                    if let Place {
+                        base: PlaceBase::Local(local),
+                        projection: None,
+                    } = *place {
                         trace!("checking whether {:?} can be stored to {:?}", value, local);
                         if self.can_const_prop[local] {
                             trace!("storing {:?} to {:?}", value, local);
@@ -811,7 +734,7 @@ impl<'mir, 'tcx> MutVisitor<'tcx> for ConstPropagator<'mir, 'tcx> {
         self.super_terminator(terminator, location);
         let source_info = terminator.source_info;
         match &mut terminator.kind {
-            TerminatorKind::Assert { expected, msg, ref mut cond, .. } => {
+            TerminatorKind::Assert { expected, ref msg, ref mut cond, .. } => {
                 if let Some(value) = self.eval_operand(&cond, source_info) {
                     trace!("assertion on {:?} should be {:?}", value, expected);
                     let expected = ScalarMaybeUndef::from(Scalar::from_bool(*expected));
@@ -821,11 +744,7 @@ impl<'mir, 'tcx> MutVisitor<'tcx> for ConstPropagator<'mir, 'tcx> {
                         // doesn't use the invalid value
                         match cond {
                             Operand::Move(ref place) | Operand::Copy(ref place) => {
-                                let mut place = place;
-                                while let Place::Projection(ref proj) = *place {
-                                    place = &proj.base;
-                                }
-                                if let Place::Base(PlaceBase::Local(local)) = *place {
+                                if let PlaceBase::Local(local) = place.base {
                                     self.remove_const(local);
                                 }
                             },
@@ -837,13 +756,13 @@ impl<'mir, 'tcx> MutVisitor<'tcx> for ConstPropagator<'mir, 'tcx> {
                             .hir()
                             .as_local_hir_id(self.source.def_id())
                             .expect("some part of a failing const eval must be local");
-                        use rustc::mir::interpret::InterpError::*;
                         let msg = match msg {
-                            Overflow(_) |
-                            OverflowNeg |
-                            DivisionByZero |
-                            RemainderByZero => msg.description().to_owned(),
-                            BoundsCheck { ref len, ref index } => {
+                            PanicInfo::Overflow(_) |
+                            PanicInfo::OverflowNeg |
+                            PanicInfo::DivisionByZero |
+                            PanicInfo::RemainderByZero =>
+                                msg.description().to_owned(),
+                            PanicInfo::BoundsCheck { ref len, ref index } => {
                                 let len = self
                                     .eval_operand(len, source_info)
                                     .expect("len must be const");

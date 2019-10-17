@@ -1,7 +1,5 @@
 //! This pass type-checks the MIR to ensure it is not broken.
 
-#![allow(unreachable_code)]
-
 use crate::borrow_check::borrow_set::BorrowSet;
 use crate::borrow_check::location::LocationTable;
 use crate::borrow_check::nll::constraints::{OutlivesConstraintSet, OutlivesConstraint};
@@ -28,14 +26,14 @@ use rustc::infer::canonical::QueryRegionConstraints;
 use rustc::infer::outlives::env::RegionBoundPairs;
 use rustc::infer::{InferCtxt, InferOk, LateBoundRegionConversionTime, NLLRegionVariableOrigin};
 use rustc::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
-use rustc::mir::interpret::{InterpError::BoundsCheck, ConstValue};
+use rustc::mir::interpret::{ConstValue, PanicInfo};
 use rustc::mir::tcx::PlaceTy;
 use rustc::mir::visit::{PlaceContext, Visitor, NonMutatingUseContext};
 use rustc::mir::*;
 use rustc::traits::query::type_op;
 use rustc::traits::query::type_op::custom::CustomTypeOp;
 use rustc::traits::query::{Fallible, NoSolution};
-use rustc::traits::{ObligationCause, PredicateObligations};
+use rustc::traits::{self, ObligationCause, PredicateObligations};
 use rustc::ty::adjustment::{PointerCast};
 use rustc::ty::fold::TypeFoldable;
 use rustc::ty::subst::{Subst, SubstsRef, UnpackedKind, UserSubsts};
@@ -499,30 +497,43 @@ impl<'a, 'b, 'tcx> TypeVerifier<'a, 'b, 'tcx> {
             };
 
             // FIXME use place_projection.is_empty() when is available
-            if let Place::Base(_) = place {
+            if place.projection.is_none() {
                 if let PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy) = context {
-                    let tcx = self.tcx();
-                    let trait_ref = ty::TraitRef {
-                        def_id: tcx.lang_items().copy_trait().unwrap(),
-                        substs: tcx.mk_substs_trait(place_ty.ty, &[]),
+                    let is_promoted = match place {
+                        Place {
+                            base: PlaceBase::Static(box Static {
+                                kind: StaticKind::Promoted(_),
+                                ..
+                            }),
+                            projection: None,
+                        } => true,
+                        _ => false,
                     };
 
-                    // In order to have a Copy operand, the type T of the
-                    // value must be Copy. Note that we prove that T: Copy,
-                    // rather than using the `is_copy_modulo_regions`
-                    // test. This is important because
-                    // `is_copy_modulo_regions` ignores the resulting region
-                    // obligations and assumes they pass. This can result in
-                    // bounds from Copy impls being unsoundly ignored (e.g.,
-                    // #29149). Note that we decide to use Copy before knowing
-                    // whether the bounds fully apply: in effect, the rule is
-                    // that if a value of some type could implement Copy, then
-                    // it must.
-                    self.cx.prove_trait_ref(
-                        trait_ref,
-                        location.to_locations(),
-                        ConstraintCategory::CopyBound,
-                    );
+                    if !is_promoted {
+                        let tcx = self.tcx();
+                        let trait_ref = ty::TraitRef {
+                            def_id: tcx.lang_items().copy_trait().unwrap(),
+                            substs: tcx.mk_substs_trait(place_ty.ty, &[]),
+                        };
+
+                        // In order to have a Copy operand, the type T of the
+                        // value must be Copy. Note that we prove that T: Copy,
+                        // rather than using the `is_copy_modulo_regions`
+                        // test. This is important because
+                        // `is_copy_modulo_regions` ignores the resulting region
+                        // obligations and assumes they pass. This can result in
+                        // bounds from Copy impls being unsoundly ignored (e.g.,
+                        // #29149). Note that we decide to use Copy before knowing
+                        // whether the bounds fully apply: in effect, the rule is
+                        // that if a value of some type could implement Copy, then
+                        // it must.
+                        self.cx.prove_trait_ref(
+                            trait_ref,
+                            location.to_locations(),
+                            ConstraintCategory::CopyBound,
+                        );
+                    }
                 }
             }
 
@@ -658,7 +669,7 @@ impl<'a, 'b, 'tcx> TypeVerifier<'a, 'b, 'tcx> {
             ProjectionElem::Subslice { from, to } => PlaceTy::from_ty(
                 match base_ty.sty {
                     ty::Array(inner, size) => {
-                        let size = size.unwrap_usize(tcx);
+                        let size = size.eval_usize(tcx, self.cx.param_env);
                         let min_size = (from as u64) + (to as u64);
                         if let Some(rest_size) = size.checked_sub(min_size) {
                             tcx.mk_array(inner, rest_size)
@@ -1203,10 +1214,15 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         let tcx = self.infcx.tcx;
 
         for proj in &user_ty.projs {
-            let projected_ty = curr_projected_ty.projection_ty_core(tcx, proj, |this, field, &()| {
-                let ty = this.field_ty(tcx, field);
-                self.normalize(ty, locations)
-            });
+            let projected_ty = curr_projected_ty.projection_ty_core(
+                tcx,
+                self.param_env,
+                proj,
+                |this, field, &()| {
+                    let ty = this.field_ty(tcx, field);
+                    self.normalize(ty, locations)
+                },
+            );
             curr_projected_ty = projected_ty;
         }
         debug!("user_ty base: {:?} freshened: {:?} projs: {:?} yields: {:?}",
@@ -1268,15 +1284,43 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                         let opaque_defn_ty = tcx.type_of(opaque_def_id);
                         let opaque_defn_ty = opaque_defn_ty.subst(tcx, opaque_decl.substs);
                         let opaque_defn_ty = renumber::renumber_regions(infcx, &opaque_defn_ty);
+                        let concrete_is_opaque = infcx
+                            .resolve_vars_if_possible(&opaque_decl.concrete_ty).is_impl_trait();
+
                         debug!(
-                            "eq_opaque_type_and_type: concrete_ty={:?}={:?} opaque_defn_ty={:?}",
+                            "eq_opaque_type_and_type: concrete_ty={:?}={:?} opaque_defn_ty={:?} \
+                            concrete_is_opaque={}",
                             opaque_decl.concrete_ty,
                             infcx.resolve_vars_if_possible(&opaque_decl.concrete_ty),
-                            opaque_defn_ty
+                            opaque_defn_ty,
+                            concrete_is_opaque
                         );
-                        obligations.add(infcx
-                            .at(&ObligationCause::dummy(), param_env)
-                            .eq(opaque_decl.concrete_ty, opaque_defn_ty)?);
+
+                        // concrete_is_opaque is `true` when we're using an opaque `impl Trait`
+                        // type without 'revealing' it. For example, code like this:
+                        //
+                        // type Foo = impl Debug;
+                        // fn foo1() -> Foo { ... }
+                        // fn foo2() -> Foo { foo1() }
+                        //
+                        // In `foo2`, we're not revealing the type of `Foo` - we're
+                        // just treating it as the opaque type.
+                        //
+                        // When this occurs, we do *not* want to try to equate
+                        // the concrete type with the underlying defining type
+                        // of the opaque type - this will always fail, since
+                        // the defining type of an opaque type is always
+                        // some other type (e.g. not itself)
+                        // Essentially, none of the normal obligations apply here -
+                        // we're just passing around some unknown opaque type,
+                        // without actually looking at the underlying type it
+                        // gets 'revealed' into
+
+                        if !concrete_is_opaque {
+                            obligations.add(infcx
+                                .at(&ObligationCause::dummy(), param_env)
+                                .eq(opaque_decl.concrete_ty, opaque_defn_ty)?);
+                        }
                     }
 
                     debug!("eq_opaque_type_and_type: equated");
@@ -1335,15 +1379,17 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                 // of lowering. Assignments to other sorts of places *are* interesting
                 // though.
                 let category = match *place {
-                    Place::Base(PlaceBase::Local(RETURN_PLACE)) => if let BorrowCheckContext {
+                    Place {
+                        base: PlaceBase::Local(RETURN_PLACE),
+                        projection: None,
+                    } => if let BorrowCheckContext {
                         universal_regions:
                             UniversalRegions {
                                 defining_ty: DefiningTy::Const(def_id, _),
                                 ..
                             },
                         ..
-                    } = self.borrowck_context
-                    {
+                    } = self.borrowck_context {
                         if tcx.is_static(*def_id) {
                             ConstraintCategory::UseAsStatic
                         } else {
@@ -1352,8 +1398,10 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                     } else {
                         ConstraintCategory::Return
                     },
-                    Place::Base(PlaceBase::Local(l))
-                        if !body.local_decls[l].is_user_variable.is_some() => {
+                    Place {
+                        base: PlaceBase::Local(l),
+                        projection: None,
+                    } if !body.local_decls[l].is_user_variable.is_some() => {
                         ConstraintCategory::Boring
                     }
                     _ => ConstraintCategory::Assignment,
@@ -1589,7 +1637,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                     span_mirbug!(self, term, "bad Assert ({:?}, not bool", cond_ty);
                 }
 
-                if let BoundsCheck { ref len, ref index } = *msg {
+                if let PanicInfo::BoundsCheck { ref len, ref index } = *msg {
                     if len.ty(body, tcx) != tcx.types.usize {
                         span_mirbug!(self, len, "bounds-check length non-usize {:?}", len)
                     }
@@ -1637,7 +1685,10 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
             Some((ref dest, _target_block)) => {
                 let dest_ty = dest.ty(body, tcx).ty;
                 let category = match *dest {
-                    Place::Base(PlaceBase::Local(RETURN_PLACE)) => {
+                    Place {
+                        base: PlaceBase::Local(RETURN_PLACE),
+                        projection: None,
+                    } => {
                         if let BorrowCheckContext {
                             universal_regions:
                                 UniversalRegions {
@@ -1656,8 +1707,10 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                             ConstraintCategory::Return
                         }
                     }
-                    Place::Base(PlaceBase::Local(l))
-                        if !body.local_decls[l].is_user_variable.is_some() => {
+                    Place {
+                        base: PlaceBase::Local(l),
+                        projection: None,
+                    } if !body.local_decls[l].is_user_variable.is_some() => {
                         ConstraintCategory::Boring
                     }
                     _ => ConstraintCategory::Assignment,
@@ -1953,18 +2006,32 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
             }
 
             Rvalue::Repeat(operand, len) => if *len > 1 {
-                let operand_ty = operand.ty(body, tcx);
-
-                let trait_ref = ty::TraitRef {
-                    def_id: tcx.lang_items().copy_trait().unwrap(),
-                    substs: tcx.mk_substs_trait(operand_ty, &[]),
-                };
-
-                self.prove_trait_ref(
-                    trait_ref,
-                    location.to_locations(),
-                    ConstraintCategory::CopyBound,
-                );
+                if let Operand::Move(_) = operand {
+                    // While this is located in `nll::typeck` this error is not an NLL error, it's
+                    // a required check to make sure that repeated elements implement `Copy`.
+                    let span = body.source_info(location).span;
+                    let ty = operand.ty(body, tcx);
+                    if !self.infcx.type_is_copy_modulo_regions(self.param_env, ty, span) {
+                        self.infcx.report_selection_error(
+                            &traits::Obligation::new(
+                                ObligationCause::new(
+                                    span,
+                                    self.tcx().hir().def_index_to_hir_id(self.mir_def_id.index),
+                                    traits::ObligationCauseCode::RepeatVec,
+                                ),
+                                self.param_env,
+                                ty::Predicate::Trait(ty::Binder::bind(ty::TraitPredicate {
+                                    trait_ref: ty::TraitRef::new(
+                                        self.tcx().lang_items().copy_trait().unwrap(),
+                                        tcx.mk_substs_trait(ty, &[]),
+                                    ),
+                                })),
+                            ),
+                            &traits::SelectionError::Unimplemented,
+                            false,
+                        );
+                    }
+                }
             },
 
             Rvalue::NullaryOp(_, ty) => {
@@ -2376,19 +2443,19 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         // *p`, where the `p` has type `&'b mut Foo`, for example, we
         // need to ensure that `'b: 'a`.
 
-        let mut borrowed_place = borrowed_place;
+        let mut borrowed_projection = &borrowed_place.projection;
 
         debug!(
             "add_reborrow_constraint({:?}, {:?}, {:?})",
             location, borrow_region, borrowed_place
         );
-        while let Place::Projection(box Projection { base, elem }) = borrowed_place {
-            debug!("add_reborrow_constraint - iteration {:?}", borrowed_place);
+        while let Some(box proj) = borrowed_projection {
+            debug!("add_reborrow_constraint - iteration {:?}", borrowed_projection);
 
-            match *elem {
+            match proj.elem {
                 ProjectionElem::Deref => {
                     let tcx = self.infcx.tcx;
-                    let base_ty = base.ty(body, tcx).ty;
+                    let base_ty = Place::ty_from(&borrowed_place.base, &proj.base, body, tcx).ty;
 
                     debug!("add_reborrow_constraint - base_ty = {:?}", base_ty);
                     match base_ty.sty {
@@ -2453,7 +2520,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
 
             // The "propagate" case. We need to check that our base is valid
             // for the borrow's lifetime.
-            borrowed_place = base;
+            borrowed_projection = &proj.base;
         }
     }
 

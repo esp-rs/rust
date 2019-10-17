@@ -11,7 +11,7 @@ use rustc::hir::def::DefKind;
 use rustc::hir::def_id::DefId;
 use rustc::mir::interpret::{ConstEvalErr, ErrorHandled, ScalarMaybeUndef};
 use rustc::mir;
-use rustc::ty::{self, TyCtxt, query::TyCtxtAt};
+use rustc::ty::{self, TyCtxt};
 use rustc::ty::layout::{self, LayoutOf, VariantIdx};
 use rustc::ty::subst::Subst;
 use rustc::traits::Reveal;
@@ -20,9 +20,9 @@ use rustc_data_structures::fx::FxHashMap;
 use syntax::source_map::{Span, DUMMY_SP};
 
 use crate::interpret::{self,
-    PlaceTy, MPlaceTy, OpTy, ImmTy, Immediate, Scalar,
+    PlaceTy, MPlaceTy, OpTy, ImmTy, Immediate, Scalar, Pointer,
     RawConst, ConstValue,
-    InterpResult, InterpErrorInfo, InterpError, GlobalId, InterpretCx, StackPopCleanup,
+    InterpResult, InterpErrorInfo, GlobalId, InterpCx, StackPopCleanup,
     Allocation, AllocId, MemoryKind, Memory,
     snapshot, RefTracking, intern_const_alloc_recursive,
 };
@@ -34,7 +34,7 @@ const STEPS_UNTIL_DETECTOR_ENABLED: isize = 1_000_000;
 /// Should be a power of two for performance reasons.
 const DETECTOR_SNAPSHOT_PERIOD: isize = 256;
 
-/// The `InterpretCx` is only meant to be used to do field and index projections into constants for
+/// The `InterpCx` is only meant to be used to do field and index projections into constants for
 /// `simd_shuffle` and const patterns in match arms.
 ///
 /// The function containing the `match` that is currently being analyzed may have generic bounds
@@ -47,7 +47,7 @@ pub(crate) fn mk_eval_cx<'mir, 'tcx>(
     param_env: ty::ParamEnv<'tcx>,
 ) -> CompileTimeEvalContext<'mir, 'tcx> {
     debug!("mk_eval_cx: {:?}", param_env);
-    InterpretCx::new(tcx.at(span), param_env, CompileTimeInterpreter::new())
+    InterpCx::new(tcx.at(span), param_env, CompileTimeInterpreter::new(), Default::default())
 }
 
 pub(crate) fn eval_promoted<'mir, 'tcx>(
@@ -98,7 +98,7 @@ fn op_to_const<'tcx>(
         Ok(mplace) => {
             let ptr = mplace.ptr.to_ptr().unwrap();
             let alloc = ecx.tcx.alloc_map.lock().unwrap_memory(ptr.alloc_id);
-            ConstValue::ByRef { offset: ptr.offset, align: mplace.align, alloc }
+            ConstValue::ByRef { alloc, offset: ptr.offset }
         },
         // see comment on `let try_as_immediate` above
         Err(ImmTy { imm: Immediate::Scalar(x), .. }) => match x {
@@ -109,10 +109,10 @@ fn op_to_const<'tcx>(
                 // `Immediate` is when we are called from `const_field`, and that `Immediate`
                 // comes from a constant so it can happen have `Undef`, because the indirect
                 // memory that was read had undefined bytes.
-                let mplace = op.to_mem_place();
+                let mplace = op.assert_mem_place();
                 let ptr = mplace.ptr.to_ptr().unwrap();
                 let alloc = ecx.tcx.alloc_map.lock().unwrap_memory(ptr.alloc_id);
-                ConstValue::ByRef { offset: ptr.offset, align: mplace.align, alloc }
+                ConstValue::ByRef { alloc, offset: ptr.offset }
             },
         },
         Err(ImmTy { imm: Immediate::ScalarPair(a, b), .. }) => {
@@ -181,15 +181,15 @@ fn eval_body_using_ecx<'mir, 'tcx>(
     Ok(ret)
 }
 
-impl<'tcx> Into<InterpErrorInfo<'tcx>> for ConstEvalError {
-    fn into(self) -> InterpErrorInfo<'tcx> {
-        InterpError::MachineError(self.to_string()).into()
-    }
-}
-
 #[derive(Clone, Debug)]
 enum ConstEvalError {
     NeedsRfc(String),
+}
+
+impl<'tcx> Into<InterpErrorInfo<'tcx>> for ConstEvalError {
+    fn into(self) -> InterpErrorInfo<'tcx> {
+        err_unsup!(Unsupported(self.to_string())).into()
+    }
 }
 
 impl fmt::Display for ConstEvalError {
@@ -303,7 +303,7 @@ impl<K: Hash + Eq, V> interpret::AllocMap<K, V> for FxHashMap<K, V> {
 }
 
 crate type CompileTimeEvalContext<'mir, 'tcx> =
-    InterpretCx<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>;
+    InterpCx<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>;
 
 impl interpret::MayLeak for ! {
     #[inline(always)]
@@ -316,6 +316,7 @@ impl interpret::MayLeak for ! {
 impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir, 'tcx> {
     type MemoryKinds = !;
     type PointerTag = ();
+    type ExtraFnVal = !;
 
     type FrameExtra = ();
     type MemoryExtra = ();
@@ -325,13 +326,17 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
 
     const STATIC_KIND: Option<!> = None; // no copying of statics allowed
 
+    // We do not check for alignment to avoid having to carry an `Align`
+    // in `ConstValue::ByRef`.
+    const CHECK_ALIGN: bool = false;
+
     #[inline(always)]
-    fn enforce_validity(_ecx: &InterpretCx<'mir, 'tcx, Self>) -> bool {
+    fn enforce_validity(_ecx: &InterpCx<'mir, 'tcx, Self>) -> bool {
         false // for now, we don't enforce validity
     }
 
     fn find_fn(
-        ecx: &mut InterpretCx<'mir, 'tcx, Self>,
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx>],
         dest: Option<PlaceTy<'tcx>>,
@@ -340,7 +345,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         debug!("eval_fn_call: {:?}", instance);
         // Only check non-glue functions
         if let ty::InstanceDef::Item(def_id) = instance.def {
-            // Execution might have wandered off into other crates, so we cannot to a stability-
+            // Execution might have wandered off into other crates, so we cannot do a stability-
             // sensitive check here.  But we can at least rule out functions that are not const
             // at all.
             if !ecx.tcx.is_const_fn_raw(def_id) {
@@ -351,7 +356,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
                     ecx.goto_block(ret)?; // fully evaluated and done
                     Ok(None)
                 } else {
-                    err!(MachineError(format!("calling non-const function `{}`", instance)))
+                    throw_unsup_format!("calling non-const function `{}`", instance)
                 };
             }
         }
@@ -359,7 +364,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         Ok(Some(match ecx.load_mir(instance.def) {
             Ok(body) => body,
             Err(err) => {
-                if let InterpError::NoMirFor(ref path) = err.kind {
+                if let err_unsup!(NoMirFor(ref path)) = err.kind {
                     return Err(
                         ConstEvalError::NeedsRfc(format!("calling extern function `{}`", path))
                             .into(),
@@ -370,8 +375,18 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         }))
     }
 
+    fn call_extra_fn(
+        _ecx: &mut InterpCx<'mir, 'tcx, Self>,
+        fn_val: !,
+        _args: &[OpTy<'tcx>],
+        _dest: Option<PlaceTy<'tcx>>,
+        _ret: Option<mir::BasicBlock>,
+    ) -> InterpResult<'tcx> {
+        match fn_val {}
+    }
+
     fn call_intrinsic(
-        ecx: &mut InterpretCx<'mir, 'tcx, Self>,
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx>],
         dest: PlaceTy<'tcx>,
@@ -386,8 +401,17 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         )
     }
 
-    fn ptr_op(
-        _ecx: &InterpretCx<'mir, 'tcx, Self>,
+    fn ptr_to_int(
+        _mem: &Memory<'mir, 'tcx, Self>,
+        _ptr: Pointer,
+    ) -> InterpResult<'tcx, u64> {
+        Err(
+            ConstEvalError::NeedsRfc("pointer-to-integer cast".to_string()).into(),
+        )
+    }
+
+    fn binary_ptr_op(
+        _ecx: &InterpCx<'mir, 'tcx, Self>,
         _bin_op: mir::BinOp,
         _left: ImmTy<'tcx>,
         _right: ImmTy<'tcx>,
@@ -398,18 +422,18 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
     }
 
     fn find_foreign_static(
+        _tcx: TyCtxt<'tcx>,
         _def_id: DefId,
-        _tcx: TyCtxtAt<'tcx>,
     ) -> InterpResult<'tcx, Cow<'tcx, Allocation<Self::PointerTag>>> {
-        err!(ReadForeignStatic)
+        throw_unsup!(ReadForeignStatic)
     }
 
     #[inline(always)]
     fn tag_allocation<'b>(
+        _memory_extra: &(),
         _id: AllocId,
         alloc: Cow<'b, Allocation>,
         _kind: Option<MemoryKind<!>>,
-        _memory: &Memory<'mir, 'tcx, Self>,
     ) -> (Cow<'b, Allocation<Self::PointerTag>>, Self::PointerTag) {
         // We do not use a tag so we can just cheaply forward the allocation
         (alloc, ())
@@ -417,14 +441,14 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
 
     #[inline(always)]
     fn tag_static_base_pointer(
+        _memory_extra: &(),
         _id: AllocId,
-        _memory: &Memory<'mir, 'tcx, Self>,
     ) -> Self::PointerTag {
         ()
     }
 
     fn box_alloc(
-        _ecx: &mut InterpretCx<'mir, 'tcx, Self>,
+        _ecx: &mut InterpCx<'mir, 'tcx, Self>,
         _dest: PlaceTy<'tcx>,
     ) -> InterpResult<'tcx> {
         Err(
@@ -432,7 +456,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         )
     }
 
-    fn before_terminator(ecx: &mut InterpretCx<'mir, 'tcx, Self>) -> InterpResult<'tcx> {
+    fn before_terminator(ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx> {
         {
             let steps = &mut ecx.machine.steps_since_detector_enabled;
 
@@ -457,13 +481,13 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
     }
 
     #[inline(always)]
-    fn stack_push(_ecx: &mut InterpretCx<'mir, 'tcx, Self>) -> InterpResult<'tcx> {
+    fn stack_push(_ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx> {
         Ok(())
     }
 
     /// Called immediately before a stack frame gets popped.
     #[inline(always)]
-    fn stack_pop(_ecx: &mut InterpretCx<'mir, 'tcx, Self>, _extra: ()) -> InterpResult<'tcx> {
+    fn stack_pop(_ecx: &mut InterpCx<'mir, 'tcx, Self>, _extra: ()) -> InterpResult<'tcx> {
         Ok(())
     }
 }
@@ -508,7 +532,7 @@ pub fn const_variant_index<'tcx>(
 }
 
 pub fn error_to_const_error<'mir, 'tcx>(
-    ecx: &InterpretCx<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>,
+    ecx: &InterpCx<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>,
     mut error: InterpErrorInfo<'tcx>,
 ) -> ConstEvalErr<'tcx> {
     error.print_backtrace();
@@ -541,9 +565,8 @@ fn validate_and_turn_into_const<'tcx>(
             let ptr = mplace.ptr.to_ptr()?;
             Ok(tcx.mk_const(ty::Const {
                 val: ConstValue::ByRef {
-                    offset: ptr.offset,
-                    align: mplace.align,
                     alloc: ecx.tcx.alloc_map.lock().unwrap_memory(ptr.alloc_id),
+                    offset: ptr.offset,
                 },
                 ty: mplace.layout.ty,
             }))
@@ -632,7 +655,12 @@ pub fn const_eval_raw_provider<'tcx>(
     }
 
     let span = tcx.def_span(cid.instance.def_id());
-    let mut ecx = InterpretCx::new(tcx.at(span), key.param_env, CompileTimeInterpreter::new());
+    let mut ecx = InterpCx::new(
+        tcx.at(span),
+        key.param_env,
+        CompileTimeInterpreter::new(),
+        Default::default()
+    );
 
     let res = ecx.load_mir(cid.instance.def);
     res.map(|body| {
@@ -645,7 +673,7 @@ pub fn const_eval_raw_provider<'tcx>(
         |body| eval_body_using_ecx(&mut ecx, cid, body, key.param_env)
     ).and_then(|place| {
         Ok(RawConst {
-            alloc_id: place.to_ptr().expect("we allocated this ptr!").alloc_id,
+            alloc_id: place.ptr.assert_ptr().alloc_id,
             ty: place.layout.ty
         })
     }).map_err(|error| {
@@ -681,8 +709,8 @@ pub fn const_eval_raw_provider<'tcx>(
                 // promoting runtime code is only allowed to error if it references broken constants
                 // any other kind of error will be reported to the user as a deny-by-default lint
                 _ => if let Some(p) = cid.promoted {
-                    let span = tcx.optimized_mir(def_id).promoted[p].span;
-                    if let InterpError::ReferencedConstant = err.error {
+                    let span = tcx.promoted_mir(def_id)[p].span;
+                    if let err_inval!(ReferencedConstant) = err.error {
                         err.report_as_error(
                             tcx.at(span),
                             "evaluation of constant expression failed",

@@ -23,7 +23,7 @@ use crate::lint::{LintArray, Level, Lint, LintId, LintPass, LintBuffer};
 use crate::lint::builtin::BuiltinLintDiagnostics;
 use crate::lint::levels::{LintLevelSets, LintLevelsBuilder};
 use crate::middle::privacy::AccessLevels;
-use crate::rustc_serialize::{Decoder, Decodable, Encoder, Encodable};
+use rustc_serialize::{Decoder, Decodable, Encoder, Encodable};
 use crate::session::{config, early_error, Session};
 use crate::ty::{self, print::Printer, subst::Kind, TyCtxt, Ty};
 use crate::ty::layout::{LayoutError, LayoutOf, TyLayout};
@@ -926,7 +926,7 @@ impl<'a, 'tcx, T: LateLintPass<'a, 'tcx>> LateContextAndPass<'a, 'tcx, T> {
     {
         let old_param_env = self.context.param_env;
         self.context.param_env = self.context.tcx.param_env(
-            self.context.tcx.hir().local_def_id_from_hir_id(id)
+            self.context.tcx.hir().local_def_id(id)
         );
         f(self);
         self.context.param_env = old_param_env;
@@ -964,6 +964,13 @@ for LateContextAndPass<'a, 'tcx, T> {
         let body = self.context.tcx.hir().body(body);
         self.visit_body(body);
         self.context.tables = old_tables;
+    }
+
+    fn visit_arg(&mut self, arg: &'tcx hir::Arg) {
+        self.with_lint_attrs(arg.hir_id, &arg.attrs, |cx| {
+            lint_callback!(cx, check_arg, arg);
+            hir_visit::walk_arg(cx, arg);
+        });
     }
 
     fn visit_body(&mut self, body: &'tcx hir::Body) {
@@ -1156,6 +1163,13 @@ for LateContextAndPass<'a, 'tcx, T> {
 }
 
 impl<'a, T: EarlyLintPass> ast_visit::Visitor<'a> for EarlyContextAndPass<'a, T> {
+    fn visit_arg(&mut self, arg: &'a ast::Arg) {
+        self.with_lint_attrs(arg.id, &arg.attrs, |cx| {
+            run_early_pass!(cx, check_arg, arg);
+            ast_visit::walk_arg(cx, arg);
+        });
+    }
+
     fn visit_item(&mut self, it: &'a ast::Item) {
         self.with_lint_attrs(it.id, &it.attrs, |cx| {
             run_early_pass!(cx, check_item, it);
@@ -1341,6 +1355,7 @@ struct LateLintPassObjects<'a> {
     lints: &'a mut [LateLintPassObject],
 }
 
+#[cfg_attr(not(bootstrap), allow(rustc::lint_pass_impl_without_macro))]
 impl LintPass for LateLintPassObjects<'_> {
     fn name(&self) -> &'static str {
         panic!()
@@ -1500,7 +1515,7 @@ pub fn check_crate<'tcx, T: for<'a> LateLintPass<'a, 'tcx>>(
         time(tcx.sess, "module lints", || {
             // Run per-module lints
             par_iter(&tcx.hir().krate().modules).for_each(|(&module, _)| {
-                tcx.ensure().lint_mod(tcx.hir().local_def_id(module));
+                tcx.ensure().lint_mod(tcx.hir().local_def_id_from_node_id(module));
             });
         });
     });
@@ -1510,6 +1525,7 @@ struct EarlyLintPassObjects<'a> {
     lints: &'a mut [EarlyLintPassObject],
 }
 
+#[cfg_attr(not(bootstrap), allow(rustc::lint_pass_impl_without_macro))]
 impl LintPass for EarlyLintPassObjects<'_> {
     fn name(&self) -> &'static str {
         panic!()

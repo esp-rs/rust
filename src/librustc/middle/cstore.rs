@@ -87,7 +87,7 @@ pub enum LinkagePreference {
     RequireStatic,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
          RustcEncodable, RustcDecodable, HashStable)]
 pub enum NativeLibraryKind {
     /// native static library (.a archive)
@@ -100,7 +100,7 @@ pub enum NativeLibraryKind {
     NativeUnknown,
 }
 
-#[derive(Clone, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
 pub struct NativeLibrary {
     pub kind: NativeLibraryKind,
     pub name: Option<Symbol>,
@@ -211,7 +211,7 @@ pub trait CrateStore {
     fn crates_untracked(&self) -> Vec<CrateNum>;
 
     // utility functions
-    fn encode_metadata<'tcx>(&self, tcx: TyCtxt<'tcx>) -> EncodedMetadata;
+    fn encode_metadata(&self, tcx: TyCtxt<'_>) -> EncodedMetadata;
     fn metadata_encoding_version(&self) -> &[u8];
 }
 

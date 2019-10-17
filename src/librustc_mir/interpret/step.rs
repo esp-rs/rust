@@ -1,4 +1,4 @@
-//! This module contains the `InterpretCx` methods for executing a single step of the interpreter.
+//! This module contains the `InterpCx` methods for executing a single step of the interpreter.
 //!
 //! The main entry point is the `step` method.
 
@@ -6,7 +6,7 @@ use rustc::mir;
 use rustc::ty::layout::LayoutOf;
 use rustc::mir::interpret::{InterpResult, Scalar, PointerArithmetic};
 
-use super::{InterpretCx, Machine};
+use super::{InterpCx, Machine};
 
 /// Classify whether an operator is "left-homogeneous", i.e., the LHS has the
 /// same type as the result.
@@ -35,7 +35,7 @@ fn binop_right_homogeneous(op: mir::BinOp) -> bool {
     }
 }
 
-impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     pub fn run(&mut self) -> InterpResult<'tcx> {
         while self.step()? {}
         Ok(())
@@ -121,7 +121,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
             // size of MIR constantly.
             Nop => {}
 
-            InlineAsm { .. } => return err!(InlineAsm),
+            InlineAsm { .. } => throw_unsup_format!("inline assembly is not supported"),
         }
 
         self.stack[frame_idx].stmt += 1;
@@ -209,17 +209,18 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
                 let dest = self.force_allocation(dest)?;
                 let length = dest.len(self)?;
 
-                if length > 0 {
-                    // write the first
+                if let Some(first_ptr) = self.check_mplace_access(dest, None)? {
+                    // Write the first.
                     let first = self.mplace_field(dest, 0)?;
                     self.copy_op(op, first.into())?;
 
                     if length > 1 {
-                        // copy the rest
-                        let (dest, dest_align) = first.to_scalar_ptr_align();
-                        let rest = dest.ptr_offset(first.layout.size, self)?;
+                        let elem_size = first.layout.size;
+                        // Copy the rest. This is performance-sensitive code
+                        // for big static/const arrays!
+                        let rest_ptr = first_ptr.offset(elem_size, self)?;
                         self.memory.copy_repeatedly(
-                            dest, dest_align, rest, dest_align, first.layout.size, length - 1, true
+                            first_ptr, rest_ptr, elem_size, length - 1, /*nonoverlapping:*/true
                         )?;
                     }
                 }

@@ -22,7 +22,7 @@ use syntax_pos::Span;
 use super::lints;
 
 /// Construct the MIR for a given `DefId`.
-pub fn mir_build<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Body<'tcx> {
+pub fn mir_build(tcx: TyCtxt<'_>, def_id: DefId) -> Body<'_> {
     let id = tcx.hir().as_local_hir_id(def_id).unwrap();
 
     // Figure out what primary body this item has.
@@ -69,7 +69,7 @@ pub fn mir_build<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Body<'tcx> {
             // fetch the fully liberated fn signature (that is, all bound
             // types/lifetimes replaced)
             let fn_sig = cx.tables().liberated_fn_sigs()[id].clone();
-            let fn_def_id = tcx.hir().local_def_id_from_hir_id(id);
+            let fn_def_id = tcx.hir().local_def_id(id);
 
             let ty = tcx.type_of(fn_def_id);
             let mut abi = fn_sig.abi;
@@ -121,7 +121,7 @@ pub fn mir_build<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Body<'tcx> {
                             self_arg = None;
                         }
 
-                        ArgInfo(fn_sig.inputs()[index], opt_ty_info, Some(&*arg.pat), self_arg)
+                        ArgInfo(fn_sig.inputs()[index], opt_ty_info, Some(&arg), self_arg)
                     });
 
             let arguments = implicit_argument.into_iter().chain(explicit_arguments);
@@ -171,11 +171,11 @@ pub fn mir_build<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Body<'tcx> {
 ///////////////////////////////////////////////////////////////////////////
 // BuildMir -- walks a crate, looking for fn items and methods to build MIR from
 
-fn liberated_closure_env_ty<'tcx>(
-    tcx: TyCtxt<'tcx>,
+fn liberated_closure_env_ty(
+    tcx: TyCtxt<'_>,
     closure_expr_id: hir::HirId,
     body_id: hir::BodyId,
-) -> Ty<'tcx> {
+) -> Ty<'_> {
     let closure_ty = tcx.body_tables(body_id).node_type(closure_expr_id);
 
     let (closure_def_id, closure_substs) = match closure_ty.sty {
@@ -485,7 +485,7 @@ macro_rules! unpack {
     };
 }
 
-fn should_abort_on_panic<'tcx>(tcx: TyCtxt<'tcx>, fn_def_id: DefId, abi: Abi) -> bool {
+fn should_abort_on_panic(tcx: TyCtxt<'_>, fn_def_id: DefId, abi: Abi) -> bool {
     // Not callable from C, so we can safely unwind through these
     if abi == Abi::Rust || abi == Abi::RustCall { return false; }
 
@@ -511,7 +511,7 @@ fn should_abort_on_panic<'tcx>(tcx: TyCtxt<'tcx>, fn_def_id: DefId, abi: Abi) ->
 ///////////////////////////////////////////////////////////////////////////
 /// the main entry point for building MIR for a function
 
-struct ArgInfo<'tcx>(Ty<'tcx>, Option<Span>, Option<&'tcx hir::Pat>, Option<ImplicitSelfKind>);
+struct ArgInfo<'tcx>(Ty<'tcx>, Option<Span>, Option<&'tcx hir::Arg>, Option<ImplicitSelfKind>);
 
 fn construct_fn<'a, 'tcx, A>(
     hir: Cx<'a, 'tcx>,
@@ -534,7 +534,7 @@ where
     let span = tcx_hir.span(fn_id);
 
     let hir_tables = hir.tables();
-    let fn_def_id = tcx_hir.local_def_id_from_hir_id(fn_id);
+    let fn_def_id = tcx_hir.local_def_id(fn_id);
 
     // Gather the upvars of a closure, if any.
     let mut upvar_mutbls = vec![];
@@ -604,9 +604,18 @@ where
         }
 
         let arg_scope_s = (arg_scope, source_info);
-        unpack!(block = builder.in_scope(arg_scope_s, LintLevel::Inherited, |builder| {
-            builder.args_and_body(block, &arguments, arg_scope, &body.value)
-        }));
+        // `return_block` is called when we evaluate a `return` expression, so
+        // we just use `START_BLOCK` here.
+        unpack!(block = builder.in_breakable_scope(
+            None,
+            START_BLOCK,
+            Place::RETURN_PLACE,
+            |builder| {
+                builder.in_scope(arg_scope_s, LintLevel::Inherited, |builder| {
+                    builder.args_and_body(block, &arguments, arg_scope, &body.value)
+                })
+            },
+        ));
         // Attribute epilogue to function's closing brace
         let fn_end = span.shrink_to_hi();
         let source_info = builder.source_info(fn_end);
@@ -773,13 +782,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                      -> BlockAnd<()>
     {
         // Allocate locals for the function arguments
-        for &ArgInfo(ty, _, pattern, _) in arguments.iter() {
+        for &ArgInfo(ty, _, arg_opt, _) in arguments.iter() {
             // If this is a simple binding pattern, give the local a name for
             // debuginfo and so that error reporting knows that this is a user
             // variable. For any other pattern the pattern introduces new
             // variables which will be named instead.
-            let (name, span) = if let Some(pat) = pattern {
-                (pat.simple_ident().map(|ident| ident.name), pat.span)
+            let (name, span) = if let Some(arg) = arg_opt {
+                (arg.pat.simple_ident().map(|ident| ident.name), arg.pat.span)
             } else {
                 (None, self.fn_span)
             };
@@ -804,18 +813,19 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             // Function arguments always get the first Local indices after the return place
             let local = Local::new(index + 1);
             let place = Place::from(local);
-            let &ArgInfo(ty, opt_ty_info, pattern, ref self_binding) = arg_info;
+            let &ArgInfo(ty, opt_ty_info, arg_opt, ref self_binding) = arg_info;
 
             // Make sure we drop (parts of) the argument even when not matched on.
             self.schedule_drop(
-                pattern.as_ref().map_or(ast_body.span, |pat| pat.span),
+                arg_opt.as_ref().map_or(ast_body.span, |arg| arg.pat.span),
                 argument_scope, local, ty, DropKind::Value,
             );
 
-            if let Some(pattern) = pattern {
-                let pattern = self.hir.pattern_from_hir(pattern);
+            if let Some(arg) = arg_opt {
+                let pattern = self.hir.pattern_from_hir(&arg.pat);
+                let original_source_scope = self.source_scope;
                 let span = pattern.span;
-
+                self.set_correct_source_scope_for_arg(arg.hir_id, original_source_scope, span);
                 match *pattern.kind {
                     // Don't introduce extra copies for simple bindings
                     PatternKind::Binding {
@@ -826,6 +836,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         ..
                     } => {
                         self.local_decls[local].mutability = mutability;
+                        self.local_decls[local].source_info.scope = self.source_scope;
                         self.local_decls[local].is_user_variable =
                             if let Some(kind) = self_binding {
                                 Some(ClearCrossCrate::Set(BindingForm::ImplicitSelf(*kind)))
@@ -851,6 +862,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         unpack!(block = self.place_into_pattern(block, pattern, &place, false));
                     }
                 }
+                self.source_scope = original_source_scope;
             }
         }
 
@@ -860,11 +872,31 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
 
         let body = self.hir.mirror(ast_body);
-        // `return_block` is called when we evaluate a `return` expression, so
-        // we just use `START_BLOCK` here.
-        self.in_breakable_scope(None, START_BLOCK, Place::RETURN_PLACE, |this| {
-            this.into(&Place::RETURN_PLACE, block, body)
-        })
+        self.into(&Place::RETURN_PLACE, block, body)
+    }
+
+    fn set_correct_source_scope_for_arg(
+        &mut self,
+        arg_hir_id: hir::HirId,
+        original_source_scope: SourceScope,
+        pattern_span: Span
+    ) {
+        let tcx = self.hir.tcx();
+        let current_root = tcx.maybe_lint_level_root_bounded(
+            arg_hir_id,
+            self.hir.root_lint_level
+        );
+        let parent_root = tcx.maybe_lint_level_root_bounded(
+            self.source_scope_local_data[original_source_scope].lint_root,
+            self.hir.root_lint_level,
+        );
+        if current_root != parent_root {
+            self.source_scope = self.new_source_scope(
+                pattern_span,
+                LintLevel::Explicit(current_root),
+                None
+            );
+        }
     }
 
     fn get_unit_temp(&mut self) -> Place<'tcx> {

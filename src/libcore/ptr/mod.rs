@@ -100,7 +100,11 @@ pub use unique::Unique;
 ///   as the compiler doesn't need to prove that it's sound to elide the
 ///   copy.
 ///
+/// Unaligned values cannot be dropped in place, they must be copied to an aligned
+/// location first using [`ptr::read_unaligned`].
+///
 /// [`ptr::read`]: ../ptr/fn.read.html
+/// [`ptr::read_unaligned`]: ../ptr/fn.read_unaligned.html
 ///
 /// # Safety
 ///
@@ -108,8 +112,7 @@ pub use unique::Unique;
 ///
 /// * `to_drop` must be [valid] for reads.
 ///
-/// * `to_drop` must be properly aligned. See the example below for how to drop
-///   an unaligned pointer.
+/// * `to_drop` must be properly aligned.
 ///
 /// Additionally, if `T` is not [`Copy`], using the pointed-to value after
 /// calling `drop_in_place` can cause undefined behavior. Note that `*to_drop =
@@ -151,31 +154,6 @@ pub use unique::Unique;
 ///
 /// // Ensure that the last item was dropped.
 /// assert!(weak.upgrade().is_none());
-/// ```
-///
-/// Unaligned values cannot be dropped in place, they must be copied to an aligned
-/// location first:
-/// ```
-/// use std::ptr;
-/// use std::mem::{self, MaybeUninit};
-///
-/// unsafe fn drop_after_copy<T>(to_drop: *mut T) {
-///     let mut copy: MaybeUninit<T> = MaybeUninit::uninit();
-///     ptr::copy(to_drop, copy.as_mut_ptr(), 1);
-///     drop(copy.assume_init());
-/// }
-///
-/// #[repr(packed, C)]
-/// struct Packed {
-///     _padding: u8,
-///     unaligned: Vec<i32>,
-/// }
-///
-/// let mut p = Packed { _padding: 0, unaligned: vec![42] };
-/// unsafe {
-///     drop_after_copy(&mut p.unaligned as *mut _);
-///     mem::forget(p);
-/// }
 /// ```
 ///
 /// Notice that the compiler performs this copy automatically when dropping packed structs,
@@ -647,41 +625,65 @@ pub unsafe fn read<T>(src: *const T) -> T {
 /// [read-ownership]: ./fn.read.html#ownership-of-the-returned-value
 /// [valid]: ../ptr/index.html#safety
 ///
-/// # Examples
+/// ## On `packed` structs
 ///
-/// Access members of a packed struct by reference:
+/// It is currently impossible to create raw pointers to unaligned fields
+/// of a packed struct.
 ///
-/// ```
-/// use std::ptr;
+/// Attempting to create a raw pointer to an `unaligned` struct field with
+/// an expression such as `&packed.unaligned as *const FieldType` creates an
+/// intermediate unaligned reference before converting that to a raw pointer.
+/// That this reference is temporary and immediately cast is inconsequential
+/// as the compiler always expects references to be properly aligned.
+/// As a result, using `&packed.unaligned as *const FieldType` causes immediate
+/// *undefined behavior* in your program.
 ///
+/// An example of what not to do and how this relates to `read_unaligned` is:
+///
+/// ```no_run
 /// #[repr(packed, C)]
 /// struct Packed {
 ///     _padding: u8,
 ///     unaligned: u32,
 /// }
 ///
-/// let x = Packed {
+/// let packed = Packed {
 ///     _padding: 0x00,
 ///     unaligned: 0x01020304,
 /// };
 ///
 /// let v = unsafe {
-///     // Take the address of a 32-bit integer which is not aligned.
-///     // This must be done as a raw pointer; unaligned references are invalid.
-///     let unaligned = &x.unaligned as *const u32;
+///     // Here we attempt to take the address of a 32-bit integer which is not aligned.
+///     let unaligned =
+///         // A temporary unaligned reference is created here which results in
+///         // undefined behavior regardless of whether the reference is used or not.
+///         &packed.unaligned
+///         // Casting to a raw pointer doesn't help; the mistake already happened.
+///         as *const u32;
 ///
-///     // Dereferencing normally will emit an aligned load instruction,
-///     // causing undefined behavior.
-///     // let v = *unaligned; // ERROR
-///
-///     // Instead, use `read_unaligned` to read improperly aligned values.
-///     let v = ptr::read_unaligned(unaligned);
+///     let v = std::ptr::read_unaligned(unaligned);
 ///
 ///     v
 /// };
+/// ```
 ///
-/// // Accessing unaligned values directly is safe.
-/// assert!(x.unaligned == v);
+/// Accessing unaligned fields directly with e.g. `packed.unaligned` is safe however.
+// FIXME: Update docs based on outcome of RFC #2582 and friends.
+///
+/// # Examples
+///
+/// Read an usize value from a byte buffer:
+///
+/// ```
+/// use std::mem;
+///
+/// fn read_usize(x: &[u8]) -> usize {
+///     assert!(x.len() >= mem::size_of::<usize>());
+///
+///     let ptr = x.as_ptr() as *const usize;
+///
+///     unsafe { ptr.read_unaligned() }
+/// }
 /// ```
 #[inline]
 #[stable(feature = "ptr_unaligned", since = "1.17.0")]
@@ -811,37 +813,63 @@ pub unsafe fn write<T>(dst: *mut T, src: T) {
 ///
 /// [valid]: ../ptr/index.html#safety
 ///
-/// # Examples
+/// ## On `packed` structs
 ///
-/// Access fields in a packed struct:
+/// It is currently impossible to create raw pointers to unaligned fields
+/// of a packed struct.
 ///
-/// ```
-/// use std::{mem, ptr};
+/// Attempting to create a raw pointer to an `unaligned` struct field with
+/// an expression such as `&packed.unaligned as *const FieldType` creates an
+/// intermediate unaligned reference before converting that to a raw pointer.
+/// That this reference is temporary and immediately cast is inconsequential
+/// as the compiler always expects references to be properly aligned.
+/// As a result, using `&packed.unaligned as *const FieldType` causes immediate
+/// *undefined behavior* in your program.
 ///
+/// An example of what not to do and how this relates to `write_unaligned` is:
+///
+/// ```no_run
 /// #[repr(packed, C)]
-/// #[derive(Default)]
 /// struct Packed {
 ///     _padding: u8,
 ///     unaligned: u32,
 /// }
 ///
 /// let v = 0x01020304;
-/// let mut x: Packed = unsafe { mem::zeroed() };
+/// let mut packed: Packed = unsafe { std::mem::zeroed() };
 ///
-/// unsafe {
-///     // Take a reference to a 32-bit integer which is not aligned.
-///     let unaligned = &mut x.unaligned as *mut u32;
+/// let v = unsafe {
+///     // Here we attempt to take the address of a 32-bit integer which is not aligned.
+///     let unaligned =
+///         // A temporary unaligned reference is created here which results in
+///         // undefined behavior regardless of whether the reference is used or not.
+///         &mut packed.unaligned
+///         // Casting to a raw pointer doesn't help; the mistake already happened.
+///         as *mut u32;
 ///
-///     // Dereferencing normally will emit an aligned store instruction,
-///     // causing undefined behavior because the pointer is not aligned.
-///     // *unaligned = v; // ERROR
+///     std::ptr::write_unaligned(unaligned, v);
 ///
-///     // Instead, use `write_unaligned` to write improperly aligned values.
-///     ptr::write_unaligned(unaligned, v);
+///     v
+/// };
+/// ```
+///
+/// Accessing unaligned fields directly with e.g. `packed.unaligned` is safe however.
+// FIXME: Update docs based on outcome of RFC #2582 and friends.
+///
+/// # Examples
+///
+/// Write an usize value to a byte buffer:
+///
+/// ```
+/// use std::mem;
+///
+/// fn write_usize(x: &mut [u8], val: usize) {
+///     assert!(x.len() >= mem::size_of::<usize>());
+///
+///     let ptr = x.as_mut_ptr() as *mut usize;
+///
+///     unsafe { ptr.write_unaligned(val) }
 /// }
-///
-/// // Accessing unaligned values directly is safe.
-/// assert!(x.unaligned == v);
 /// ```
 #[inline]
 #[stable(feature = "ptr_unaligned", since = "1.17.0")]
@@ -1015,7 +1043,7 @@ impl<T: ?Sized> *const T {
     }
 
     /// Cast to a pointer to a different type
-    #[unstable(feature = "ptr_cast", issue = "60602")]
+    #[stable(feature = "ptr_cast", since = "1.38.0")]
     #[inline]
     pub const fn cast<U>(self) -> *const U {
         self as _
@@ -1092,7 +1120,8 @@ impl<T: ?Sized> *const T {
     /// Behavior:
     ///
     /// * Both the starting and resulting pointer must be either in bounds or one
-    ///   byte past the end of the same allocated object.
+    ///   byte past the end of the same allocated object. Note that in Rust,
+    ///   every (stack-allocated) variable is considered a separate allocated object.
     ///
     /// * The computed offset, **in bytes**, cannot overflow an `isize`.
     ///
@@ -1112,9 +1141,11 @@ impl<T: ?Sized> *const T {
     /// Extension. As such, memory acquired directly from allocators or memory
     /// mapped files *may* be too large to handle with this function.
     ///
-    /// Consider using `wrapping_offset` instead if these constraints are
+    /// Consider using [`wrapping_offset`] instead if these constraints are
     /// difficult to satisfy. The only advantage of this method is that it
     /// enables more aggressive compiler optimizations.
+    ///
+    /// [`wrapping_offset`]: #method.wrapping_offset
     ///
     /// # Examples
     ///
@@ -1144,15 +1175,26 @@ impl<T: ?Sized> *const T {
     ///
     /// The resulting pointer does not need to be in bounds, but it is
     /// potentially hazardous to dereference (which requires `unsafe`).
-    /// In particular, the resulting pointer may *not* be used to access a
-    /// different allocated object than the one `self` points to. In other
-    /// words, `x.wrapping_offset(y.wrapping_offset_from(x))` is
+    ///
+    /// In particular, the resulting pointer remains attached to the same allocated
+    /// object that `self` points to. It may *not* be used to access a
+    /// different allocated object. Note that in Rust,
+    /// every (stack-allocated) variable is considered a separate allocated object.
+    ///
+    /// In other words, `x.wrapping_offset(y.wrapping_offset_from(x))` is
     /// *not* the same as `y`, and dereferencing it is undefined behavior
     /// unless `x` and `y` point into the same allocated object.
     ///
-    /// Always use `.offset(count)` instead when possible, because `offset`
-    /// allows the compiler to optimize better. If you need to cross object
-    /// boundaries, cast the pointer to an integer and do the arithmetic there.
+    /// Compared to [`offset`], this method basically delays the requirement of staying
+    /// within the same allocated object: [`offset`] is immediate Undefined Behavior when
+    /// crossing object boundaries; `wrapping_offset` produces a pointer but still leads
+    /// to Undefined Behavior if that pointer is dereferenced. [`offset`] can be optimized
+    /// better and is thus preferrable in performance-sensitive code.
+    ///
+    /// If you need to cross object boundaries, cast the pointer to an integer and
+    /// do the arithmetic there.
+    ///
+    /// [`offset`]: #method.offset
     ///
     /// # Examples
     ///
@@ -1195,7 +1237,8 @@ impl<T: ?Sized> *const T {
     /// Behavior:
     ///
     /// * Both the starting and other pointer must be either in bounds or one
-    ///   byte past the end of the same allocated object.
+    ///   byte past the end of the same allocated object. Note that in Rust,
+    ///   every (stack-allocated) variable is considered a separate allocated object.
     ///
     /// * The distance between the pointers, **in bytes**, cannot overflow an `isize`.
     ///
@@ -1310,7 +1353,8 @@ impl<T: ?Sized> *const T {
     /// Behavior:
     ///
     /// * Both the starting and resulting pointer must be either in bounds or one
-    ///   byte past the end of the same allocated object.
+    ///   byte past the end of the same allocated object. Note that in Rust,
+    ///   every (stack-allocated) variable is considered a separate allocated object.
     ///
     /// * The computed offset, **in bytes**, cannot overflow an `isize`.
     ///
@@ -1330,9 +1374,11 @@ impl<T: ?Sized> *const T {
     /// Extension. As such, memory acquired directly from allocators or memory
     /// mapped files *may* be too large to handle with this function.
     ///
-    /// Consider using `wrapping_offset` instead if these constraints are
+    /// Consider using [`wrapping_add`] instead if these constraints are
     /// difficult to satisfy. The only advantage of this method is that it
     /// enables more aggressive compiler optimizations.
+    ///
+    /// [`wrapping_add`]: #method.wrapping_add
     ///
     /// # Examples
     ///
@@ -1367,7 +1413,8 @@ impl<T: ?Sized> *const T {
     /// Behavior:
     ///
     /// * Both the starting and resulting pointer must be either in bounds or one
-    ///   byte past the end of the same allocated object.
+    ///   byte past the end of the same allocated object. Note that in Rust,
+    ///   every (stack-allocated) variable is considered a separate allocated object.
     ///
     /// * The computed offset cannot exceed `isize::MAX` **bytes**.
     ///
@@ -1387,9 +1434,11 @@ impl<T: ?Sized> *const T {
     /// Extension. As such, memory acquired directly from allocators or memory
     /// mapped files *may* be too large to handle with this function.
     ///
-    /// Consider using `wrapping_offset` instead if these constraints are
+    /// Consider using [`wrapping_sub`] instead if these constraints are
     /// difficult to satisfy. The only advantage of this method is that it
     /// enables more aggressive compiler optimizations.
+    ///
+    /// [`wrapping_sub`]: #method.wrapping_sub
     ///
     /// # Examples
     ///
@@ -1423,8 +1472,21 @@ impl<T: ?Sized> *const T {
     /// The resulting pointer does not need to be in bounds, but it is
     /// potentially hazardous to dereference (which requires `unsafe`).
     ///
-    /// Always use `.add(count)` instead when possible, because `add`
-    /// allows the compiler to optimize better.
+    /// In particular, the resulting pointer remains attached to the same allocated
+    /// object that `self` points to. It may *not* be used to access a
+    /// different allocated object. Note that in Rust,
+    /// every (stack-allocated) variable is considered a separate allocated object.
+    ///
+    /// Compared to [`add`], this method basically delays the requirement of staying
+    /// within the same allocated object: [`add`] is immediate Undefined Behavior when
+    /// crossing object boundaries; `wrapping_add` produces a pointer but still leads
+    /// to Undefined Behavior if that pointer is dereferenced. [`add`] can be optimized
+    /// better and is thus preferrable in performance-sensitive code.
+    ///
+    /// If you need to cross object boundaries, cast the pointer to an integer and
+    /// do the arithmetic there.
+    ///
+    /// [`add`]: #method.add
     ///
     /// # Examples
     ///
@@ -1464,8 +1526,21 @@ impl<T: ?Sized> *const T {
     /// The resulting pointer does not need to be in bounds, but it is
     /// potentially hazardous to dereference (which requires `unsafe`).
     ///
-    /// Always use `.sub(count)` instead when possible, because `sub`
-    /// allows the compiler to optimize better.
+    /// In particular, the resulting pointer remains attached to the same allocated
+    /// object that `self` points to. It may *not* be used to access a
+    /// different allocated object. Note that in Rust,
+    /// every (stack-allocated) variable is considered a separate allocated object.
+    ///
+    /// Compared to [`sub`], this method basically delays the requirement of staying
+    /// within the same allocated object: [`sub`] is immediate Undefined Behavior when
+    /// crossing object boundaries; `wrapping_sub` produces a pointer but still leads
+    /// to Undefined Behavior if that pointer is dereferenced. [`sub`] can be optimized
+    /// better and is thus preferrable in performance-sensitive code.
+    ///
+    /// If you need to cross object boundaries, cast the pointer to an integer and
+    /// do the arithmetic there.
+    ///
+    /// [`sub`]: #method.sub
     ///
     /// # Examples
     ///
@@ -1578,12 +1653,14 @@ impl<T: ?Sized> *const T {
     /// `align`.
     ///
     /// If it is not possible to align the pointer, the implementation returns
-    /// `usize::max_value()`.
+    /// `usize::max_value()`. It is permissible for the implementation to *always*
+    /// return `usize::max_value()`. Only your algorithm's performance can depend
+    /// on getting a usable offset here, not its correctness.
     ///
     /// The offset is expressed in number of `T` elements, and not bytes. The value returned can be
-    /// used with the `offset` or `offset_to` methods.
+    /// used with the `wrapping_add` method.
     ///
-    /// There are no guarantees whatsover that offsetting the pointer will not overflow or go
+    /// There are no guarantees whatsoever that offsetting the pointer will not overflow or go
     /// beyond the allocation that the pointer points into. It is up to the caller to ensure that
     /// the returned offset is correct in all terms other than alignment.
     ///
@@ -1650,7 +1727,7 @@ impl<T: ?Sized> *mut T {
     }
 
     /// Cast to a pointer to a different type
-    #[unstable(feature = "ptr_cast", issue = "60602")]
+    #[stable(feature = "ptr_cast", since = "1.38.0")]
     #[inline]
     pub const fn cast<U>(self) -> *mut U {
         self as _
@@ -1727,7 +1804,8 @@ impl<T: ?Sized> *mut T {
     /// Behavior:
     ///
     /// * Both the starting and resulting pointer must be either in bounds or one
-    ///   byte past the end of the same allocated object.
+    ///   byte past the end of the same allocated object. Note that in Rust,
+    ///   every (stack-allocated) variable is considered a separate allocated object.
     ///
     /// * The computed offset, **in bytes**, cannot overflow an `isize`.
     ///
@@ -1747,9 +1825,11 @@ impl<T: ?Sized> *mut T {
     /// Extension. As such, memory acquired directly from allocators or memory
     /// mapped files *may* be too large to handle with this function.
     ///
-    /// Consider using `wrapping_offset` instead if these constraints are
+    /// Consider using [`wrapping_offset`] instead if these constraints are
     /// difficult to satisfy. The only advantage of this method is that it
     /// enables more aggressive compiler optimizations.
+    ///
+    /// [`wrapping_offset`]: #method.wrapping_offset
     ///
     /// # Examples
     ///
@@ -1778,15 +1858,26 @@ impl<T: ?Sized> *mut T {
     ///
     /// The resulting pointer does not need to be in bounds, but it is
     /// potentially hazardous to dereference (which requires `unsafe`).
-    /// In particular, the resulting pointer may *not* be used to access a
-    /// different allocated object than the one `self` points to. In other
-    /// words, `x.wrapping_offset(y.wrapping_offset_from(x))` is
+    ///
+    /// In particular, the resulting pointer remains attached to the same allocated
+    /// object that `self` points to. It may *not* be used to access a
+    /// different allocated object. Note that in Rust,
+    /// every (stack-allocated) variable is considered a separate allocated object.
+    ///
+    /// In other words, `x.wrapping_offset(y.wrapping_offset_from(x))` is
     /// *not* the same as `y`, and dereferencing it is undefined behavior
     /// unless `x` and `y` point into the same allocated object.
     ///
-    /// Always use `.offset(count)` instead when possible, because `offset`
-    /// allows the compiler to optimize better. If you need to cross object
-    /// boundaries, cast the pointer to an integer and do the arithmetic there.
+    /// Compared to [`offset`], this method basically delays the requirement of staying
+    /// within the same allocated object: [`offset`] is immediate Undefined Behavior when
+    /// crossing object boundaries; `wrapping_offset` produces a pointer but still leads
+    /// to Undefined Behavior if that pointer is dereferenced. [`offset`] can be optimized
+    /// better and is thus preferrable in performance-sensitive code.
+    ///
+    /// If you need to cross object boundaries, cast the pointer to an integer and
+    /// do the arithmetic there.
+    ///
+    /// [`offset`]: #method.offset
     ///
     /// # Examples
     ///
@@ -1873,7 +1964,8 @@ impl<T: ?Sized> *mut T {
     /// Behavior:
     ///
     /// * Both the starting and other pointer must be either in bounds or one
-    ///   byte past the end of the same allocated object.
+    ///   byte past the end of the same allocated object. Note that in Rust,
+    ///   every (stack-allocated) variable is considered a separate allocated object.
     ///
     /// * The distance between the pointers, **in bytes**, cannot overflow an `isize`.
     ///
@@ -1977,7 +2069,8 @@ impl<T: ?Sized> *mut T {
     /// Behavior:
     ///
     /// * Both the starting and resulting pointer must be either in bounds or one
-    ///   byte past the end of the same allocated object.
+    ///   byte past the end of the same allocated object. Note that in Rust,
+    ///   every (stack-allocated) variable is considered a separate allocated object.
     ///
     /// * The computed offset, **in bytes**, cannot overflow an `isize`.
     ///
@@ -1997,9 +2090,11 @@ impl<T: ?Sized> *mut T {
     /// Extension. As such, memory acquired directly from allocators or memory
     /// mapped files *may* be too large to handle with this function.
     ///
-    /// Consider using `wrapping_offset` instead if these constraints are
+    /// Consider using [`wrapping_add`] instead if these constraints are
     /// difficult to satisfy. The only advantage of this method is that it
     /// enables more aggressive compiler optimizations.
+    ///
+    /// [`wrapping_add`]: #method.wrapping_add
     ///
     /// # Examples
     ///
@@ -2034,7 +2129,8 @@ impl<T: ?Sized> *mut T {
     /// Behavior:
     ///
     /// * Both the starting and resulting pointer must be either in bounds or one
-    ///   byte past the end of the same allocated object.
+    ///   byte past the end of the same allocated object. Note that in Rust,
+    ///   every (stack-allocated) variable is considered a separate allocated object.
     ///
     /// * The computed offset cannot exceed `isize::MAX` **bytes**.
     ///
@@ -2054,9 +2150,11 @@ impl<T: ?Sized> *mut T {
     /// Extension. As such, memory acquired directly from allocators or memory
     /// mapped files *may* be too large to handle with this function.
     ///
-    /// Consider using `wrapping_offset` instead if these constraints are
+    /// Consider using [`wrapping_sub`] instead if these constraints are
     /// difficult to satisfy. The only advantage of this method is that it
     /// enables more aggressive compiler optimizations.
+    ///
+    /// [`wrapping_sub`]: #method.wrapping_sub
     ///
     /// # Examples
     ///
@@ -2090,8 +2188,21 @@ impl<T: ?Sized> *mut T {
     /// The resulting pointer does not need to be in bounds, but it is
     /// potentially hazardous to dereference (which requires `unsafe`).
     ///
-    /// Always use `.add(count)` instead when possible, because `add`
-    /// allows the compiler to optimize better.
+    /// In particular, the resulting pointer remains attached to the same allocated
+    /// object that `self` points to. It may *not* be used to access a
+    /// different allocated object. Note that in Rust,
+    /// every (stack-allocated) variable is considered a separate allocated object.
+    ///
+    /// Compared to [`add`], this method basically delays the requirement of staying
+    /// within the same allocated object: [`add`] is immediate Undefined Behavior when
+    /// crossing object boundaries; `wrapping_add` produces a pointer but still leads
+    /// to Undefined Behavior if that pointer is dereferenced. [`add`] can be optimized
+    /// better and is thus preferrable in performance-sensitive code.
+    ///
+    /// If you need to cross object boundaries, cast the pointer to an integer and
+    /// do the arithmetic there.
+    ///
+    /// [`add`]: #method.add
     ///
     /// # Examples
     ///
@@ -2131,8 +2242,21 @@ impl<T: ?Sized> *mut T {
     /// The resulting pointer does not need to be in bounds, but it is
     /// potentially hazardous to dereference (which requires `unsafe`).
     ///
-    /// Always use `.sub(count)` instead when possible, because `sub`
-    /// allows the compiler to optimize better.
+    /// In particular, the resulting pointer remains attached to the same allocated
+    /// object that `self` points to. It may *not* be used to access a
+    /// different allocated object. Note that in Rust,
+    /// every (stack-allocated) variable is considered a separate allocated object.
+    ///
+    /// Compared to [`sub`], this method basically delays the requirement of staying
+    /// within the same allocated object: [`sub`] is immediate Undefined Behavior when
+    /// crossing object boundaries; `wrapping_sub` produces a pointer but still leads
+    /// to Undefined Behavior if that pointer is dereferenced. [`sub`] can be optimized
+    /// better and is thus preferrable in performance-sensitive code.
+    ///
+    /// If you need to cross object boundaries, cast the pointer to an integer and
+    /// do the arithmetic there.
+    ///
+    /// [`sub`]: #method.sub
     ///
     /// # Examples
     ///
@@ -2379,12 +2503,14 @@ impl<T: ?Sized> *mut T {
     /// `align`.
     ///
     /// If it is not possible to align the pointer, the implementation returns
-    /// `usize::max_value()`.
+    /// `usize::max_value()`. It is permissible for the implementation to *always*
+    /// return `usize::max_value()`. Only your algorithm's performance can depend
+    /// on getting a usable offset here, not its correctness.
     ///
     /// The offset is expressed in number of `T` elements, and not bytes. The value returned can be
-    /// used with the `offset` or `offset_to` methods.
+    /// used with the `wrapping_add` method.
     ///
-    /// There are no guarantees whatsover that offsetting the pointer will not overflow or go
+    /// There are no guarantees whatsoever that offsetting the pointer will not overflow or go
     /// beyond the allocation that the pointer points into. It is up to the caller to ensure that
     /// the returned offset is correct in all terms other than alignment.
     ///

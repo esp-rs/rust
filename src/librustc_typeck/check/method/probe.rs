@@ -970,9 +970,9 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
         debug!("pick: actual search failed, assemble diagnotics");
 
-        let static_candidates = mem::replace(&mut self.static_candidates, vec![]);
+        let static_candidates = mem::take(&mut self.static_candidates);
         let private_candidate = self.private_candidate.take();
-        let unsatisfied_predicates = mem::replace(&mut self.unsatisfied_predicates, vec![]);
+        let unsatisfied_predicates = mem::take(&mut self.unsatisfied_predicates);
 
         // things failed, so lets look at all traits, for diagnostic purposes now:
         self.reset();
@@ -1230,7 +1230,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         if nightly_options::is_nightly_build() {
             for (candidate, feature) in unstable_candidates {
                 diag.help(&format!(
-                    "add #![feature({})] to the crate attributes to enable `{}`",
+                    "add `#![feature({})]` to the crate attributes to enable `{}`",
                     feature,
                     self.tcx.def_path_str(candidate.item.def_id),
                 ));
@@ -1394,7 +1394,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
     /// probe. This will result in a pending obligation so when more type-info is available we can
     /// make the final decision.
     ///
-    /// Example (`src/test/run-pass/method-two-trait-defer-resolution-1.rs`):
+    /// Example (`src/test/ui/method-two-trait-defer-resolution-1.rs`):
     ///
     /// ```
     /// trait Foo { ... }
@@ -1432,7 +1432,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
     /// candidate method where the method name may have been misspelt. Similarly to other
     /// Levenshtein based suggestions, we provide at most one such suggestion.
     fn probe_for_lev_candidate(&mut self) -> Result<Option<ty::AssocItem>, MethodError<'tcx>> {
-        debug!("Probing for method names similar to {:?}",
+        debug!("probing for method names similar to {:?}",
                self.method_name);
 
         let steps = self.steps.clone();
@@ -1489,7 +1489,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         match self.mode {
             Mode::MethodCall => item.method_has_self_argument,
             Mode::Path => match item.kind {
-                ty::AssocKind::Existential |
+                ty::AssocKind::OpaqueTy |
                 ty::AssocKind::Type => false,
                 ty::AssocKind::Method | ty::AssocKind::Const => true
             },

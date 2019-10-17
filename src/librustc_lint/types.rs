@@ -73,7 +73,9 @@ fn lint_overflowing_range_endpoint<'a, 'tcx>(
     // We only want to handle exclusive (`..`) ranges,
     // which are represented as `ExprKind::Struct`.
     if let ExprKind::Struct(_, eps, _) = &parent_expr.node {
-        debug_assert_eq!(eps.len(), 2);
+        if eps.len() != 2 {
+            return false;
+        }
         // We can suggest using an inclusive range
         // (`..=`) instead only if it is the `end` that is
         // overflowing and only by 1.
@@ -888,7 +890,7 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
     }
 
     fn check_foreign_fn(&mut self, id: hir::HirId, decl: &hir::FnDecl) {
-        let def_id = self.cx.tcx.hir().local_def_id_from_hir_id(id);
+        let def_id = self.cx.tcx.hir().local_def_id(id);
         let sig = self.cx.tcx.fn_sig(def_id);
         let sig = self.cx.tcx.erase_late_bound_regions(&sig);
         let inputs = if sig.c_variadic {
@@ -912,7 +914,7 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
     }
 
     fn check_foreign_static(&mut self, id: hir::HirId, span: Span) {
-        let def_id = self.cx.tcx.hir().local_def_id_from_hir_id(id);
+        let def_id = self.cx.tcx.hir().local_def_id(id);
         let ty = self.cx.tcx.type_of(def_id);
         self.check_type_for_ffi_and_report_errors(span, ty);
     }
@@ -941,7 +943,7 @@ declare_lint_pass!(VariantSizeDifferences => [VARIANT_SIZE_DIFFERENCES]);
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for VariantSizeDifferences {
     fn check_item(&mut self, cx: &LateContext<'_, '_>, it: &hir::Item) {
         if let hir::ItemKind::Enum(ref enum_definition, _) = it.node {
-            let item_def_id = cx.tcx.hir().local_def_id_from_hir_id(it.hir_id);
+            let item_def_id = cx.tcx.hir().local_def_id(it.hir_id);
             let t = cx.tcx.type_of(item_def_id);
             let ty = cx.tcx.erase_regions(&t);
             let layout = match cx.layout_of(ty) {

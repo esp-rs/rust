@@ -1,7 +1,5 @@
 // ignore-tidy-filelength
 
-#![allow(usage_of_ty_tykind)]
-
 pub use self::Variance::*;
 pub use self::AssocItemContainer::*;
 pub use self::BorrowKind::*;
@@ -34,7 +32,7 @@ use crate::util::nodemap::{NodeSet, DefIdMap, FxHashMap};
 use arena::SyncDroplessArena;
 use crate::session::DataTypeKind;
 
-use serialize::{self, Encodable, Encoder};
+use rustc_serialize::{self, Encodable, Encoder};
 use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt;
@@ -46,7 +44,7 @@ use std::{mem, ptr};
 use std::ops::Range;
 use syntax::ast::{self, Name, Ident, NodeId};
 use syntax::attr;
-use syntax::ext::hygiene::Mark;
+use syntax::ext::hygiene::ExpnId;
 use syntax::symbol::{kw, sym, Symbol, LocalInternedString, InternedString};
 use syntax_pos::Span;
 
@@ -187,7 +185,7 @@ pub struct AssocItem {
 pub enum AssocKind {
     Const,
     Method,
-    Existential,
+    OpaqueTy,
     Type
 }
 
@@ -197,7 +195,7 @@ impl AssocItem {
             AssocKind::Const => DefKind::AssocConst,
             AssocKind::Method => DefKind::Method,
             AssocKind::Type => DefKind::AssocTy,
-            AssocKind::Existential => DefKind::AssocExistential,
+            AssocKind::OpaqueTy => DefKind::AssocOpaqueTy,
         }
     }
 
@@ -205,7 +203,7 @@ impl AssocItem {
     /// for !
     pub fn relevant_for_never(&self) -> bool {
         match self.kind {
-            AssocKind::Existential |
+            AssocKind::OpaqueTy |
             AssocKind::Const |
             AssocKind::Type => true,
             // FIXME(canndrew): Be more thorough here, check if any argument is uninhabited.
@@ -223,7 +221,8 @@ impl AssocItem {
                 tcx.fn_sig(self.def_id).skip_binder().to_string()
             }
             ty::AssocKind::Type => format!("type {};", self.ident),
-            ty::AssocKind::Existential => format!("existential type {};", self.ident),
+            // FIXME(type_alias_impl_trait): we should print bounds here too.
+            ty::AssocKind::OpaqueTy => format!("type {};", self.ident),
             ty::AssocKind::Const => {
                 format!("const {}: {:?};", self.ident, tcx.type_of(self.def_id))
             }
@@ -484,6 +483,7 @@ bitflags! {
     }
 }
 
+#[cfg_attr(not(bootstrap), allow(rustc::usage_of_ty_tykind))]
 pub struct TyS<'tcx> {
     pub sty: TyKind<'tcx>,
     pub flags: TypeFlags,
@@ -541,29 +541,29 @@ impl<'tcx> Hash for TyS<'tcx> {
 impl<'tcx> TyS<'tcx> {
     pub fn is_primitive_ty(&self) -> bool {
         match self.sty {
-            TyKind::Bool |
-            TyKind::Char |
-            TyKind::Int(_) |
-            TyKind::Uint(_) |
-            TyKind::Float(_) |
-            TyKind::Infer(InferTy::IntVar(_)) |
-            TyKind::Infer(InferTy::FloatVar(_)) |
-            TyKind::Infer(InferTy::FreshIntTy(_)) |
-            TyKind::Infer(InferTy::FreshFloatTy(_)) => true,
-            TyKind::Ref(_, x, _) => x.is_primitive_ty(),
+            Bool |
+            Char |
+            Int(_) |
+            Uint(_) |
+            Float(_) |
+            Infer(InferTy::IntVar(_)) |
+            Infer(InferTy::FloatVar(_)) |
+            Infer(InferTy::FreshIntTy(_)) |
+            Infer(InferTy::FreshFloatTy(_)) => true,
+            Ref(_, x, _) => x.is_primitive_ty(),
             _ => false,
         }
     }
 
     pub fn is_suggestable(&self) -> bool {
         match self.sty {
-            TyKind::Opaque(..) |
-            TyKind::FnDef(..) |
-            TyKind::FnPtr(..) |
-            TyKind::Dynamic(..) |
-            TyKind::Closure(..) |
-            TyKind::Infer(..) |
-            TyKind::Projection(..) => false,
+            Opaque(..) |
+            FnDef(..) |
+            FnPtr(..) |
+            Dynamic(..) |
+            Closure(..) |
+            Infer(..) |
+            Projection(..) => false,
             _ => true,
         }
     }
@@ -589,8 +589,8 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ty::TyS<'tcx> {
 
 pub type Ty<'tcx> = &'tcx TyS<'tcx>;
 
-impl<'tcx> serialize::UseSpecializedEncodable for Ty<'tcx> {}
-impl<'tcx> serialize::UseSpecializedDecodable for Ty<'tcx> {}
+impl<'tcx> rustc_serialize::UseSpecializedEncodable for Ty<'tcx> {}
+impl<'tcx> rustc_serialize::UseSpecializedDecodable for Ty<'tcx> {}
 
 pub type CanonicalTy<'tcx> = Canonical<'tcx, Ty<'tcx>>;
 
@@ -709,7 +709,7 @@ impl<'a, T> IntoIterator for &'a List<T> {
     }
 }
 
-impl<'tcx> serialize::UseSpecializedDecodable for &'tcx List<Ty<'tcx>> {}
+impl<'tcx> rustc_serialize::UseSpecializedDecodable for &'tcx List<Ty<'tcx>> {}
 
 impl<T> List<T> {
     #[inline(always)]
@@ -904,7 +904,7 @@ pub struct Generics {
     pub parent_count: usize,
     pub params: Vec<GenericParamDef>,
 
-    /// Reverse map to the `index` field of each `GenericParamDef`
+    /// Reverse map to the `index` field of each `GenericParamDef`.
     #[stable_hasher(ignore)]
     pub param_def_id_to_index: FxHashMap<DefId, u32>,
 
@@ -1010,8 +1010,8 @@ pub struct GenericPredicates<'tcx> {
     pub predicates: Vec<(Predicate<'tcx>, Span)>,
 }
 
-impl<'tcx> serialize::UseSpecializedEncodable for GenericPredicates<'tcx> {}
-impl<'tcx> serialize::UseSpecializedDecodable for GenericPredicates<'tcx> {}
+impl<'tcx> rustc_serialize::UseSpecializedEncodable for GenericPredicates<'tcx> {}
+impl<'tcx> rustc_serialize::UseSpecializedDecodable for GenericPredicates<'tcx> {}
 
 impl<'tcx> GenericPredicates<'tcx> {
     pub fn instantiate(
@@ -1252,7 +1252,7 @@ impl<'tcx> TraitPredicate<'tcx> {
 
 impl<'tcx> PolyTraitPredicate<'tcx> {
     pub fn def_id(&self) -> DefId {
-        // Ok to skip binder since trait def-ID does not care about regions.
+        // Ok to skip binder since trait `DefId` does not care about regions.
         self.skip_binder().def_id()
     }
 }
@@ -1319,7 +1319,7 @@ impl<'tcx> PolyProjectionPredicate<'tcx> {
     /// Note that this is not the `DefId` of the `TraitRef` containing this
     /// associated type, which is in `tcx.associated_item(projection_def_id()).container`.
     pub fn projection_def_id(&self) -> DefId {
-        // Ok to skip binder since trait def-ID does not care about regions.
+        // Ok to skip binder since trait `DefId` does not care about regions.
         self.skip_binder().projection_ty.item_def_id
     }
 }
@@ -1646,9 +1646,9 @@ pub type PlaceholderConst = Placeholder<BoundVar>;
 /// particular point.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable)]
 pub struct ParamEnv<'tcx> {
-    /// Obligations that the caller must satisfy. This is basically
+    /// `Obligation`s that the caller must satisfy. This is basically
     /// the set of bounds on the in-scope type parameters, translated
-    /// into Obligations, and elaborated and normalized.
+    /// into `Obligation`s, and elaborated and normalized.
     pub caller_bounds: &'tcx List<ty::Predicate<'tcx>>,
 
     /// Typically, this is `Reveal::UserFacing`, but during codegen we
@@ -1842,7 +1842,8 @@ pub struct VariantDef {
     pub ctor_kind: CtorKind,
     /// Flags of the variant (e.g. is field list non-exhaustive)?
     flags: VariantFlags,
-    /// Recovered?
+    /// Variant is obtained as part of recovering from a syntactic error.
+    /// May be incomplete or bogus.
     pub recovered: bool,
 }
 
@@ -1949,7 +1950,7 @@ pub struct FieldDef {
 pub struct AdtDef {
     /// `DefId` of the struct, enum or union item.
     pub did: DefId,
-    /// Variants of the ADT. If this is a struct or enum, then there will be a single variant.
+    /// Variants of the ADT. If this is a struct or union, then there will be a single variant.
     pub variants: IndexVec<self::layout::VariantIdx, VariantDef>,
     /// Flags of the ADT (e.g. is this a struct? is this non-exhaustive?)
     flags: AdtFlags,
@@ -1986,13 +1987,13 @@ impl Hash for AdtDef {
     }
 }
 
-impl<'tcx> serialize::UseSpecializedEncodable for &'tcx AdtDef {
+impl<'tcx> rustc_serialize::UseSpecializedEncodable for &'tcx AdtDef {
     fn default_encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
         self.did.encode(s)
     }
 }
 
-impl<'tcx> serialize::UseSpecializedDecodable for &'tcx AdtDef {}
+impl<'tcx> rustc_serialize::UseSpecializedDecodable for &'tcx AdtDef {}
 
 
 impl<'a> HashStable<StableHashingContext<'a>> for AdtDef {
@@ -2357,7 +2358,7 @@ impl<'tcx> AdtDef {
 
     #[inline]
     pub fn eval_explicit_discr(&self, tcx: TyCtxt<'tcx>, expr_did: DefId) -> Option<Discr<'tcx>> {
-        let param_env = ParamEnv::empty();
+        let param_env = tcx.param_env(expr_did);
         let repr_type = self.repr.discr_type();
         let substs = InternalSubsts::identity_for_item(tcx.global_tcx(), expr_did);
         let instance = ty::Instance::new(expr_did, substs);
@@ -2368,7 +2369,7 @@ impl<'tcx> AdtDef {
         match tcx.const_eval(param_env.and(cid)) {
             Ok(val) => {
                 // FIXME: Find the right type and use it instead of `val.ty` here
-                if let Some(b) = val.assert_bits(tcx.global_tcx(), param_env.and(val.ty)) {
+                if let Some(b) = val.try_eval_bits(tcx.global_tcx(), param_env, val.ty) {
                     trace!("discriminants: {} ({:?})", b, repr_type);
                     Some(Discr {
                         val: b,
@@ -2565,6 +2566,8 @@ impl<'tcx> AdtDef {
 }
 
 impl<'tcx> FieldDef {
+    /// Returns the type of this field. The `subst` is typically obtained
+    /// via the second field of `TyKind::AdtDef`.
     pub fn ty(&self, tcx: TyCtxt<'tcx>, subst: SubstsRef<'tcx>) -> Ty<'tcx> {
         tcx.type_of(self.did).subst(tcx, subst)
     }
@@ -2796,7 +2799,7 @@ impl<'tcx> TyCtxt<'tcx> {
                 _ => false,
             }
         } else {
-            match self.def_kind(def_id).expect("no def for def-id") {
+            match self.def_kind(def_id).expect("no def for `DefId`") {
                 DefKind::AssocConst
                 | DefKind::Method
                 | DefKind::AssocTy => true,
@@ -2816,14 +2819,14 @@ impl<'tcx> TyCtxt<'tcx> {
                                            parent_vis: &hir::Visibility,
                                            trait_item_ref: &hir::TraitItemRef)
                                            -> AssocItem {
-        let def_id = self.hir().local_def_id_from_hir_id(trait_item_ref.id.hir_id);
+        let def_id = self.hir().local_def_id(trait_item_ref.id.hir_id);
         let (kind, has_self) = match trait_item_ref.kind {
             hir::AssocItemKind::Const => (ty::AssocKind::Const, false),
             hir::AssocItemKind::Method { has_self } => {
                 (ty::AssocKind::Method, has_self)
             }
             hir::AssocItemKind::Type => (ty::AssocKind::Type, false),
-            hir::AssocItemKind::Existential => bug!("only impls can have existentials"),
+            hir::AssocItemKind::OpaqueTy => bug!("only impls can have opaque types"),
         };
 
         AssocItem {
@@ -2842,14 +2845,14 @@ impl<'tcx> TyCtxt<'tcx> {
                                           parent_def_id: DefId,
                                           impl_item_ref: &hir::ImplItemRef)
                                           -> AssocItem {
-        let def_id = self.hir().local_def_id_from_hir_id(impl_item_ref.id.hir_id);
+        let def_id = self.hir().local_def_id(impl_item_ref.id.hir_id);
         let (kind, has_self) = match impl_item_ref.kind {
             hir::AssocItemKind::Const => (ty::AssocKind::Const, false),
             hir::AssocItemKind::Method { has_self } => {
                 (ty::AssocKind::Method, has_self)
             }
             hir::AssocItemKind::Type => (ty::AssocKind::Type, false),
-            hir::AssocItemKind::Existential => (ty::AssocKind::Existential, false),
+            hir::AssocItemKind::OpaqueTy => (ty::AssocKind::OpaqueTy, false),
         };
 
         AssocItem {
@@ -3072,10 +3075,10 @@ impl<'tcx> TyCtxt<'tcx> {
                                          self.expansion_that_defined(def_parent_def_id))
     }
 
-    fn expansion_that_defined(self, scope: DefId) -> Mark {
+    fn expansion_that_defined(self, scope: DefId) -> ExpnId {
         match scope.krate {
             LOCAL_CRATE => self.hir().definitions().expansion_that_defined(scope.index),
-            _ => Mark::root(),
+            _ => ExpnId::root(),
         }
     }
 
@@ -3114,7 +3117,7 @@ impl Iterator for AssocItemsIterator<'_> {
 fn associated_item(tcx: TyCtxt<'_>, def_id: DefId) -> AssocItem {
     let id = tcx.hir().as_local_hir_id(def_id).unwrap();
     let parent_id = tcx.hir().get_parent_item(id);
-    let parent_def_id = tcx.hir().local_def_id_from_hir_id(parent_id);
+    let parent_def_id = tcx.hir().local_def_id(parent_id);
     let parent_item = tcx.hir().expect_item(parent_id);
     match parent_item.node {
         hir::ItemKind::Impl(.., ref impl_item_refs) => {
@@ -3178,14 +3181,14 @@ fn associated_item_def_ids(tcx: TyCtxt<'_>, def_id: DefId) -> &[DefId] {
             tcx.arena.alloc_from_iter(
                 trait_item_refs.iter()
                                .map(|trait_item_ref| trait_item_ref.id)
-                               .map(|id| tcx.hir().local_def_id_from_hir_id(id.hir_id))
+                               .map(|id| tcx.hir().local_def_id(id.hir_id))
             )
         }
         hir::ItemKind::Impl(.., ref impl_item_refs) => {
             tcx.arena.alloc_from_iter(
                 impl_item_refs.iter()
                               .map(|impl_item_ref| impl_item_ref.id)
-                              .map(|id| tcx.hir().local_def_id_from_hir_id(id.hir_id))
+                              .map(|id| tcx.hir().local_def_id(id.hir_id))
             )
         }
         hir::ItemKind::TraitAlias(..) => &[],
@@ -3214,8 +3217,8 @@ fn trait_of_item(tcx: TyCtxt<'_>, def_id: DefId) -> Option<DefId> {
 pub fn is_impl_trait_defn(tcx: TyCtxt<'_>, def_id: DefId) -> Option<DefId> {
     if let Some(hir_id) = tcx.hir().as_local_hir_id(def_id) {
         if let Node::Item(item) = tcx.hir().get(hir_id) {
-            if let hir::ItemKind::Existential(ref exist_ty) = item.node {
-                return exist_ty.impl_trait_fn;
+            if let hir::ItemKind::OpaqueTy(ref opaque_ty) = item.node {
+                return opaque_ty.impl_trait_fn;
             }
         }
     }

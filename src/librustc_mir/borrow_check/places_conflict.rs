@@ -3,8 +3,8 @@ use crate::borrow_check::Overlap;
 use crate::borrow_check::{Deep, Shallow, AccessDepth};
 use rustc::hir;
 use rustc::mir::{
-    BorrowKind, Body, Place, PlaceBase, Projection, ProjectionElem, ProjectionsIter,
-    StaticKind
+    Body, BorrowKind, Place, PlaceBase, PlaceRef, Projection, ProjectionElem, ProjectionsIter,
+    StaticKind,
 };
 use rustc::ty::{self, TyCtxt};
 use std::cmp::max;
@@ -26,6 +26,7 @@ crate enum PlaceConflictBias {
 /// dataflow).
 crate fn places_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
     body: &Body<'tcx>,
     borrow_place: &Place<'tcx>,
     access_place: &Place<'tcx>,
@@ -33,10 +34,11 @@ crate fn places_conflict<'tcx>(
 ) -> bool {
     borrow_conflicts_with_place(
         tcx,
+        param_env,
         body,
         borrow_place,
         BorrowKind::Mut { allow_two_phase_borrow: true },
-        access_place,
+        access_place.as_ref(),
         AccessDepth::Deep,
         bias,
     )
@@ -48,10 +50,11 @@ crate fn places_conflict<'tcx>(
 /// order to make the conservative choice and preserve soundness.
 pub(super) fn borrow_conflicts_with_place<'tcx>(
     tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
     body: &Body<'tcx>,
     borrow_place: &Place<'tcx>,
     borrow_kind: BorrowKind,
-    access_place: &Place<'tcx>,
+    access_place: PlaceRef<'_, 'tcx>,
     access: AccessDepth,
     bias: PlaceConflictBias,
 ) -> bool {
@@ -62,8 +65,14 @@ pub(super) fn borrow_conflicts_with_place<'tcx>(
 
     // This Local/Local case is handled by the more general code below, but
     // it's so common that it's a speed win to check for it first.
-    if let Place::Base(PlaceBase::Local(l1)) = borrow_place {
-        if let Place::Base(PlaceBase::Local(l2)) = access_place {
+    if let Place {
+        base: PlaceBase::Local(l1),
+        projection: None,
+    } = borrow_place {
+        if let PlaceRef {
+            base: PlaceBase::Local(l2),
+            projection: None,
+        } = access_place {
             return l1 == l2;
         }
     }
@@ -72,6 +81,7 @@ pub(super) fn borrow_conflicts_with_place<'tcx>(
         access_place.iterate(|access_base, access_projections| {
             place_components_conflict(
                 tcx,
+                param_env,
                 body,
                 (borrow_base, borrow_projections),
                 borrow_kind,
@@ -85,6 +95,7 @@ pub(super) fn borrow_conflicts_with_place<'tcx>(
 
 fn place_components_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
     body: &Body<'tcx>,
     borrow_projections: (&PlaceBase<'tcx>, ProjectionsIter<'_, 'tcx>),
     borrow_kind: BorrowKind,
@@ -137,7 +148,7 @@ fn place_components_conflict<'tcx>(
     let borrow_base = borrow_projections.0;
     let access_base = access_projections.0;
 
-    match place_base_conflict(tcx, borrow_base, access_base) {
+    match place_base_conflict(tcx, param_env, borrow_base, access_base) {
         Overlap::Arbitrary => {
             bug!("Two base can't return Arbitrary");
         }
@@ -175,7 +186,7 @@ fn place_components_conflict<'tcx>(
                 // check whether the components being borrowed vs
                 // accessed are disjoint (as in the second example,
                 // but not the first).
-                match place_projection_conflict(tcx, body, borrow_c, access_c, bias) {
+                match place_projection_conflict(tcx, body, borrow_base, borrow_c, access_c, bias) {
                     Overlap::Arbitrary => {
                         // We have encountered different fields of potentially
                         // the same union - the borrow now partially overlaps.
@@ -214,7 +225,7 @@ fn place_components_conflict<'tcx>(
 
                 let base = &borrow_c.base;
                 let elem = &borrow_c.elem;
-                let base_ty = base.ty(body, tcx).ty;
+                let base_ty = Place::ty_from(borrow_base, base, body, tcx).ty;
 
                 match (elem, &base_ty.sty, access) {
                     (_, _, Shallow(Some(ArtificialField::ArrayLength)))
@@ -300,6 +311,7 @@ fn place_components_conflict<'tcx>(
 // between `elem1` and `elem2`.
 fn place_base_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
     elem1: &PlaceBase<'tcx>,
     elem2: &PlaceBase<'tcx>,
 ) -> Overlap {
@@ -333,7 +345,7 @@ fn place_base_conflict<'tcx>(
                 (StaticKind::Promoted(promoted_1), StaticKind::Promoted(promoted_2)) => {
                     if promoted_1 == promoted_2 {
                         if let ty::Array(_, len) = s1.ty.sty {
-                            if let Some(0) = len.assert_usize(tcx) {
+                            if let Some(0) = len.try_eval_usize(tcx, param_env) {
                                 // Ignore conflicts with promoted [T; 0].
                                 debug!("place_element_conflict: IGNORE-LEN-0-PROMOTED");
                                 return Overlap::Disjoint;
@@ -368,6 +380,7 @@ fn place_base_conflict<'tcx>(
 fn place_projection_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
+    pi1_base: &PlaceBase<'tcx>,
     pi1: &Projection<'tcx>,
     pi2: &Projection<'tcx>,
     bias: PlaceConflictBias,
@@ -384,7 +397,7 @@ fn place_projection_conflict<'tcx>(
                 debug!("place_element_conflict: DISJOINT-OR-EQ-FIELD");
                 Overlap::EqualOrDisjoint
             } else {
-                let ty = pi1.base.ty(body, tcx).ty;
+                let ty = Place::ty_from(pi1_base, &pi1.base, body, tcx).ty;
                 match ty.sty {
                     ty::Adt(def, _) if def.is_union() => {
                         // Different fields of a union, we are basically stuck.

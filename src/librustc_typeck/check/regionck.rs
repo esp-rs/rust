@@ -138,7 +138,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// types from which we should derive implied bounds, if any.
     pub fn regionck_item(&self, item_id: hir::HirId, span: Span, wf_tys: &[Ty<'tcx>]) {
         debug!("regionck_item(item.id={:?}, wf_tys={:?})", item_id, wf_tys);
-        let subject = self.tcx.hir().local_def_id_from_hir_id(item_id);
+        let subject = self.tcx.hir().local_def_id(item_id);
         let mut rcx = RegionCtxt::new(
             self,
             RepeatingScope(item_id),
@@ -685,16 +685,6 @@ impl<'a, 'tcx> Visitor<'tcx> for RegionCtxt<'a, 'tcx> {
                 self.set_repeating_scope(repeating_scope);
             }
 
-            hir::ExprKind::While(ref cond, ref body, _) => {
-                let repeating_scope = self.set_repeating_scope(cond.hir_id);
-                self.visit_expr(&cond);
-
-                self.set_repeating_scope(body.hir_id);
-                self.visit_block(&body);
-
-                self.set_repeating_scope(repeating_scope);
-            }
-
             hir::ExprKind::Ret(Some(ref ret_expr)) => {
                 let call_site_scope = self.call_site_scope;
                 debug!(
@@ -809,7 +799,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
         debug!("callee_region={:?}", callee_region);
 
         for arg_expr in arg_exprs {
-            debug!("Argument: {:?}", arg_expr);
+            debug!("argument: {:?}", arg_expr);
 
             // ensure that any regions appearing in the argument type are
             // valid for at least the lifetime of the function:
@@ -834,6 +824,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
     {
         f(mc::MemCategorizationContext::with_infer(
             &self.infcx,
+            self.outlives_environment.param_env,
             self.body_owner,
             &self.region_scope_tree,
             &self.tables.borrow(),

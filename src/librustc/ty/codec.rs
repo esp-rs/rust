@@ -10,7 +10,7 @@ use crate::arena::ArenaAllocatable;
 use crate::hir::def_id::{DefId, CrateNum};
 use crate::infer::canonical::{CanonicalVarInfo, CanonicalVarInfos};
 use rustc_data_structures::fx::FxHashMap;
-use crate::rustc_serialize::{Decodable, Decoder, Encoder, Encodable, opaque};
+use rustc_serialize::{Decodable, Decoder, Encoder, Encodable, opaque};
 use std::hash::Hash;
 use std::intrinsics;
 use crate::ty::{self, Ty, TyCtxt};
@@ -27,6 +27,7 @@ pub trait EncodableWithShorthand: Clone + Eq + Hash {
     fn variant(&self) -> &Self::Variant;
 }
 
+#[cfg_attr(not(bootstrap), allow(rustc::usage_of_ty_tykind))]
 impl<'tcx> EncodableWithShorthand for Ty<'tcx> {
     type Variant = ty::TyKind<'tcx>;
     fn variant(&self) -> &Self::Variant {
@@ -159,6 +160,7 @@ where
     Ok(decoder.map_encoded_cnum_to_current(cnum))
 }
 
+#[cfg_attr(not(bootstrap), allow(rustc::usage_of_ty_tykind))]
 #[inline]
 pub fn decode_ty<D>(decoder: &mut D) -> Result<Ty<'tcx>, D::Error>
 where
@@ -331,7 +333,7 @@ macro_rules! implement_ty_decoder {
             use $crate::ty::codec::*;
             use $crate::ty::subst::SubstsRef;
             use $crate::hir::def_id::{CrateNum};
-            use crate::rustc_serialize::{Decoder, SpecializedDecoder};
+            use rustc_serialize::{Decoder, SpecializedDecoder};
             use std::borrow::Cow;
 
             impl<$($typaram ),*> Decoder for $DecoderName<$($typaram),*> {

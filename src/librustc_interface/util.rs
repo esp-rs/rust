@@ -203,8 +203,6 @@ pub fn spawn_thread_pool<F: FnOnce() -> R + Send, R: Send>(
     f: F,
 ) -> R {
     use rayon::{ThreadPool, ThreadPoolBuilder};
-    use syntax;
-    use syntax_pos;
 
     let gcx_ptr = &Lock::new(0);
 
@@ -642,13 +640,13 @@ pub fn build_output_filenames(
                 );
                 None
             } else {
+                if !sess.opts.cg.extra_filename.is_empty() {
+                    sess.warn("ignoring -C extra-filename flag due to -o flag");
+                }
                 Some(out_file.clone())
             };
             if *odir != None {
                 sess.warn("ignoring --out-dir flag due to -o flag");
-            }
-            if !sess.opts.cg.extra_filename.is_empty() {
-                sess.warn("ignoring -C extra-filename flag due to -o flag");
             }
 
             OutputFilenames {

@@ -2,6 +2,7 @@ use crate::ast::{
     self, Arg, BinOpKind, BindingMode, BlockCheckMode, Expr, ExprKind, Ident, Item, ItemKind,
     Mutability, Pat, PatKind, PathSegment, QSelf, Ty, TyKind, VariantData,
 };
+use crate::feature_gate::{feature_err, UnstableFeatures};
 use crate::parse::{SeqSep, PResult, Parser, ParseSess};
 use crate::parse::parser::{BlockMode, PathStyle, SemiColonMode, TokenType, TokenExpectType};
 use crate::parse::token::{self, TokenKind};
@@ -13,8 +14,9 @@ use crate::ThinVec;
 use crate::util::parser::AssocOp;
 use errors::{Applicability, DiagnosticBuilder, DiagnosticId};
 use rustc_data_structures::fx::FxHashSet;
-use syntax_pos::{Span, DUMMY_SP, MultiSpan};
+use syntax_pos::{Span, DUMMY_SP, MultiSpan, SpanSnippetError};
 use log::{debug, trace};
+use std::mem;
 
 /// Creates a placeholder argument.
 crate fn dummy_arg(ident: Ident) -> Arg {
@@ -28,7 +30,7 @@ crate fn dummy_arg(ident: Ident) -> Arg {
         span: ident.span,
         id: ast::DUMMY_NODE_ID
     };
-    Arg { attrs: ThinVec::default(), id: ast::DUMMY_NODE_ID, pat, ty: P(ty) }
+    Arg { attrs: ThinVec::default(), id: ast::DUMMY_NODE_ID, pat, span: ident.span, ty: P(ty) }
 }
 
 pub enum Error {
@@ -197,6 +199,10 @@ impl<'a> Parser<'a> {
         &self.sess.span_diagnostic
     }
 
+    crate fn span_to_snippet(&self, span: Span) -> Result<String, SpanSnippetError> {
+        self.sess.source_map().span_to_snippet(span)
+    }
+
     crate fn expected_ident_found(&self) -> DiagnosticBuilder<'a> {
         let mut err = self.struct_span_err(
             self.token.span,
@@ -325,8 +331,8 @@ impl<'a> Parser<'a> {
             self.token.is_keyword(kw::Return) ||
             self.token.is_keyword(kw::While)
         );
-        let cm = self.sess.source_map();
-        match (cm.lookup_line(self.token.span.lo()), cm.lookup_line(sp.lo())) {
+        let sm = self.sess.source_map();
+        match (sm.lookup_line(self.token.span.lo()), sm.lookup_line(sp.lo())) {
             (Ok(ref a), Ok(ref b)) if a.line != b.line && is_semi_suggestable => {
                 // The spans are in different lines, expected `;` and found `let` or `return`.
                 // High likelihood that it is only a missing `;`.
@@ -364,7 +370,51 @@ impl<'a> Parser<'a> {
                 err.span_label(self.token.span, "unexpected token");
             }
         }
+        self.maybe_annotate_with_ascription(&mut err, false);
         Err(err)
+    }
+
+    pub fn maybe_annotate_with_ascription(
+        &self,
+        err: &mut DiagnosticBuilder<'_>,
+        maybe_expected_semicolon: bool,
+    ) {
+        if let Some((sp, likely_path)) = self.last_type_ascription {
+            let sm = self.sess.source_map();
+            let next_pos = sm.lookup_char_pos(self.token.span.lo());
+            let op_pos = sm.lookup_char_pos(sp.hi());
+
+            if likely_path {
+                err.span_suggestion(
+                    sp,
+                    "maybe write a path separator here",
+                    "::".to_string(),
+                    match self.sess.unstable_features {
+                        UnstableFeatures::Disallow => Applicability::MachineApplicable,
+                        _ => Applicability::MaybeIncorrect,
+                    },
+                );
+            } else if op_pos.line != next_pos.line && maybe_expected_semicolon {
+                err.span_suggestion(
+                    sp,
+                    "try using a semicolon",
+                    ";".to_string(),
+                    Applicability::MaybeIncorrect,
+                );
+            } else if let UnstableFeatures::Disallow = self.sess.unstable_features {
+                err.span_label(sp, "tried to parse a type due to this");
+            } else {
+                err.span_label(sp, "tried to parse a type due to this type ascription");
+            }
+            if let UnstableFeatures::Disallow = self.sess.unstable_features {
+                // Give extra information about type ascription only if it's a nightly compiler.
+            } else {
+                err.note("`#![feature(type_ascription)]` lets you annotate an expression with a \
+                          type: `<expr>: <type>`");
+                err.note("for more information, see \
+                          https://github.com/rust-lang/rust/issues/23416");
+            }
+        }
     }
 
     /// Eats and discards tokens until one of `kets` is encountered. Respects token trees,
@@ -503,8 +553,10 @@ impl<'a> Parser<'a> {
             ExprKind::Binary(op, _, _) if op.node.is_comparison() => {
                 // respan to include both operators
                 let op_span = op.span.to(self.token.span);
-                let mut err = self.diagnostic().struct_span_err(op_span,
-                    "chained comparison operators require parentheses");
+                let mut err = self.struct_span_err(
+                    op_span,
+                    "chained comparison operators require parentheses",
+                );
                 if op.node == BinOpKind::Lt &&
                     *outer_op == AssocOp::Less ||  // Include `<` to provide this recommendation
                     *outer_op == AssocOp::Greater  // even in a case like the following:
@@ -555,7 +607,7 @@ impl<'a> Parser<'a> {
         .collect::<Vec<_>>();
 
         if !discriminant_spans.is_empty() && has_fields {
-            let mut err = crate::feature_gate::feature_err(
+            let mut err = feature_err(
                 sess,
                 sym::arbitrary_enum_discriminant,
                 discriminant_spans.clone(),
@@ -611,14 +663,12 @@ impl<'a> Parser<'a> {
         match ty.node {
             TyKind::Rptr(ref lifetime, ref mut_ty) => {
                 let sum_with_parens = pprust::to_string(|s| {
-                    use crate::print::pprust::PrintState;
-
-                    s.s.word("&")?;
-                    s.print_opt_lifetime(lifetime)?;
-                    s.print_mutability(mut_ty.mutbl)?;
-                    s.popen()?;
-                    s.print_type(&mut_ty.ty)?;
-                    s.print_type_bounds(" +", &bounds)?;
+                    s.s.word("&");
+                    s.print_opt_lifetime(lifetime);
+                    s.print_mutability(mut_ty.mutbl);
+                    s.popen();
+                    s.print_type(&mut_ty.ty);
+                    s.print_type_bounds(" +", &bounds);
                     s.pclose()
                 });
                 err.span_suggestion(
@@ -673,8 +723,6 @@ impl<'a> Parser<'a> {
         path.span = ty_span.to(self.prev_span);
 
         let ty_str = self
-            .sess
-            .source_map()
             .span_to_snippet(ty_span)
             .unwrap_or_else(|_| pprust::ty_to_string(&ty));
         self.diagnostic()
@@ -770,8 +818,8 @@ impl<'a> Parser<'a> {
                 return Ok(recovered);
             }
         }
-        let cm = self.sess.source_map();
-        match (cm.lookup_line(prev_sp.lo()), cm.lookup_line(sp.lo())) {
+        let sm = self.sess.source_map();
+        match (sm.lookup_line(prev_sp.lo()), sm.lookup_line(sp.lo())) {
             (Ok(ref a), Ok(ref b)) if a.line == b.line => {
                 // When the spans are in the same line, it means that the only content
                 // between them is whitespace, point only at the found token.
@@ -785,13 +833,59 @@ impl<'a> Parser<'a> {
         Err(err)
     }
 
-    /// Consume alternative await syntaxes like `await <expr>`, `await? <expr>`, `await(<expr>)`
-    /// and `await { <expr> }`.
+    crate fn parse_semi_or_incorrect_foreign_fn_body(
+        &mut self,
+        ident: &Ident,
+        extern_sp: Span,
+    ) -> PResult<'a, ()> {
+        if self.token != token::Semi {
+            // this might be an incorrect fn definition (#62109)
+            let parser_snapshot = self.clone();
+            match self.parse_inner_attrs_and_block() {
+                Ok((_, body)) => {
+                    self.struct_span_err(ident.span, "incorrect `fn` inside `extern` block")
+                        .span_label(ident.span, "can't have a body")
+                        .span_label(body.span, "this body is invalid here")
+                        .span_label(
+                            extern_sp,
+                            "`extern` blocks define existing foreign functions and `fn`s \
+                             inside of them cannot have a body")
+                        .help("you might have meant to write a function accessible through ffi, \
+                               which can be done by writing `extern fn` outside of the \
+                               `extern` block")
+                        .note("for more information, visit \
+                               https://doc.rust-lang.org/std/keyword.extern.html")
+                        .emit();
+                }
+                Err(mut err) => {
+                    err.cancel();
+                    mem::replace(self, parser_snapshot);
+                    self.expect(&token::Semi)?;
+                }
+            }
+        } else {
+            self.bump();
+        }
+        Ok(())
+    }
+
+    /// Consume alternative await syntaxes like `await!(<expr>)`, `await <expr>`,
+    /// `await? <expr>`, `await(<expr>)`, and `await { <expr> }`.
     crate fn parse_incorrect_await_syntax(
         &mut self,
         lo: Span,
         await_sp: Span,
     ) -> PResult<'a, (Span, ExprKind)> {
+        if self.token == token::Not {
+            // Handle `await!(<expr>)`.
+            self.expect(&token::Not)?;
+            self.expect(&token::OpenDelim(token::Paren))?;
+            let expr = self.parse_expr()?;
+            self.expect(&token::CloseDelim(token::Paren))?;
+            let sp = self.error_on_incorrect_await(lo, self.prev_span, &expr, false);
+            return Ok((sp, ExprKind::Await(expr)))
+        }
+
         let is_question = self.eat(&token::Question); // Handle `await? <expr>`.
         let expr = if self.token == token::OpenDelim(token::Brace) {
             // Handle `await { <expr> }`.
@@ -809,10 +903,15 @@ impl<'a> Parser<'a> {
             err.span_label(await_sp, "while parsing this incorrect await expression");
             err
         })?;
-        let expr_str = self.sess.source_map().span_to_snippet(expr.span)
+        let sp = self.error_on_incorrect_await(lo, expr.span, &expr, is_question);
+        Ok((sp, ExprKind::Await(expr)))
+    }
+
+    fn error_on_incorrect_await(&self, lo: Span, hi: Span, expr: &Expr, is_question: bool) -> Span {
+        let expr_str = self.span_to_snippet(expr.span)
             .unwrap_or_else(|_| pprust::expr_to_string(&expr));
         let suggestion = format!("{}.await{}", expr_str, if is_question { "?" } else { "" });
-        let sp = lo.to(expr.span);
+        let sp = lo.to(hi);
         let app = match expr.node {
             ExprKind::Try(_) => Applicability::MaybeIncorrect, // `await <expr>?`
             _ => Applicability::MachineApplicable,
@@ -820,7 +919,7 @@ impl<'a> Parser<'a> {
         self.struct_span_err(sp, "incorrect use of `await`")
             .span_suggestion(sp, "`await` is a postfix operation", suggestion, app)
             .emit();
-        Ok((sp, ExprKind::Await(ast::AwaitOrigin::FieldLike, expr)))
+        sp
     }
 
     /// If encountering `future.await()`, consume and emit error.
@@ -843,6 +942,48 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Recover a situation like `for ( $pat in $expr )`
+    /// and suggest writing `for $pat in $expr` instead.
+    ///
+    /// This should be called before parsing the `$block`.
+    crate fn recover_parens_around_for_head(
+        &mut self,
+        pat: P<Pat>,
+        expr: &Expr,
+        begin_paren: Option<Span>,
+    ) -> P<Pat> {
+        match (&self.token.kind, begin_paren) {
+            (token::CloseDelim(token::Paren), Some(begin_par_sp)) => {
+                self.bump();
+
+                let pat_str = self
+                    // Remove the `(` from the span of the pattern:
+                    .span_to_snippet(pat.span.trim_start(begin_par_sp).unwrap())
+                    .unwrap_or_else(|_| pprust::pat_to_string(&pat));
+
+                self.struct_span_err(self.prev_span, "unexpected closing `)`")
+                    .span_label(begin_par_sp, "opening `(`")
+                    .span_suggestion(
+                        begin_par_sp.to(self.prev_span),
+                        "remove parenthesis in `for` loop",
+                        format!("{} in {}", pat_str, pprust::expr_to_string(&expr)),
+                        // With e.g. `for (x) in y)` this would replace `(x) in y)`
+                        // with `x) in y)` which is syntactically invalid.
+                        // However, this is prevented before we get here.
+                        Applicability::MachineApplicable,
+                    )
+                    .emit();
+
+                // Unwrap `(pat)` into `pat` to avoid the `unused_parens` lint.
+                pat.and_then(|pat| match pat.node {
+                    PatKind::Paren(pat) => pat,
+                    _ => P(pat),
+                })
+            }
+            _ => pat,
+        }
+    }
+
     crate fn could_ascription_be_path(&self, node: &ast::ExprKind) -> bool {
         self.token.is_ident() &&
             if let ast::ExprKind::Path(..) = node { true } else { false } &&
@@ -852,47 +993,9 @@ impl<'a> Parser<'a> {
             self.look_ahead(2, |t| t.is_ident()) ||
             self.look_ahead(1, |t| t == &token::Colon) &&  // `foo:bar:baz`
             self.look_ahead(2, |t| t.is_ident()) ||
-            self.look_ahead(1, |t| t == &token::ModSep) &&  // `foo:bar::baz`
-            self.look_ahead(2, |t| t.is_ident())
-    }
-
-    crate fn bad_type_ascription(
-        &self,
-        err: &mut DiagnosticBuilder<'a>,
-        lhs_span: Span,
-        cur_op_span: Span,
-        next_sp: Span,
-        maybe_path: bool,
-    ) {
-        err.span_label(self.token.span, "expecting a type here because of type ascription");
-        let cm = self.sess.source_map();
-        let next_pos = cm.lookup_char_pos(next_sp.lo());
-        let op_pos = cm.lookup_char_pos(cur_op_span.hi());
-        if op_pos.line != next_pos.line {
-            err.span_suggestion(
-                cur_op_span,
-                "try using a semicolon",
-                ";".to_string(),
-                Applicability::MaybeIncorrect,
-            );
-        } else {
-            if maybe_path {
-                err.span_suggestion(
-                    cur_op_span,
-                    "maybe you meant to write a path separator here",
-                    "::".to_string(),
-                    Applicability::MaybeIncorrect,
-                );
-            } else {
-                err.note("#![feature(type_ascription)] lets you annotate an \
-                          expression with a type: `<expr>: <type>`")
-                    .span_note(
-                        lhs_span,
-                        "this expression expects an ascribed type after the colon",
-                    )
-                    .help("this might be indicative of a syntax error elsewhere");
-            }
-        }
+            self.look_ahead(1, |t| t == &token::ModSep) &&
+            (self.look_ahead(2, |t| t.is_ident()) ||   // `foo:bar::baz`
+             self.look_ahead(2, |t| t == &token::Lt))  // `foo:bar::<baz>`
     }
 
     crate fn recover_seq_parse_error(
@@ -1063,17 +1166,14 @@ impl<'a> Parser<'a> {
     crate fn check_for_for_in_in_typo(&mut self, in_span: Span) {
         if self.eat_keyword(kw::In) {
             // a common typo: `for _ in in bar {}`
-            let mut err = self.sess.span_diagnostic.struct_span_err(
-                self.prev_span,
-                "expected iterable, found keyword `in`",
-            );
-            err.span_suggestion_short(
-                in_span.until(self.prev_span),
-                "remove the duplicated `in`",
-                String::new(),
-                Applicability::MachineApplicable,
-            );
-            err.emit();
+            self.struct_span_err(self.prev_span, "expected iterable, found keyword `in`")
+                .span_suggestion_short(
+                    in_span.until(self.prev_span),
+                    "remove the duplicated `in`",
+                    String::new(),
+                    Applicability::MachineApplicable,
+                )
+                .emit();
         }
     }
 
@@ -1086,12 +1186,12 @@ impl<'a> Parser<'a> {
 
     crate fn eat_incorrect_doc_comment_for_arg_type(&mut self) {
         if let token::DocComment(_) = self.token.kind {
-            let mut err = self.diagnostic().struct_span_err(
+            self.struct_span_err(
                 self.token.span,
                 "documentation comments cannot be applied to a function parameter's type",
-            );
-            err.span_label(self.token.span, "doc comments are not allowed here");
-            err.emit();
+            )
+            .span_label(self.token.span, "doc comments are not allowed here")
+            .emit();
             self.bump();
         } else if self.token == token::Pound && self.look_ahead(1, |t| {
             *t == token::OpenDelim(token::Bracket)
@@ -1103,12 +1203,12 @@ impl<'a> Parser<'a> {
             }
             let sp = lo.to(self.token.span);
             self.bump();
-            let mut err = self.diagnostic().struct_span_err(
+            self.struct_span_err(
                 sp,
                 "attributes cannot be applied to a function parameter's type",
-            );
-            err.span_label(sp, "attributes are not allowed here");
-            err.emit();
+            )
+            .span_label(sp, "attributes are not allowed here")
+            .emit();
         }
     }
 
@@ -1164,18 +1264,19 @@ impl<'a> Parser<'a> {
         self.expect(&token::Colon)?;
         let ty = self.parse_ty()?;
 
-        let mut err = self.diagnostic().struct_span_err_with_code(
-            pat.span,
-            "patterns aren't allowed in methods without bodies",
-            DiagnosticId::Error("E0642".into()),
-        );
-        err.span_suggestion_short(
-            pat.span,
-            "give this argument a name or use an underscore to ignore it",
-            "_".to_owned(),
-            Applicability::MachineApplicable,
-        );
-        err.emit();
+        self.diagnostic()
+            .struct_span_err_with_code(
+                pat.span,
+                "patterns aren't allowed in methods without bodies",
+                DiagnosticId::Error("E0642".into()),
+            )
+            .span_suggestion_short(
+                pat.span,
+                "give this argument a name or use an underscore to ignore it",
+                "_".to_owned(),
+                Applicability::MachineApplicable,
+            )
+            .emit();
 
         // Pretend the pattern is `_`, to avoid duplicate errors from AST validation.
         let pat = P(Pat {

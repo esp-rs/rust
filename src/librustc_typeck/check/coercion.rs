@@ -13,7 +13,7 @@
 //! useful for freezing mut/const things (that is, when the expected is &T
 //! but you have &const T or &mut T) and also for avoiding the linearity
 //! of mut things (when the expected is &mut T and you have &mut T). See
-//! the various `src/test/run-pass/coerce-reborrow-*.rs` tests for
+//! the various `src/test/ui/coerce-reborrow-*.rs` tests for
 //! examples of where this is useful.
 //!
 //! ## Subtle note
@@ -54,6 +54,7 @@ use crate::check::{FnCtxt, Needs};
 use errors::DiagnosticBuilder;
 use rustc::hir;
 use rustc::hir::def_id::DefId;
+use rustc::hir::ptr::P;
 use rustc::infer::{Coercion, InferResult, InferOk};
 use rustc::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc::traits::{self, ObligationCause, ObligationCauseCode};
@@ -67,7 +68,6 @@ use rustc::ty::relate::RelateResult;
 use smallvec::{smallvec, SmallVec};
 use std::ops::Deref;
 use syntax::feature_gate;
-use syntax::ptr::P;
 use syntax::symbol::sym;
 use syntax_pos;
 
@@ -346,7 +346,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
             //     too strong. Consider a coercion from `&'a &'x Rc<T>` to
             //     `&'b T`. In this case, `'a` is actually irrelevant.
             //     The pointer we want is `LUB('x, 'b`). If we choose `LUB('a,'b)`
-            //     we get spurious errors (`run-pass/regions-lub-ref-ref-rc.rs`).
+            //     we get spurious errors (`ui/regions-lub-ref-ref-rc.rs`).
             //     (The errors actually show up in borrowck, typically, because
             //     this extra edge causes the region `'a` to be inferred to something
             //     too big, which then results in borrowck errors.)
@@ -459,7 +459,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         let (unsize_did, coerce_unsized_did) = if let (Some(u), Some(cu)) = traits {
             (u, cu)
         } else {
-            debug!("Missing Unsize or CoerceUnsized traits");
+            debug!("missing Unsize or CoerceUnsized traits");
             return Err(TypeError::Mismatch);
         };
 

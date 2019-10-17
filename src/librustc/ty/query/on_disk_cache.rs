@@ -5,7 +5,7 @@ use crate::hir::map::definitions::DefPathHash;
 use crate::ich::{CachingSourceMapView, Fingerprint};
 use crate::mir::{self, interpret};
 use crate::mir::interpret::{AllocDecodingSession, AllocDecodingState};
-use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder, opaque,
+use rustc_serialize::{Decodable, Decoder, Encodable, Encoder, opaque,
                       SpecializedDecoder, SpecializedEncoder,
                       UseSpecializedDecodable, UseSpecializedEncodable};
 use crate::session::{CrateDisambiguator, Session};
@@ -23,7 +23,7 @@ use std::mem;
 use syntax::ast::NodeId;
 use syntax::source_map::{SourceMap, StableSourceFileId};
 use syntax_pos::{BytePos, Span, DUMMY_SP, SourceFile};
-use syntax_pos::hygiene::{Mark, SyntaxContext, ExpnInfo};
+use syntax_pos::hygiene::{ExpnId, SyntaxContext, ExpnInfo};
 
 const TAG_FILE_FOOTER: u128 = 0xC0FFEE_C0FFEE_C0FFEE_C0FFEE_C0FFEE;
 
@@ -201,28 +201,22 @@ impl<'sess> OnDiskCache<'sess> {
             let mut query_result_index = EncodedQueryResultIndex::new();
 
             time(tcx.sess, "encode query results", || {
-                use crate::ty::query::queries::*;
                 let enc = &mut encoder;
                 let qri = &mut query_result_index;
 
-                encode_query_results::<type_of<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<generics_of<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<predicates_of<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<used_trait_imports<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<typeck_tables_of<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<codegen_fulfill_obligation<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<optimized_mir<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<unsafety_check_result<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<borrowck<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<mir_borrowck<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<mir_const_qualif<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<const_is_rvalue_promotable_to_static<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<symbol_name<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<check_match<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<codegen_fn_attrs<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<specialization_graph_of<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<const_eval<'_>, _>(tcx, enc, qri)?;
-                // FIXME: Include const_eval_raw?
+                macro_rules! encode_queries {
+                    ($($query:ident,)*) => {
+                        $(
+                            encode_query_results::<ty::query::queries::$query<'_>, _>(
+                                tcx,
+                                enc,
+                                qri
+                            )?;
+                        )*
+                    }
+                }
+
+                rustc_cached_queries!(encode_queries!);
 
                 Ok(())
             })?;
@@ -306,9 +300,9 @@ impl<'sess> OnDiskCache<'sess> {
     }
 
     /// Loads a diagnostic emitted during the previous compilation session.
-    pub fn load_diagnostics<'tcx>(
+    pub fn load_diagnostics(
         &self,
-        tcx: TyCtxt<'tcx>,
+        tcx: TyCtxt<'_>,
         dep_node_index: SerializedDepNodeIndex,
     ) -> Vec<Diagnostic> {
         let diagnostics: Option<EncodedDiagnostics> = self.load_indexed(
@@ -335,9 +329,9 @@ impl<'sess> OnDiskCache<'sess> {
 
     /// Returns the cached query result if there is something in the cache for
     /// the given `SerializedDepNodeIndex`; otherwise returns `None`.
-    pub fn try_load_query_result<'tcx, T>(
+    pub fn try_load_query_result<T>(
         &self,
-        tcx: TyCtxt<'tcx>,
+        tcx: TyCtxt<'_>,
         dep_node_index: SerializedDepNodeIndex,
     ) -> Option<T>
     where
@@ -594,41 +588,41 @@ impl<'a, 'tcx> SpecializedDecoder<Span> for CacheDecoder<'a, 'tcx> {
 
         let expn_info_tag = u8::decode(self)?;
 
-        let ctxt = match expn_info_tag {
+        // FIXME(mw): This method does not restore `InternalExpnData::parent` or
+        // `SyntaxContextData::prev_ctxt` or `SyntaxContextData::opaque`. These things
+        // don't seem to be used after HIR lowering, so everything should be fine
+        // as long as incremental compilation does not kick in before that.
+        let location = || Span::new(lo, hi, SyntaxContext::empty());
+        let recover_from_expn_info = |this: &Self, expn_info, pos| {
+            let span = location().fresh_expansion(ExpnId::root(), expn_info);
+            this.synthetic_expansion_infos.borrow_mut().insert(pos, span.ctxt());
+            span
+        };
+        Ok(match expn_info_tag {
             TAG_NO_EXPANSION_INFO => {
-                SyntaxContext::empty()
+                location()
             }
             TAG_EXPANSION_INFO_INLINE => {
-                let pos = AbsoluteBytePos::new(self.opaque.position());
-                let expn_info: ExpnInfo = Decodable::decode(self)?;
-                let ctxt = SyntaxContext::allocate_directly(expn_info);
-                self.synthetic_expansion_infos.borrow_mut().insert(pos, ctxt);
-                ctxt
+                let expn_info = Decodable::decode(self)?;
+                recover_from_expn_info(
+                    self, expn_info, AbsoluteBytePos::new(self.opaque.position())
+                )
             }
             TAG_EXPANSION_INFO_SHORTHAND => {
                 let pos = AbsoluteBytePos::decode(self)?;
-                let cached_ctxt = self.synthetic_expansion_infos
-                                      .borrow()
-                                      .get(&pos)
-                                      .cloned();
-
+                let cached_ctxt = self.synthetic_expansion_infos.borrow().get(&pos).cloned();
                 if let Some(ctxt) = cached_ctxt {
-                    ctxt
+                    Span::new(lo, hi, ctxt)
                 } else {
-                    let expn_info = self.with_position(pos.to_usize(), |this| {
-                         ExpnInfo::decode(this)
-                    })?;
-                    let ctxt = SyntaxContext::allocate_directly(expn_info);
-                    self.synthetic_expansion_infos.borrow_mut().insert(pos, ctxt);
-                    ctxt
+                    let expn_info =
+                        self.with_position(pos.to_usize(), |this| ExpnInfo::decode(this))?;
+                    recover_from_expn_info(self, expn_info, pos)
                 }
             }
             _ => {
                 unreachable!()
             }
-        };
-
-        Ok(Span::new(lo, hi, ctxt))
+        })
     }
 }
 
@@ -731,7 +725,7 @@ struct CacheEncoder<'a, 'tcx, E: ty_codec::TyEncoder> {
     encoder: &'a mut E,
     type_shorthands: FxHashMap<Ty<'tcx>, usize>,
     predicate_shorthands: FxHashMap<ty::Predicate<'tcx>, usize>,
-    expn_info_shorthands: FxHashMap<Mark, AbsoluteBytePos>,
+    expn_info_shorthands: FxHashMap<ExpnId, AbsoluteBytePos>,
     interpret_allocs: FxHashMap<interpret::AllocId, usize>,
     interpret_allocs_inverse: Vec<interpret::AllocId>,
     source_map: CachingSourceMapView<'tcx>,
@@ -825,15 +819,15 @@ where
         if span_data.ctxt == SyntaxContext::empty() {
             TAG_NO_EXPANSION_INFO.encode(self)
         } else {
-            let (mark, expn_info) = span_data.ctxt.outer_and_expn_info();
+            let (expn_id, expn_info) = span_data.ctxt.outer_expn_with_info();
             if let Some(expn_info) = expn_info {
-                if let Some(pos) = self.expn_info_shorthands.get(&mark).cloned() {
+                if let Some(pos) = self.expn_info_shorthands.get(&expn_id).cloned() {
                     TAG_EXPANSION_INFO_SHORTHAND.encode(self)?;
                     pos.encode(self)
                 } else {
                     TAG_EXPANSION_INFO_INLINE.encode(self)?;
                     let pos = AbsoluteBytePos::new(self.position());
-                    self.expn_info_shorthands.insert(mark, pos);
+                    self.expn_info_shorthands.insert(expn_id, pos);
                     expn_info.encode(self)
                 }
             } else {
@@ -1061,17 +1055,16 @@ fn encode_query_results<'a, 'tcx, Q, E>(
     query_result_index: &mut EncodedQueryResultIndex,
 ) -> Result<(), E::Error>
 where
-    Q: super::config::QueryDescription<'tcx>,
+    Q: super::config::QueryDescription<'tcx, Value: Encodable>,
     E: 'a + TyEncoder,
-    Q::Value: Encodable,
 {
     let desc = &format!("encode_query_results for {}",
-        unsafe { ::std::intrinsics::type_name::<Q>() });
+        ::std::any::type_name::<Q>());
 
     time_ext(tcx.sess.time_extended(), Some(tcx.sess), desc, || {
-        let map = Q::query_cache(tcx).borrow();
-        assert!(map.active.is_empty());
-        for (key, entry) in map.results.iter() {
+        let shards = Q::query_cache(tcx).lock_shards();
+        assert!(shards.iter().all(|shard| shard.active.is_empty()));
+        for (key, entry) in shards.iter().flat_map(|shard| shard.results.iter()) {
             if Q::cache_on_disk(tcx, key.clone(), Some(&entry.value)) {
                 let dep_node = SerializedDepNodeIndex::new(entry.index.index());
 

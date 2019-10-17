@@ -1,3 +1,117 @@
+Version 1.38.0 (2019-09-26)
+==========================
+
+Language
+--------
+- [The `#[global_allocator]` attribute can now be used in submodules.][62735]
+- [The `#[deprecated]` attribute can now be used on macros.][62042]
+
+Compiler
+--------
+- [Added pipelined compilation support to `rustc`.][62766] This will
+  improve compilation times in some cases. For further information please refer
+  to the [_"Evaluating pipelined rustc compilation"_][pipeline-internals] thread.
+- [Added tier 3\* support for the `aarch64-uwp-windows-msvc`, `i686-uwp-windows-gnu`,
+  `i686-uwp-windows-msvc`, `x86_64-uwp-windows-gnu`, and
+  `x86_64-uwp-windows-msvc` targets.][60260]
+- [Added tier 3 support for the `armv7-unknown-linux-gnueabi` and
+  `armv7-unknown-linux-musleabi` targets.][63107]
+- [Added tier 3 support for the `hexagon-unknown-linux-musl` target.][62814]
+- [Added tier 3 support for the `riscv32i-unknown-none-elf` target.][62784]
+
+\* Refer to Rust's [platform support page][forge-platform-support] for more
+information on Rust's tiered platform support.
+
+Libraries
+---------
+- [`ascii::EscapeDefault` now implements `Clone` and `Display`.][63421]
+- [Derive macros for prelude traits (e.g. `Clone`, `Debug`, `Hash`) are now
+  available at the same path as the trait.][63056] (e.g. The `Clone` derive macro
+  is available at `std::clone::Clone`). This also makes all built-in macros
+  available in `std`/`core` root. e.g. `std::include_bytes!`.
+- [`str::Chars` now implements `Debug`.][63000]
+- [`slice::{concat, connect, join}` now accepts `&[T]` in addition to `&T`.][62528]
+- [`*const T` and `*mut T` now implement `marker::Unpin`.][62583]
+- [`Arc<[T]>` and `Rc<[T]>` now implement `FromIterator<T>`.][61953]
+- [Added euclidean remainder and division operations (`div_euclid`,
+  `rem_euclid`) to all numeric primitives.][61884] Additionally `checked`,
+  `overflowing`, and `wrapping` versions are available for all
+  integer primitives.
+- [`thread::AccessError` now implements `Clone`, `Copy`, `Eq`, `Error`, and
+  `PartialEq`.][61491]
+- [`iter::{StepBy, Peekable, Take}` now implement `DoubleEndedIterator`.][61457]
+
+Stabilized APIs
+---------------
+- [`<*const T>::cast`]
+- [`<*mut T>::cast`]
+- [`Duration::as_secs_f32`]
+- [`Duration::as_secs_f64`]
+- [`Duration::div_duration_f32`]
+- [`Duration::div_duration_f64`]
+- [`Duration::div_f32`]
+- [`Duration::div_f64`]
+- [`Duration::from_secs_f32`]
+- [`Duration::from_secs_f64`]
+- [`Duration::mul_f32`]
+- [`Duration::mul_f64`]
+- [`any::type_name`]
+
+Cargo
+-----
+- [Added pipelined compilation support to `cargo`.][cargo/7143]
+- [You can now pass the `--features` option multiple times to enable
+  multiple features.][cargo/7084]
+
+Misc
+----
+- [`rustc` will now warn about some incorrect uses of
+  `mem::{uninitialized, zeroed}` that are known to cause undefined behaviour.][63346]
+
+Compatibility Notes
+-------------------
+- Unfortunately the [`x86_64-unknown-uefi` platform can not be built][62785]
+  with rustc 1.39.0.
+- The [`armv7-unknown-linux-gnueabihf` platform is also known to have
+  issues][62896] for certain crates such as libc.
+
+[60260]: https://github.com/rust-lang/rust/pull/60260/
+[61457]: https://github.com/rust-lang/rust/pull/61457/
+[61491]: https://github.com/rust-lang/rust/pull/61491/
+[61884]: https://github.com/rust-lang/rust/pull/61884/
+[61953]: https://github.com/rust-lang/rust/pull/61953/
+[62042]: https://github.com/rust-lang/rust/pull/62042/
+[62528]: https://github.com/rust-lang/rust/pull/62528/
+[62583]: https://github.com/rust-lang/rust/pull/62583/
+[62735]: https://github.com/rust-lang/rust/pull/62735/
+[62766]: https://github.com/rust-lang/rust/pull/62766/
+[62784]: https://github.com/rust-lang/rust/pull/62784/
+[62785]: https://github.com/rust-lang/rust/issues/62785/
+[62814]: https://github.com/rust-lang/rust/pull/62814/
+[62896]: https://github.com/rust-lang/rust/issues/62896/
+[63000]: https://github.com/rust-lang/rust/pull/63000/
+[63056]: https://github.com/rust-lang/rust/pull/63056/
+[63107]: https://github.com/rust-lang/rust/pull/63107/
+[63346]: https://github.com/rust-lang/rust/pull/63346/
+[63421]: https://github.com/rust-lang/rust/pull/63421/
+[cargo/7084]: https://github.com/rust-lang/cargo/pull/7084/
+[cargo/7143]: https://github.com/rust-lang/cargo/pull/7143/
+[`<*const T>::cast`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.cast
+[`<*mut T>::cast`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.cast
+[`Duration::as_secs_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.as_secs_f32
+[`Duration::as_secs_f64`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.as_secs_f64
+[`Duration::div_duration_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.div_duration_f32
+[`Duration::div_duration_f64`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.div_duration_f64
+[`Duration::div_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.div_f32
+[`Duration::div_f64`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.div_f64
+[`Duration::from_secs_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.from_secs_f32
+[`Duration::from_secs_f64`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.from_secs_f64
+[`Duration::mul_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.mul_f32
+[`Duration::mul_f64`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.mul_f64
+[`any::type_name`]: https://doc.rust-lang.org/std/any/fn.type_name.html
+[forge-platform-support]: https://forge.rust-lang.org/platform-support.html
+[pipeline-internals]: https://internals.rust-lang.org/t/evaluating-pipelined-rustc-compilation/10199
+
 Version 1.37.0 (2019-08-15)
 ==========================
 
@@ -22,7 +136,7 @@ Language
 - [You can now use `_` as an identifier for consts.][61347] e.g. You can write
   `const _: u32 = 5;`.
 - [You can now use `#[repr(align(X)]` on enums.][61229]
-- [The  `?`/_"Kleene"_ macro operator is now available in the
+- [The  `?` Kleene macro operator is now available in the
   2015 edition.][60932]
 
 Compiler
@@ -179,10 +293,8 @@ Misc
 
 Compatibility Notes
 -------------------
-- [`std::arch::x86::_rdtsc` returns `u64` instead of `i64`][stdsimd/559]
-- [`std::arch::x86_64::_mm_shuffle_ps` takes an `i32` instead of `u32` for `mask`][stdsimd/522]
 - With the stabilisation of `mem::MaybeUninit`, `mem::uninitialized` use is no
-  longer recommended, and will be deprecated in 1.38.0.
+  longer recommended, and will be deprecated in 1.39.0.
 
 [60318]: https://github.com/rust-lang/rust/pull/60318/
 [60364]: https://github.com/rust-lang/rust/pull/60364/
@@ -217,8 +329,7 @@ Compatibility Notes
 [`task::Poll`]: https://doc.rust-lang.org/beta/std/task/enum.Poll.html
 [clippy-1-36-0]: https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md#rust-136
 [cargo-1-36-0]: https://github.com/rust-lang/cargo/blob/master/CHANGELOG.md#cargo-136-2019-07-04
-[stdsimd/522]: https://github.com/rust-lang-nursery/stdsimd/issues/522
-[stdsimd/559]: https://github.com/rust-lang-nursery/stdsimd/issues/559
+
 
 Version 1.35.0 (2019-05-23)
 ==========================
@@ -542,7 +653,7 @@ Compiler
 --------
 - [You can now set a linker flavor for `rustc` with the `-Clinker-flavor`
   command line argument.][56351]
-- [The mininum required LLVM version has been bumped to 6.0.][56642]
+- [The minimum required LLVM version has been bumped to 6.0.][56642]
 - [Added support for the PowerPC64 architecture on FreeBSD.][57615]
 - [The `x86_64-fortanix-unknown-sgx` target support has been upgraded to
   tier 2 support.][57130] Visit the [platform support][platform-support] page for
@@ -973,7 +1084,7 @@ Compiler
 
 Libraries
 ---------
-- [You can now convert `num::NonZero*` types to their raw equivalvents using the
+- [You can now convert `num::NonZero*` types to their raw equivalents using the
   `From` trait.][54240] E.g. `u8` now implements `From<NonZeroU8>`.
 - [You can now convert a `&Option<T>` into `Option<&T>` and `&mut Option<T>`
   into `Option<&mut T>` using the `From` trait.][53218]
@@ -1166,7 +1277,7 @@ Security Notes
   caused by an integer overflow. This has been fixed by deterministically
   panicking when an overflow happens.
 
-  Thank you to Scott McMurray for responsibily disclosing this vulnerability to
+  Thank you to Scott McMurray for responsibly disclosing this vulnerability to
   us.
 
 
@@ -1438,7 +1549,7 @@ Security Notes
   given machine. This release fixes that vulnerability; you can read
   more about this on the [blog][rustdoc-sec]. The associated CVE is [CVE-2018-1000622].
 
-  Thank you to Red Hat for responsibily disclosing this vulnerability to us.
+  Thank you to Red Hat for responsibly disclosing this vulnerability to us.
 
 Compatibility Notes
 -------------------

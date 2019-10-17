@@ -34,7 +34,7 @@
 //! the target's settings, though `target-feature` and `link-args` will *add*
 //! to the list specified by the target, rather than replace.
 
-use serialize::json::{Json, ToJson};
+use rustc_serialize::json::{Json, ToJson};
 use std::collections::BTreeMap;
 use std::default::Default;
 use std::{fmt, io};
@@ -60,12 +60,14 @@ mod solaris_base;
 mod uefi_base;
 mod windows_base;
 mod windows_msvc_base;
+mod windows_uwp_base;
 mod thumb_base;
 mod l4re_base;
 mod fuchsia_base;
 mod redox_base;
 mod riscv_base;
 mod wasm32_base;
+mod vxworks_base;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
          RustcEncodable, RustcDecodable)]
@@ -286,7 +288,7 @@ macro_rules! supported_targets {
                         // run-time that the parser works correctly
                         t = Target::from_json(t.to_json())
                             .map_err(LoadTargetError::Other)?;
-                        debug!("Got builtin target: {:?}", t);
+                        debug!("got builtin target: {:?}", t);
                         Ok(t)
                     },
                 )+
@@ -305,12 +307,12 @@ macro_rules! supported_targets {
 
         #[cfg(test)]
         mod test_json_encode_decode {
-            use serialize::json::ToJson;
+            use rustc_serialize::json::ToJson;
             use super::Target;
             $(use super::$module;)+
 
             $(
-                #[test]
+                #[test] // `#[test]` - this is hard to put into a separate file, make an exception
                 fn $module() {
                     // Grab the TargetResult struct. If we successfully retrieved
                     // a Target, then the test JSON encoding/decoding can run for this
@@ -357,17 +359,19 @@ supported_targets! {
     ("armv4t-unknown-linux-gnueabi", armv4t_unknown_linux_gnueabi),
     ("armv5te-unknown-linux-gnueabi", armv5te_unknown_linux_gnueabi),
     ("armv5te-unknown-linux-musleabi", armv5te_unknown_linux_musleabi),
+    ("armv7-unknown-linux-gnueabi", armv7_unknown_linux_gnueabi),
     ("armv7-unknown-linux-gnueabihf", armv7_unknown_linux_gnueabihf),
     ("thumbv7neon-unknown-linux-gnueabihf", thumbv7neon_unknown_linux_gnueabihf),
+    ("armv7-unknown-linux-musleabi", armv7_unknown_linux_musleabi),
     ("armv7-unknown-linux-musleabihf", armv7_unknown_linux_musleabihf),
     ("aarch64-unknown-linux-gnu", aarch64_unknown_linux_gnu),
-
     ("aarch64-unknown-linux-musl", aarch64_unknown_linux_musl),
     ("x86_64-unknown-linux-musl", x86_64_unknown_linux_musl),
     ("i686-unknown-linux-musl", i686_unknown_linux_musl),
     ("i586-unknown-linux-musl", i586_unknown_linux_musl),
     ("mips-unknown-linux-musl", mips_unknown_linux_musl),
     ("mipsel-unknown-linux-musl", mipsel_unknown_linux_musl),
+    ("hexagon-unknown-linux-musl", hexagon_unknown_linux_musl),
 
     ("mips-unknown-linux-uclibc", mips_unknown_linux_uclibc),
     ("mipsel-unknown-linux-uclibc", mipsel_unknown_linux_uclibc),
@@ -413,6 +417,7 @@ supported_targets! {
 
     ("x86_64-unknown-l4re-uclibc", x86_64_unknown_l4re_uclibc),
 
+    ("aarch64-unknown-redox", aarch64_unknown_redox),
     ("x86_64-unknown-redox", x86_64_unknown_redox),
 
     ("i386-apple-ios", i386_apple_ios),
@@ -433,6 +438,8 @@ supported_targets! {
 
     ("x86_64-pc-windows-gnu", x86_64_pc_windows_gnu),
     ("i686-pc-windows-gnu", i686_pc_windows_gnu),
+    ("i686-uwp-windows-gnu", i686_uwp_windows_gnu),
+    ("x86_64-uwp-windows-gnu", x86_64_uwp_windows_gnu),
 
     ("aarch64-pc-windows-msvc", aarch64_pc_windows_msvc),
     ("x86_64-pc-windows-msvc", x86_64_pc_windows_msvc),
@@ -466,6 +473,7 @@ supported_targets! {
     ("aarch64-unknown-hermit", aarch64_unknown_hermit),
     ("x86_64-unknown-hermit", x86_64_unknown_hermit),
 
+    ("riscv32i-unknown-none-elf", riscv32i_unknown_none_elf),
     ("riscv32imc-unknown-none-elf", riscv32imc_unknown_none_elf),
     ("riscv32imac-unknown-none-elf", riscv32imac_unknown_none_elf),
     ("riscv64imac-unknown-none-elf", riscv64imac_unknown_none_elf),
@@ -478,6 +486,15 @@ supported_targets! {
     ("x86_64-unknown-uefi", x86_64_unknown_uefi),
 
     ("nvptx64-nvidia-cuda", nvptx64_nvidia_cuda),
+
+    ("x86_64-wrs-vxworks", x86_64_wrs_vxworks),
+    ("i686-wrs-vxworks", i686_wrs_vxworks),
+    ("i586-wrs-vxworks", i586_wrs_vxworks),
+    ("armv7-wrs-vxworks", armv7_wrs_vxworks),
+    ("aarch64-wrs-vxworks", aarch64_wrs_vxworks),
+    ("powerpc-wrs-vxworks", powerpc_wrs_vxworks),
+    ("powerpc-wrs-vxworks-spe", powerpc_wrs_vxworks_spe),
+    ("powerpc64-wrs-vxworks", powerpc64_wrs_vxworks),
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -499,8 +516,8 @@ pub struct Target {
     pub target_env: String,
     /// Vendor name to use for conditional compilation.
     pub target_vendor: String,
-    /// Architecture to use for ABI considerations. Valid options: "x86",
-    /// "x86_64", "arm", "aarch64", "mips", "powerpc", and "powerpc64".
+    /// Architecture to use for ABI considerations. Valid options include: "x86",
+    /// "x86_64", "arm", "aarch64", "mips", "powerpc", "powerpc64", and others.
     pub arch: String,
     /// [Data layout](http://llvm.org/docs/LangRef.html#data-layout) to pass to LLVM.
     pub data_layout: String,
@@ -724,10 +741,6 @@ pub struct TargetOptions {
     /// for this target unconditionally.
     pub no_builtins: bool,
 
-    /// Whether to lower 128-bit operations to compiler_builtins calls. Use if
-    /// your backend only supports 64-bit and smaller math.
-    pub i128_lowering: bool,
-
     /// The codegen backend to use for this target, typically "llvm"
     pub codegen_backend: String,
 
@@ -843,7 +856,6 @@ impl Default for TargetOptions {
             requires_lto: false,
             singlethread: false,
             no_builtins: false,
-            i128_lowering: false,
             codegen_backend: "llvm".to_string(),
             default_hidden_visibility: false,
             embed_bitcode: false,
@@ -1191,7 +1203,7 @@ impl Target {
     pub fn search(target_triple: &TargetTriple) -> Result<Target, String> {
         use std::env;
         use std::fs;
-        use serialize::json;
+        use rustc_serialize::json;
 
         fn load_file(path: &Path) -> Result<Target, String> {
             let contents = fs::read(path).map_err(|e| e.to_string())?;

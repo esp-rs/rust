@@ -31,10 +31,10 @@ use syntax::attr;
 use syntax::source_map;
 use syntax::edition::Edition;
 use syntax::ext::base::{SyntaxExtension, SyntaxExtensionKind};
+use syntax::ext::proc_macro::BangProcMacro;
 use syntax::parse::source_file_to_stream;
 use syntax::parse::parser::emit_unclosed_delims;
 use syntax::symbol::{Symbol, sym};
-use syntax_ext::proc_macro_impl::BangProcMacro;
 use syntax_pos::{Span, NO_EXPANSION, FileName};
 use rustc_data_structures::bit_set::BitSet;
 
@@ -250,7 +250,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     exported_symbols => { Arc::new(cdata.exported_symbols(tcx)) }
 }
 
-pub fn provide<'tcx>(providers: &mut Providers<'tcx>) {
+pub fn provide(providers: &mut Providers<'_>) {
     // FIXME(#44234) - almost all of these queries have no sub-queries and
     // therefore no actual inputs, they're just reading tables calculated in
     // resolve! Does this work? Unsure! That's what the issue is about
@@ -550,7 +550,7 @@ impl CrateStore for cstore::CStore {
         self.do_postorder_cnums_untracked()
     }
 
-    fn encode_metadata<'tcx>(&self, tcx: TyCtxt<'tcx>) -> EncodedMetadata {
+    fn encode_metadata(&self, tcx: TyCtxt<'_>) -> EncodedMetadata {
         encoder::encode_metadata(tcx)
     }
 

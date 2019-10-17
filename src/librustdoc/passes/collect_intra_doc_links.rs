@@ -6,6 +6,7 @@ use rustc::lint as lint;
 use rustc::ty;
 use syntax;
 use syntax::ast::{self, Ident};
+use syntax::ext::base::SyntaxExtensionKind;
 use syntax::feature_gate::UnstableFeatures;
 use syntax::symbol::Symbol;
 use syntax_pos::DUMMY_SP;
@@ -60,16 +61,16 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
     {
         let cx = self.cx;
 
-        // In case we're in a module, try to resolve the relative
-        // path.
-        if let Some(id) = parent_id.or(self.mod_ids.last().cloned()) {
-            // FIXME: `with_scope` requires the `NodeId` of a module.
-            let node_id = cx.tcx.hir().hir_to_node_id(id);
+        // In case we're in a module, try to resolve the relative path.
+        if let Some(module_id) = parent_id.or(self.mod_ids.last().cloned()) {
+            let module_id = cx.tcx.hir().hir_to_node_id(module_id);
             let result = cx.enter_resolver(|resolver| {
-                resolver.with_scope(node_id, |resolver| {
-                    resolver.resolve_str_path_error(DUMMY_SP, &path_str, ns == ValueNS)
-                })
+                resolver.resolve_str_path_error(DUMMY_SP, &path_str, ns, module_id)
             });
+            let result = match result {
+                Ok((_, Res::Err)) => Err(()),
+                _ => result,
+            };
 
             if let Ok((_, res)) = result {
                 let res = res.map_id(|_| panic!("unexpected node_id"));
@@ -80,6 +81,7 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
                     Res::Def(DefKind::AssocTy, _) => false,
                     Res::Def(DefKind::Variant, _) => return handle_variant(cx, res),
                     // Not a trait item; just return what we found.
+                    Res::PrimTy(..) => return Ok((res, Some(path_str.to_owned()))),
                     _ => return Ok((res, None))
                 };
 
@@ -128,11 +130,12 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
                     .ok_or(());
             }
 
-            // FIXME: `with_scope` requires the `NodeId` of a module.
-            let node_id = cx.tcx.hir().hir_to_node_id(id);
-            let (_, ty_res) = cx.enter_resolver(|resolver| resolver.with_scope(node_id, |resolver| {
-                    resolver.resolve_str_path_error(DUMMY_SP, &path, false)
-            }))?;
+            let (_, ty_res) = cx.enter_resolver(|resolver| {
+                resolver.resolve_str_path_error(DUMMY_SP, &path, TypeNS, module_id)
+            })?;
+            if let Res::Err = ty_res {
+                return Err(());
+            }
             let ty_res = ty_res.map_id(|_| panic!("unexpected node_id"));
             match ty_res {
                 Res::Def(DefKind::Struct, did)
@@ -425,19 +428,13 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
 
 /// Resolves a string as a macro.
 fn macro_resolve(cx: &DocContext<'_>, path_str: &str) -> Option<Res> {
-    use syntax::ext::base::{MacroKind, SyntaxExtensionKind};
-    let segment = ast::PathSegment::from_ident(Ident::from_str(path_str));
-    let path = ast::Path { segments: vec![segment], span: DUMMY_SP };
+    let path = ast::Path::from_ident(Ident::from_str(path_str));
     cx.enter_resolver(|resolver| {
-        let parent_scope = resolver.dummy_parent_scope();
-        if let Ok(res) = resolver.resolve_macro_to_res_inner(&path, MacroKind::Bang,
-                                                            &parent_scope, false, false) {
-            if let Res::Def(DefKind::Macro(MacroKind::ProcMacroStub), _) = res {
-                // skip proc-macro stubs, they'll cause `get_macro` to crash
-            } else {
-                if let SyntaxExtensionKind::LegacyBang(..) = resolver.get_macro(res).kind {
-                    return Some(res.map_id(|_| panic!("unexpected id")));
-                }
+        if let Ok((Some(ext), res)) = resolver.resolve_macro_path(
+            &path, None, &resolver.dummy_parent_scope(), false, false
+        ) {
+            if let SyntaxExtensionKind::LegacyBang { .. } = ext.kind {
+                return Some(res.map_id(|_| panic!("unexpected id")));
             }
         }
         if let Some(res) = resolver.all_macros.get(&Symbol::intern(path_str)) {
@@ -467,7 +464,7 @@ fn resolution_failure(
         }
     };
     let attrs = &item.attrs;
-    let sp = span_of_attrs(attrs);
+    let sp = span_of_attrs(attrs).unwrap_or(item.source.span());
 
     let mut diag = cx.tcx.struct_span_lint_hir(
         lint::builtin::INTRA_DOC_LINK_RESOLUTION_FAILURE,
@@ -519,7 +516,7 @@ fn ambiguity_error(
         }
     };
     let attrs = &item.attrs;
-    let sp = span_of_attrs(attrs);
+    let sp = span_of_attrs(attrs).unwrap_or(item.source.span());
 
     let mut msg = format!("`{}` is ", path_str);
 

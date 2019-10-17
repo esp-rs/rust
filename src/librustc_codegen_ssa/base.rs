@@ -25,7 +25,7 @@ use rustc::ty::{self, Ty, TyCtxt, Instance};
 use rustc::ty::layout::{self, Align, TyLayout, LayoutOf, VariantIdx, HasTyCtxt};
 use rustc::ty::query::Providers;
 use rustc::middle::cstore::{self, LinkagePreference};
-use rustc::util::common::{time, print_time_passes_entry};
+use rustc::util::common::{time, print_time_passes_entry, set_time_depth, time_depth};
 use rustc::session::config::{self, EntryFnType, Lto};
 use rustc::session::Session;
 use rustc::util::nodemap::FxHashMap;
@@ -128,10 +128,11 @@ pub fn unsized_info<'tcx, Cx: CodegenMethods<'tcx>>(
     target: Ty<'tcx>,
     old_info: Option<Cx::Value>,
 ) -> Cx::Value {
-    let (source, target) = cx.tcx().struct_lockstep_tails(source, target);
+    let (source, target) =
+        cx.tcx().struct_lockstep_tails_erasing_lifetimes(source, target, cx.param_env());
     match (&source.sty, &target.sty) {
         (&ty::Array(_, len), &ty::Slice(_)) => {
-            cx.const_usize(len.unwrap_usize(cx.tcx()))
+            cx.const_usize(len.eval_usize(cx.tcx(), ty::ParamEnv::reveal_all()))
         }
         (&ty::Dynamic(..), &ty::Dynamic(..)) => {
             // For now, upcasts are limited to changes in marker
@@ -433,7 +434,7 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(cx: &'
         if cx.get_defined_value("main").is_some() {
             // FIXME: We should be smart and show a better diagnostic here.
             cx.sess().struct_span_err(sp, "entry symbol `main` defined multiple times")
-                     .help("did you use #[no_mangle] on `fn main`? Use #[start] instead")
+                     .help("did you use `#[no_mangle]` on `fn main`? Use `#[start]` instead")
                      .emit();
             cx.sess().abort_if_errors();
             bug!();
@@ -639,9 +640,12 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
     // Since the main thread is sometimes blocked during codegen, we keep track
     // -Ztime-passes output manually.
+    let time_depth = time_depth();
+    set_time_depth(time_depth + 1);
     print_time_passes_entry(tcx.sess.time_passes(),
                             "codegen to LLVM IR",
                             total_codegen_time);
+    set_time_depth(time_depth);
 
     ::rustc_incremental::assert_module_sources::assert_module_sources(tcx);
 
@@ -700,7 +704,7 @@ impl<B: ExtraBackendMethods> Drop for AbortCodegenOnDrop<B> {
     }
 }
 
-fn assert_and_save_dep_graph<'tcx>(tcx: TyCtxt<'tcx>) {
+fn assert_and_save_dep_graph(tcx: TyCtxt<'_>) {
     time(tcx.sess,
          "assert dep graph",
          || ::rustc_incremental::assert_dep_graph(tcx));
@@ -775,12 +779,6 @@ impl CrateInfo {
 
         return info;
     }
-}
-
-fn is_codegened_item(tcx: TyCtxt<'_>, id: DefId) -> bool {
-    let (all_mono_items, _) =
-        tcx.collect_and_partition_mono_items(LOCAL_CRATE);
-    all_mono_items.contains(&id)
 }
 
 pub fn provide_both(providers: &mut Providers<'_>) {

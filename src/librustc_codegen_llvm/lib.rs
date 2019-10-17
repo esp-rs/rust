@@ -12,7 +12,6 @@
 #![feature(crate_visibility_modifier)]
 #![feature(extern_types)]
 #![feature(in_band_lifetimes)]
-#![allow(unused_attributes)]
 #![feature(libc)]
 #![feature(nll)]
 #![feature(rustc_diagnostic_macros)]
@@ -21,24 +20,23 @@
 #![feature(link_args)]
 #![feature(static_nobundle)]
 #![feature(trusted_len)]
-#![deny(rust_2018_idioms)]
-#![deny(internal)]
-#![deny(unused_lifetimes)]
+#![feature(mem_take)]
 
 use back::write::{create_target_machine, create_informational_target_machine};
 use syntax_pos::symbol::Symbol;
 
+extern crate rustc_demangle;
 extern crate flate2;
 #[macro_use] extern crate bitflags;
 extern crate libc;
 #[macro_use] extern crate rustc;
-extern crate rustc_allocator;
 extern crate rustc_target;
 #[macro_use] extern crate rustc_data_structures;
 extern crate rustc_incremental;
 extern crate rustc_codegen_utils;
 extern crate rustc_codegen_ssa;
 extern crate rustc_fs_util;
+extern crate rustc_driver as _;
 
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
@@ -51,13 +49,13 @@ use rustc_codegen_ssa::back::lto::{SerializedModule, LtoModuleCodegen, ThinModul
 use rustc_codegen_ssa::CompiledModule;
 use errors::{FatalError, Handler};
 use rustc::dep_graph::WorkProduct;
+use syntax::ext::allocator::AllocatorKind;
 use syntax_pos::symbol::InternedString;
 pub use llvm_util::target_features;
 use std::any::Any;
 use std::sync::{mpsc, Arc};
 
 use rustc::dep_graph::DepGraph;
-use rustc::middle::allocator::AllocatorKind;
 use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
 use rustc::session::Session;
 use rustc::session::config::{OutputFilenames, OutputType, PrintRequest, OptLevel};
@@ -124,7 +122,7 @@ impl ExtraBackendMethods for LlvmCodegenBackend {
     ) {
         unsafe { allocator::codegen(tcx, mods, kind) }
     }
-    fn compile_codegen_unit<'tcx>(&self, tcx: TyCtxt<'tcx>, cgu_name: InternedString) {
+    fn compile_codegen_unit(&self, tcx: TyCtxt<'_>, cgu_name: InternedString) {
         base::compile_codegen_unit(tcx, cgu_name);
     }
     fn target_machine_factory(

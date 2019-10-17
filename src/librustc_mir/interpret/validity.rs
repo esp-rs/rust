@@ -6,17 +6,15 @@ use rustc::hir;
 use rustc::ty::layout::{self, TyLayout, LayoutOf, VariantIdx};
 use rustc::ty;
 use rustc_data_structures::fx::FxHashSet;
-use rustc::mir::interpret::{
-    GlobalAlloc, InterpResult, InterpError,
-};
 
 use std::hash::Hash;
 
 use super::{
-    OpTy, Machine, InterpretCx, ValueVisitor, MPlaceTy,
+    GlobalAlloc, InterpResult,
+    OpTy, Machine, InterpCx, ValueVisitor, MPlaceTy,
 };
 
-macro_rules! validation_failure {
+macro_rules! throw_validation_failure {
     ($what:expr, $where:expr, $details:expr) => {{
         let where_ = path_format(&$where);
         let where_ = if where_.is_empty() {
@@ -24,7 +22,7 @@ macro_rules! validation_failure {
         } else {
             format!(" at {}", where_)
         };
-        err!(ValidationFailure(format!(
+        throw_unsup!(ValidationFailure(format!(
             "encountered {}{}, but expected {}",
             $what, where_, $details,
         )))
@@ -36,7 +34,7 @@ macro_rules! validation_failure {
         } else {
             format!(" at {}", where_)
         };
-        err!(ValidationFailure(format!(
+        throw_unsup!(ValidationFailure(format!(
             "encountered {}{}",
             $what, where_,
         )))
@@ -47,14 +45,14 @@ macro_rules! try_validation {
     ($e:expr, $what:expr, $where:expr, $details:expr) => {{
         match $e {
             Ok(x) => x,
-            Err(_) => return validation_failure!($what, $where, $details),
+            Err(_) => throw_validation_failure!($what, $where, $details),
         }
     }};
 
     ($e:expr, $what:expr, $where:expr) => {{
         match $e {
             Ok(x) => x,
-            Err(_) => return validation_failure!($what, $where),
+            Err(_) => throw_validation_failure!($what, $where),
         }
     }}
 }
@@ -153,15 +151,16 @@ fn wrapping_range_format(r: &RangeInclusive<u128>, max_hi: u128) -> String {
     debug_assert!(hi <= max_hi);
     if lo > hi {
         format!("less or equal to {}, or greater or equal to {}", hi, lo)
+    } else if lo == hi {
+        format!("equal to {}", lo)
+    } else if lo == 0 {
+        debug_assert!(hi < max_hi, "should not be printing if the range covers everything");
+        format!("less or equal to {}", hi)
+    } else if hi == max_hi {
+        debug_assert!(lo > 0, "should not be printing if the range covers everything");
+        format!("greater or equal to {}", lo)
     } else {
-        if lo == 0 {
-            debug_assert!(hi < max_hi, "should not be printing if the range covers everything");
-            format!("less or equal to {}", hi)
-        } else if hi == max_hi {
-            format!("greater or equal to {}", lo)
-        } else {
-            format!("in the range {:?}", r)
-        }
+        format!("in the range {:?}", r)
     }
 }
 
@@ -174,7 +173,7 @@ struct ValidityVisitor<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> {
         MPlaceTy<'tcx, M::PointerTag>,
         Vec<PathElem>,
     >>,
-    ecx: &'rt InterpretCx<'mir, 'tcx, M>,
+    ecx: &'rt InterpCx<'mir, 'tcx, M>,
 }
 
 impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M> {
@@ -259,7 +258,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
     type V = OpTy<'tcx, M::PointerTag>;
 
     #[inline(always)]
-    fn ecx(&self) -> &InterpretCx<'mir, 'tcx, M> {
+    fn ecx(&self) -> &InterpCx<'mir, 'tcx, M> {
         &self.ecx
     }
 
@@ -298,12 +297,12 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
         match self.walk_value(op) {
             Ok(()) => Ok(()),
             Err(err) => match err.kind {
-                InterpError::InvalidDiscriminant(val) =>
-                    validation_failure!(
+                err_unsup!(InvalidDiscriminant(val)) =>
+                    throw_validation_failure!(
                         val, self.path, "a valid enum discriminant"
                     ),
-                InterpError::ReadPointerAsBytes =>
-                    validation_failure!(
+                err_unsup!(ReadPointerAsBytes) =>
+                    throw_validation_failure!(
                         "a pointer", self.path, "plain (non-pointer) bytes"
                     ),
                 _ => Err(err),
@@ -362,7 +361,8 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                     "uninitialized data in fat pointer metadata", self.path);
                 let layout = self.ecx.layout_of(value.layout.ty.builtin_deref(true).unwrap().ty)?;
                 if layout.is_unsized() {
-                    let tail = self.ecx.tcx.struct_tail(layout.ty);
+                    let tail = self.ecx.tcx.struct_tail_erasing_lifetimes(layout.ty,
+                                                                          self.ecx.param_env);
                     match tail.sty {
                         ty::Dynamic(..) => {
                             let vtable = meta.unwrap();
@@ -398,7 +398,9 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                     // alignment and size determined by the layout (size will be 0,
                     // alignment should take attributes into account).
                     .unwrap_or_else(|| (layout.size, layout.align.abi));
-                let ptr: Option<_> = match self.ecx.memory.check_ptr_access(ptr, size, align) {
+                let ptr: Option<_> = match
+                    self.ecx.memory.check_ptr_access_align(ptr, size, Some(align))
+                {
                     Ok(ptr) => ptr,
                     Err(err) => {
                         info!(
@@ -406,20 +408,20 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                             ptr, size, align
                         );
                         match err.kind {
-                            InterpError::InvalidNullPointerUsage =>
-                                return validation_failure!("NULL reference", self.path),
-                            InterpError::AlignmentCheckFailed { required, has } =>
-                                return validation_failure!(format!("unaligned reference \
+                            err_unsup!(InvalidNullPointerUsage) =>
+                                throw_validation_failure!("NULL reference", self.path),
+                            err_unsup!(AlignmentCheckFailed { required, has }) =>
+                                throw_validation_failure!(format!("unaligned reference \
                                     (required {} byte alignment but found {})",
                                     required.bytes(), has.bytes()), self.path),
-                            InterpError::ReadBytesAsPointer =>
-                                return validation_failure!(
-                                    "integer pointer in non-ZST reference",
+                            err_unsup!(ReadBytesAsPointer) =>
+                                throw_validation_failure!(
+                                    "dangling reference (created from integer)",
                                     self.path
                                 ),
                             _ =>
-                                return validation_failure!(
-                                    "dangling (not entirely in bounds) reference",
+                                throw_validation_failure!(
+                                    "dangling reference (not entirely in bounds)",
                                     self.path
                                 ),
                         }
@@ -441,9 +443,16 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                             }
                         }
                     }
-                    // Check if we have encountered this pointer+layout combination
-                    // before.  Proceed recursively even for ZST, no
-                    // reason to skip them! E.g., `!` is a ZST and we want to validate it.
+                    // Proceed recursively even for ZST, no reason to skip them!
+                    // `!` is a ZST and we want to validate it.
+                    // Normalize before handing `place` to tracking because that will
+                    // check for duplicates.
+                    let place = if size.bytes() > 0 {
+                        self.ecx.force_mplace_ptr(place)
+                            .expect("we already bounds-checked")
+                    } else {
+                        place
+                    };
                     let path = &self.path;
                     ref_tracking.track(place, || {
                         // We need to clone the path anyway, make sure it gets created
@@ -457,10 +466,10 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
             }
             ty::FnPtr(_sig) => {
                 let value = value.to_scalar_or_undef();
-                let ptr = try_validation!(value.to_ptr(),
-                    value, self.path, "a pointer");
-                let _fn = try_validation!(self.ecx.memory.get_fn(ptr),
-                    value, self.path, "a function pointer");
+                let _fn = try_validation!(
+                    value.not_undef().and_then(|ptr| self.ecx.memory.get_fn(ptr)),
+                    value, self.path, "a function pointer"
+                );
                 // FIXME: Check if the signature matches
             }
             // This should be all the primitive types
@@ -471,7 +480,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
 
     fn visit_uninhabited(&mut self) -> InterpResult<'tcx>
     {
-        validation_failure!("a value of an uninhabited type", self.path)
+        throw_validation_failure!("a value of an uninhabited type", self.path)
     }
 
     fn visit_scalar(
@@ -504,29 +513,27 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                 if lo == 1 && hi == max_hi {
                     // Only NULL is the niche.  So make sure the ptr is NOT NULL.
                     if self.ecx.memory.ptr_may_be_null(ptr) {
-                        // These conditions are just here to improve the diagnostics so we can
-                        // differentiate between null pointers and dangling pointers
-                        if self.ref_tracking_for_consts.is_some() &&
-                            self.ecx.memory.get(ptr.alloc_id).is_err() &&
-                            self.ecx.memory.get_fn(ptr).is_err() {
-                            return validation_failure!(
-                                "encountered dangling pointer", self.path
-                            );
-                        }
-                        return validation_failure!("a potentially NULL pointer", self.path);
+                        throw_validation_failure!(
+                            "a potentially NULL pointer",
+                            self.path,
+                            format!(
+                                "something that cannot possibly fail to be {}",
+                                wrapping_range_format(&layout.valid_range, max_hi)
+                            )
+                        )
                     }
                     return Ok(());
                 } else {
-                    // Conservatively, we reject, because the pointer *could* have this
+                    // Conservatively, we reject, because the pointer *could* have a bad
                     // value.
-                    return validation_failure!(
+                    throw_validation_failure!(
                         "a pointer",
                         self.path,
                         format!(
                             "something that cannot possibly fail to be {}",
                             wrapping_range_format(&layout.valid_range, max_hi)
                         )
-                    );
+                    )
                 }
             }
             Ok(data) =>
@@ -536,7 +543,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
         if wrapping_range_contains(&layout.valid_range, bits) {
             Ok(())
         } else {
-            validation_failure!(
+            throw_validation_failure!(
                 bits,
                 self.path,
                 format!("something {}", wrapping_range_format(&layout.valid_range, max_hi))
@@ -551,7 +558,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
     ) -> InterpResult<'tcx> {
         match op.layout.ty.sty {
             ty::Str => {
-                let mplace = op.to_mem_place(); // strings are never immediate
+                let mplace = op.assert_mem_place(); // strings are never immediate
                 try_validation!(self.ecx.read_str(mplace),
                     "uninitialized or non-UTF-8 data in str", self.path);
             }
@@ -568,7 +575,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                     return Ok(());
                 }
                 // non-ZST array cannot be immediate, slices are never immediate
-                let mplace = op.to_mem_place();
+                let mplace = op.assert_mem_place();
                 // This is the length of the array/slice.
                 let len = mplace.len(self.ecx)?;
                 // zero length slices have nothing to be checked
@@ -579,7 +586,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                 let ty_size = self.ecx.layout_of(tys)?.size;
                 // This is the size in bytes of the whole array.
                 let size = ty_size * len;
-
+                // Size is not 0, get a pointer.
                 let ptr = self.ecx.force_ptr(mplace.ptr)?;
 
                 // NOTE: Keep this in sync with the handling of integer and float
@@ -603,16 +610,14 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                     Err(err) => {
                         // For some errors we might be able to provide extra information
                         match err.kind {
-                            InterpError::ReadUndefBytes(offset) => {
+                            err_unsup!(ReadUndefBytes(offset)) => {
                                 // Some byte was undefined, determine which
                                 // element that byte belongs to so we can
                                 // provide an index.
                                 let i = (offset.bytes() / ty_size.bytes()) as usize;
                                 self.path.push(PathElem::ArrayElem(i));
 
-                                return validation_failure!(
-                                    "undefined bytes", self.path
-                                )
+                                throw_validation_failure!("undefined bytes", self.path)
                             },
                             // Other errors shouldn't be possible
                             _ => return Err(err),
@@ -628,7 +633,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
     }
 }
 
-impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     /// This function checks the data at `op`. `op` is assumed to cover valid memory if it
     /// is an indirect operand.
     /// It will error if the bits at the destination do not match the ones described by the layout.
@@ -636,7 +641,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
     /// `ref_tracking_for_consts` can be `None` to avoid recursive checking below references.
     /// This also toggles between "run-time" (no recursion) and "compile-time" (with recursion)
     /// validation (e.g., pointer values are fine in integers at runtime) and various other const
-    /// specific validation checks
+    /// specific validation checks.
     pub fn validate_operand(
         &self,
         op: OpTy<'tcx, M::PointerTag>,
@@ -654,6 +659,9 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
             ref_tracking_for_consts,
             ecx: self,
         };
+
+        // Try to cast to ptr *once* instead of all the time.
+        let op = self.force_op_ptr(op).unwrap_or(op);
 
         // Run it
         visitor.visit_value(op)
