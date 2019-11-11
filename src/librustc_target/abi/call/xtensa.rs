@@ -3,16 +3,15 @@
 use crate::abi::call::{ArgAbi, FnAbi, Reg, Uniform};
 
 const NUM_ARG_GPR: u64 = 6;
-const MAX_ARG_IN_REGS_SIZE: u64  = 4 * 32;
+const MAX_ARG_IN_REGS_SIZE: u64 = 4 * 32;
 // const MAX_ARG_DIRECT_SIZE: u64 = MAX_ARG_IN_REGS_SIZE;
-const MAX_RET_IN_REGS_SIZE: u64  = 2 * 32;
+const MAX_RET_IN_REGS_SIZE: u64 = 2 * 32;
 
 fn classify_ret_ty<Ty>(arg: &mut ArgAbi<'_, Ty>, xlen: u64) {
     // The rules for return and argument types are the same, so defer to
     // classifyArgumentType.
     classify_arg_ty(arg, xlen, &mut 2); // two as max return size
 }
-
 
 fn classify_arg_ty<Ty>(arg: &mut ArgAbi<'_, Ty>, xlen: u64, remaining_gpr: &mut u64) {
     // Determine the number of GPRs needed to pass the current argument
@@ -29,7 +28,7 @@ fn classify_arg_ty<Ty>(arg: &mut ArgAbi<'_, Ty>, xlen: u64, remaining_gpr: &mut 
     let mut required_gpr = 1u64; // at least one per arg
     if alignment.bits() == 2 * xlen {
         required_gpr = 2 + (*remaining_gpr % 2);
-    } else if  arg_size.bits() > xlen && arg_size.bits() <= MAX_ARG_IN_REGS_SIZE {
+    } else if arg_size.bits() > xlen && arg_size.bits() <= MAX_ARG_IN_REGS_SIZE {
         required_gpr = (arg_size.bits() + (xlen - 1)) / xlen;
     }
 
@@ -59,12 +58,9 @@ fn classify_arg_ty<Ty>(arg: &mut ArgAbi<'_, Ty>, xlen: u64, remaining_gpr: &mut 
         //     arg.extend_integer_width_to(arg_size + (xlen - 1) / xlen);
         // }
         if alignment.bits() == 2 * xlen {
-            arg.cast_to(Uniform {
-                unit: Reg::i64(),
-                total: arg_size
-            });
+            arg.cast_to(Uniform { unit: Reg::i64(), total: arg_size });
         } else {
-            //TODO array type - this should be a homogenous array type
+            // FIXME array type - this should be a homogenous array type
             // arg.extend_integer_width_to(arg_size + (xlen - 1) / xlen);
         }
     } else {
@@ -73,15 +69,15 @@ fn classify_arg_ty<Ty>(arg: &mut ArgAbi<'_, Ty>, xlen: u64, remaining_gpr: &mut 
         arg.make_indirect();
     }
 
-   // if arg_size as u64 <= MAX_ARG_IN_REGS_SIZE {
-   //     let align = arg.layout.align.abi.bytes();
-   //     let total = arg.layout.size;
-   //     arg.cast_to(Uniform {
-   //         unit: if align <= 4 { Reg::i32() } else { Reg::i64() },
-   //         total
-   //     });
-   //     return;
-   // }
+    // if arg_size as u64 <= MAX_ARG_IN_REGS_SIZE {
+    //     let align = arg.layout.align.abi.bytes();
+    //     let total = arg.layout.size;
+    //     arg.cast_to(Uniform {
+    //         unit: if align <= 4 { Reg::i32() } else { Reg::i64() },
+    //         total
+    //     });
+    //     return;
+    // }
 }
 
 pub fn compute_abi_info<Ty>(fty: &mut FnAbi<'_, Ty>, xlen: u64) {
@@ -89,14 +85,10 @@ pub fn compute_abi_info<Ty>(fty: &mut FnAbi<'_, Ty>, xlen: u64) {
         classify_ret_ty(&mut fty.ret, xlen);
     }
 
-    let return_indirect = fty.ret.layout.size.bits() > MAX_RET_IN_REGS_SIZE ||
-                            fty.ret.is_indirect();
+    let return_indirect =
+        fty.ret.layout.size.bits() > MAX_RET_IN_REGS_SIZE || fty.ret.is_indirect();
 
-    let mut remaining_gpr = if return_indirect {
-        NUM_ARG_GPR - 1
-    } else {
-        NUM_ARG_GPR
-    };
+    let mut remaining_gpr = if return_indirect { NUM_ARG_GPR - 1 } else { NUM_ARG_GPR };
 
     for arg in &mut fty.args {
         if arg.is_ignore() {
