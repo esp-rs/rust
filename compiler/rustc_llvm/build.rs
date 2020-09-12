@@ -86,6 +86,7 @@ fn main() {
         "sparc",
         "nvptx",
         "hexagon",
+        "xtensa",
         "riscv",
         "bpf",
     ];
