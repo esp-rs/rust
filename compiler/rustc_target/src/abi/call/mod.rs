@@ -13,6 +13,7 @@ mod csky;
 mod hexagon;
 mod loongarch;
 mod m68k;
+mod xtensa;
 mod mips;
 mod mips64;
 mod msp430;
@@ -730,6 +731,7 @@ impl<'a, Ty> FnAbi<'a, Ty> {
                 }
             }
             "hexagon" => hexagon::compute_abi_info(self),
+            "xtensa" => xtensa::compute_abi_info(cx, self),
             "riscv32" | "riscv64" => riscv::compute_abi_info(cx, self),
             "wasm32" | "wasm64" => {
                 if cx.target_spec().adjust_abi(abi) == spec::abi::Abi::Wasm {
