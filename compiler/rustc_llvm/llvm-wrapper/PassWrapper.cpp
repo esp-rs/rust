@@ -140,6 +140,12 @@ extern "C" void LLVMTimeTraceProfilerFinish(const char* FileName) {
 #define SUBTARGET_SPARC
 #endif
 
+#ifdef LLVM_COMPONENT_XTENSA
+#define SUBTARGET_XTENSA SUBTARGET(XTENSA)
+#else
+#define SUBTARGET_XTENSA
+#endif
+
 #ifdef LLVM_COMPONENT_HEXAGON
 #define SUBTARGET_HEXAGON SUBTARGET(Hexagon)
 #else
@@ -164,6 +170,7 @@ extern "C" void LLVMTimeTraceProfilerFinish(const char* FileName) {
   SUBTARGET_MSP430                                                             \
   SUBTARGET_SPARC                                                              \
   SUBTARGET_HEXAGON                                                            \
+  SUBTARGET_XTENSA                                                             \
   SUBTARGET_RISCV                                                              \
   SUBTARGET_LOONGARCH                                                          \
 
