@@ -8,6 +8,7 @@ mod arm;
 mod avr;
 mod bpf;
 mod hexagon;
+mod xtensa;
 mod mips;
 mod mips64;
 mod msp430;
@@ -645,6 +646,7 @@ impl<'a, Ty> FnAbi<'a, Ty> {
             "nvptx" => nvptx::compute_abi_info(self),
             "nvptx64" => nvptx64::compute_abi_info(self),
             "hexagon" => hexagon::compute_abi_info(self),
+            "xtensa" => xtensa::compute_abi_info(cx, self),
             "riscv32" | "riscv64" => riscv::compute_abi_info(cx, self),
             "wasm32" | "wasm64" => {
                 if cx.target_spec().adjust_abi(abi) == spec::abi::Abi::Wasm {
