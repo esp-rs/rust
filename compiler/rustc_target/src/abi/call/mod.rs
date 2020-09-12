@@ -7,6 +7,7 @@ mod amdgpu;
 mod arm;
 mod avr;
 mod hexagon;
+mod xtensa;
 mod mips;
 mod mips64;
 mod msp430;
@@ -636,6 +637,7 @@ impl<'a, Ty> FnAbi<'a, Ty> {
             "nvptx" => nvptx::compute_abi_info(self),
             "nvptx64" => nvptx64::compute_abi_info(self),
             "hexagon" => hexagon::compute_abi_info(self),
+            "xtensa" => xtensa::compute_abi_info(cx, self),
             "riscv32" | "riscv64" => riscv::compute_abi_info(cx, self),
             "wasm32" => match cx.target_spec().os.as_str() {
                 "emscripten" | "wasi" => wasm32::compute_abi_info(cx, self),
