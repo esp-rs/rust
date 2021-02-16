@@ -45,6 +45,7 @@ check-cfg = [
     'cfg(stdarch_intel_sde)',
     # #[cfg(bootstrap)] rtems
     'cfg(target_os, values("rtems"))',
+    'cfg(target_arch, values("xtensa"))',
     # core use #[path] imports to portable-simd `core_simd` crate
     # and to stdarch `core_arch` crate which messes-up with Cargo list
     # of declared features, we therefor expect any feature cfg
