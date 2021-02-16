@@ -211,6 +211,7 @@ impl fmt::Debug for c_void {
         not(target_arch = "aarch64"),
         not(target_arch = "powerpc"),
         not(target_arch = "s390x"),
+        not(target_arch = "xtensa"),
         not(target_arch = "x86_64")
     ),
     all(target_arch = "aarch64", any(target_os = "macos", target_os = "ios", target_os = "tvos")),
@@ -239,6 +240,7 @@ pub struct VaListImpl<'f> {
         not(target_arch = "aarch64"),
         not(target_arch = "powerpc"),
         not(target_arch = "s390x"),
+        not(target_arch = "xtensa"),
         not(target_arch = "x86_64")
     ),
     all(target_arch = "aarch64", any(target_os = "macos", target_os = "ios", target_os = "tvos")),
@@ -345,6 +347,24 @@ pub struct VaListImpl<'f> {
     _marker: PhantomData<&'f mut &'f c_void>,
 }
 
+/// xtensa ABI implementation of a `va_list`.
+#[cfg(target_arch = "xtensa")]
+#[repr(C)]
+#[derive(Debug)]
+#[unstable(
+    feature = "c_variadic",
+    reason = "the `c_variadic` feature has not been properly tested on \
+              all supported platforms",
+    issue = "44930"
+)]
+#[lang = "va_list"]
+pub struct VaListImpl<'f> {
+    stk: *mut i32,
+    reg: *mut i32,
+    ndx: i32,
+    _marker: PhantomData<&'f mut &'f i32>,
+}
+
 /// A wrapper for a `va_list`
 #[cfg_attr(not(doc), repr(transparent))] // work around https://github.com/rust-lang/rust/issues/90435
 #[derive(Debug)]
@@ -360,6 +380,7 @@ pub struct VaList<'a, 'f: 'a> {
             not(target_arch = "aarch64"),
             not(target_arch = "powerpc"),
             not(target_arch = "s390x"),
+            not(target_arch = "xtensa"),
             not(target_arch = "x86_64")
         ),
         all(
@@ -377,6 +398,7 @@ pub struct VaList<'a, 'f: 'a> {
             target_arch = "aarch64",
             target_arch = "powerpc",
             target_arch = "s390x",
+            target_arch = "xtensa",
             target_arch = "x86_64"
         ),
         any(
@@ -397,6 +419,7 @@ pub struct VaList<'a, 'f: 'a> {
         not(target_arch = "aarch64"),
         not(target_arch = "powerpc"),
         not(target_arch = "s390x"),
+        not(target_arch = "xtensa"),
         not(target_arch = "x86_64")
     ),
     all(target_arch = "aarch64", any(target_os = "macos", target_os = "ios", target_os = "tvos")),
@@ -423,6 +446,7 @@ impl<'f> VaListImpl<'f> {
         target_arch = "aarch64",
         target_arch = "powerpc",
         target_arch = "s390x",
+        target_arch = "xtensa",
         target_arch = "x86_64"
     ),
     any(
