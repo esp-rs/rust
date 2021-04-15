@@ -1,4 +1,40 @@
-# The Rust Programming Language
+# The Rust Programming Language For Xtensa processors
+
+This fork enables projects to be built for the ESP32 and ESP8266 using [espressif's llvm fork](https://github.com/espressif/llvm-project). The [esp-rs](https://github.com/esp-rs) organization has been formed to develop runtime, pac and hal crates for the esp32 and eventually esp8266.
+
+Join in on the discussion: https://matrix.to/#/#esp-rs:matrix.org!
+
+## Using this fork
+
+The [quickstart repo](https://github.com/MabezDev/xtensa-rust-quickstart) has more information on how to build this fork and use it to build xtensa compatible code.
+
+This is the main source code repository for [Rust]. It contains the compiler,
+standard library, and documentation. 
+
+To build this fork and have xtensa support, you need to make sure you pass in the --experimental-targets=Xtensa to configure as follows:
+```sh
+$ git clone https://github.com/MabezDev/rust-xtensa
+$ cd rust-xtensa
+$ ./configure --experimental-targets=Xtensa
+$ ./x.py build --stage 2
+```
+
+## Updating this fork
+
+The patch set can be found [here](https://github.com/MabezDev/rust-xtensa-patches). Checkout from upstream/master, apply the patches on at a time using `git am -3 < path/to/patch.patch`, fixing any conflicts if necessary (remember to PR the changes back to the patches [repo]((https://github.com/MabezDev/rust-xtensa-patches))). Once it builds submit a PR against this repo with the branch name `xtensa-update-$DATE`. 
+
+If the llvm submodule needs to be updated, the following should work:
+
+```bash
+git submodule set-url src/llvm-project https://github.com/espressif/llvm-project
+git submodule set-branch -b $BRANCH_NAME src/llvm-project
+git submodule update --init --recursive --remote src/llvm-project
+```
+
+Once accepted, the new branch will be renamed `xtensa-target`, hence making it the default.
+Don't worry about the README changes, I will port those across once I accept the PR.
+
+---
 
 This is the main source code repository for [Rust]. It contains the compiler,
 standard library, and documentation.
@@ -7,7 +43,8 @@ standard library, and documentation.
 
 **Note: this README is for _users_ rather than _contributors_.
 If you wish to _contribute_ to the compiler, you should read the
-[Getting Started][gettingstarted] section of the rustc-dev-guide instead.**
+[Getting Started][gettingstarted] of the rustc-dev-guide instead of this
+section.**
 
 ## Quick Start
 
@@ -41,8 +78,8 @@ by running `./x.py --help` or reading the [rustc dev guide][rustcguidebuild].
 2. Clone the [source] with `git`:
 
    ```sh
-   git clone https://github.com/rust-lang/rust.git
-   cd rust
+   $ git clone https://github.com/rust-lang/rust.git
+   $ cd rust
    ```
 
 [source]: https://github.com/rust-lang/rust
@@ -54,7 +91,7 @@ by running `./x.py --help` or reading the [rustc dev guide][rustcguidebuild].
     Copy the default `config.toml.example` to `config.toml` to get started.
 
     ```sh
-    cp config.toml.example config.toml
+    $ cp config.toml.example config.toml
     ```
 
     If you plan to use `x.py install` to create an installation, it is recommended
@@ -65,7 +102,7 @@ by running `./x.py --help` or reading the [rustc dev guide][rustcguidebuild].
 4. Build and install:
 
     ```sh
-    ./x.py build && ./x.py install
+    $ ./x.py build && ./x.py install
     ```
 
     When complete, `./x.py install` will place several programs into
@@ -103,7 +140,7 @@ build.
 
    ```sh
    # Update package mirrors (may be needed if you have a fresh install of MSYS2)
-   pacman -Sy pacman-mirrors
+   $ pacman -Sy pacman-mirrors
 
    # Install build tools needed for Rust. If you're building a 32-bit compiler,
    # then replace "x86_64" below with "i686". If you've already got git, python,
@@ -111,7 +148,7 @@ build.
    # that it is important that you do **not** use the 'python2', 'cmake' and 'ninja'
    # packages from the 'msys2' subsystem. The build has historically been known
    # to fail with these packages.
-   pacman -S git \
+   $ pacman -S git \
                make \
                diffutils \
                tar \
@@ -124,7 +161,7 @@ build.
 4. Navigate to Rust's source code (or clone it), then build it:
 
    ```sh
-   ./x.py build && ./x.py install
+   $ ./x.py build && ./x.py install
    ```
 
 #### MSVC
@@ -142,7 +179,7 @@ With these dependencies installed, you can build the compiler in a `cmd.exe`
 shell with:
 
 ```sh
-python x.py build
+> python x.py build
 ```
 
 Currently, building Rust only works with some known versions of Visual Studio. If
@@ -151,8 +188,8 @@ you may need to force rustbuild to use an older version. This can be done
 by manually calling the appropriate vcvars file before running the bootstrap.
 
 ```batch
-CALL "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat"
-python x.py build
+> CALL "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat"
+> python x.py build
 ```
 
 #### Specifying an ABI
@@ -178,8 +215,8 @@ While it's not the recommended build system, this project also provides a
 configure script and makefile (the latter of which just invokes `x.py`).
 
 ```sh
-./configure
-make && sudo make install
+$ ./configure
+$ make && sudo make install
 ```
 
 When using the configure script, the generated `config.mk` file may override the
@@ -191,7 +228,7 @@ When using the configure script, the generated `config.mk` file may override the
 If you’d like to build the documentation, it’s almost the same:
 
 ```sh
-./x.py doc
+$ ./x.py doc
 ```
 
 The generated documentation will appear under `doc` in the `build` directory for
