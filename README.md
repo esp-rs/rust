@@ -13,15 +13,15 @@ standard library, and documentation.
 
 To build this fork and have xtensa support, you need to make sure you pass in the --experimental-targets=Xtensa to configure as follows:
 ```sh
-$ git clone https://github.com/MabezDev/rust-xtensa
-$ cd rust-xtensa
+$ git clone https://github.com/esp-rs/rust
+$ cd rust
 $ ./configure --experimental-targets=Xtensa
 $ ./x.py build --stage 2
 ```
 
 ## Updating this fork
 
-The patch set can be found [here](https://github.com/MabezDev/rust-xtensa-patches). Checkout from upstream/master, apply the patches on at a time using `git am -3 < path/to/patch.patch`, fixing any conflicts if necessary (remember to PR the changes back to the patches [repo]((https://github.com/MabezDev/rust-xtensa-patches))). Once it builds submit a PR against this repo with the branch name `xtensa-update-$DATE`. 
+The patch set can be found [here](https://github.com/MabezDev/rust-xtensa-patches). Checkout from upstream/master, apply the patches on at a time using `git am -3 < path/to/patch.patch`, fixing any conflicts if necessary (remember to PR the changes back to the patches [repo]((https://github.com/MabezDev/rust-xtensa-patches))). Once it builds submit a PR against this repo with the branch name `esp-update-$DATE`. 
 
 If the llvm submodule needs to be updated, the following should work:
 
@@ -31,7 +31,7 @@ git submodule set-branch -b $BRANCH_NAME src/llvm-project
 git submodule update --init --recursive --remote src/llvm-project
 ```
 
-Once accepted, the new branch will be renamed `xtensa-target`, hence making it the default.
+Once accepted, the new branch will be renamed `esp-target`, hence making it the default.
 Don't worry about the README changes, I will port those across once I accept the PR.
 
 ---
