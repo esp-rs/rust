@@ -6,12 +6,14 @@ use crate::ptr;
 use crate::sys::{os, stack_overflow};
 use crate::time::Duration;
 
-#[cfg(not(any(target_os = "l4re", target_os = "vxworks")))]
+#[cfg(not(any(target_os = "l4re", target_os = "vxworks", target_os = "espidf")))]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
 #[cfg(target_os = "l4re")]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
 #[cfg(target_os = "vxworks")]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 256 * 1024;
+#[cfg(target_os = "espidf")]
+pub const DEFAULT_MIN_STACK_SIZE: usize = 5 * 1024;
 
 pub struct Thread {
     id: libc::pthread_t,
@@ -32,22 +34,51 @@ impl Thread {
 
         let stack_size = cmp::max(stack, min_stack_size(&attr));
 
-        match libc::pthread_attr_setstacksize(&mut attr, stack_size) {
-            0 => {}
-            n => {
-                assert_eq!(n, libc::EINVAL);
-                // EINVAL means |stack_size| is either too small or not a
-                // multiple of the system page size.  Because it's definitely
-                // >= PTHREAD_STACK_MIN, it must be an alignment issue.
-                // Round up to the nearest page and try again.
-                let page_size = os::page_size();
-                let stack_size =
-                    (stack_size + page_size - 1) & (-(page_size as isize - 1) as usize - 1);
-                assert_eq!(libc::pthread_attr_setstacksize(&mut attr, stack_size), 0);
-            }
-        };
+        let stack_size_res = libc::pthread_attr_setstacksize(&mut attr, stack_size);
 
-        let ret = libc::pthread_create(&mut native, &attr, thread_start, p as *mut _);
+        if cfg!(target_os = "espidf") {
+            assert_eq!(stack_size_res, 0);
+        } else {
+            match stack_size_res {
+                0 => {}
+                n => {
+                    #[cfg(not(target_os = "espidf"))]
+                    use os::page_size;
+
+                    #[cfg(target_os = "espidf")]
+                    fn page_size() -> usize {
+                        unreachable!()
+                    }
+
+                    assert_eq!(n, libc::EINVAL);
+                    // EINVAL means |stack_size| is either too small or not a
+                    // multiple of the system page size.  Because it's definitely
+                    // >= PTHREAD_STACK_MIN, it must be an alignment issue.
+                    // Round up to the nearest page and try again.
+                    let page_size = page_size();
+                    let stack_size =
+                        (stack_size + page_size - 1) & (-(page_size as isize - 1) as usize - 1);
+                    assert_eq!(libc::pthread_attr_setstacksize(&mut attr, stack_size), 0);
+                }
+            };
+        }
+
+        // This hack is necessary because currently libc does not expose the
+        // pthread_create symbol under newlib
+        // TODO: File a pull request against libc
+        #[cfg(target_os = "espidf")]
+        extern "C" {
+            fn pthread_create(
+                native: *mut libc::pthread_t,
+                attr: *const libc::pthread_attr_t,
+                f: extern "C" fn(_: *mut libc::c_void) -> *mut libc::c_void,
+                value: *mut libc::c_void,
+            ) -> libc::c_int;
+        }
+        #[cfg(not(target_os = "espidf"))]
+        use libc::pthread_create;
+
+        let ret = pthread_create(&mut native, &attr, thread_start, p as *mut _);
         // Note: if the thread creation fails and this assert fails, then p will
         // be leaked. However, an alternative design could cause double-free
         // which is clearly worse.
@@ -147,6 +178,7 @@ impl Thread {
         // FIXME: determine whether Fuchsia has a way to set a thread name.
     }
 
+    #[cfg(not(target_os = "espidf"))]
     pub fn sleep(dur: Duration) {
         let mut secs = dur.as_secs();
         let mut nsecs = dur.subsec_nanos() as _;
@@ -168,6 +200,19 @@ impl Thread {
                 } else {
                     nsecs = 0;
                 }
+            }
+        }
+    }
+
+    #[cfg(target_os = "espidf")]
+    pub fn sleep(dur: Duration) {
+        let mut micros = dur.as_micros();
+        unsafe {
+            while micros > 0 {
+                let st = if micros > u32::MAX as u128 { u32::MAX } else { micros as u32 };
+                libc::usleep(st);
+
+                micros -= st as u128;
             }
         }
     }
@@ -471,7 +516,7 @@ fn min_stack_size(attr: *const libc::pthread_attr_t) -> usize {
 
 // No point in looking up __pthread_get_minstack() on non-glibc
 // platforms.
-#[cfg(all(not(target_os = "linux"), not(target_os = "netbsd")))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "netbsd"), not(target_os = "espidf")))]
 fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
     libc::PTHREAD_STACK_MIN
 }
@@ -479,4 +524,9 @@ fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
 #[cfg(target_os = "netbsd")]
 fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
     2048 // just a guess
+}
+
+#[cfg(target_os = "espidf")]
+fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
+    512 // just a guess
 }

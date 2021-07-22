@@ -5,11 +5,13 @@ use crate::io::ErrorKind;
 pub use self::rand::hashmap_random_keys;
 pub use libc::strlen;
 
+#[cfg(not(target_os = "espidf"))]
 #[macro_use]
 pub mod weak;
 
 pub mod alloc;
 pub mod android;
+#[cfg_attr(target_os = "espidf", path = "../unsupported/args.rs")]
 pub mod args;
 #[path = "../unix/cmath.rs"]
 pub mod cmath;
@@ -28,6 +30,8 @@ pub mod memchr;
 pub mod mutex;
 #[cfg(not(target_os = "l4re"))]
 pub mod net;
+#[cfg(target_os = "espidf")]
+mod net_lwip;
 #[cfg(target_os = "l4re")]
 pub use self::l4re::net;
 pub mod os;
@@ -35,6 +39,7 @@ pub mod path;
 pub mod pipe;
 pub mod process;
 pub mod rand;
+#[cfg_attr(target_os = "espidf", path = "../wasm/rwlock_atomics.rs")]
 pub mod rwlock;
 pub mod stack_overflow;
 pub mod stdio;
@@ -45,6 +50,11 @@ pub mod time;
 
 pub use crate::sys_common::os_str_bytes as os_str;
 
+#[cfg(all(not(test), target_os = "espidf"))]
+pub fn init(argc: isize, argv: *const *const u8) {
+}
+
+#[cfg(all(not(test), not(target_os = "espidf")))]
 // SAFETY: must be called only once during runtime initialization.
 // NOTE: this is not guaranteed to run, for example when Rust code is called externally.
 pub unsafe fn init(argc: isize, argv: *const *const u8) {

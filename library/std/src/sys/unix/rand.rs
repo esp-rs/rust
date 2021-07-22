@@ -41,7 +41,20 @@ mod imp {
         unsafe { getrandom(buf.as_mut_ptr().cast(), buf.len(), libc::GRND_NONBLOCK) }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(target_os = "espidf")]
+    fn getrandom_fill_bytes(buf: &mut [u8]) -> bool {
+        extern "C" {
+            fn esp_fill_random(buf: *mut libc::c_void, len: libc::size_t) -> libc::c_void;
+        }
+
+        unsafe {
+            esp_fill_random(buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+        }
+
+        true // TODO: Return false if ESP32's WiFi or Bluetooth is not initialized
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "espidf")))]
     fn getrandom_fill_bytes(_buf: &mut [u8]) -> bool {
         false
     }

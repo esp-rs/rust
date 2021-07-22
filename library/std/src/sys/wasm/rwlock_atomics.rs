@@ -4,7 +4,8 @@ use crate::sys::mutex::Mutex;
 
 pub struct RWLock {
     lock: Mutex,
-    cond: Condvar,
+    cond: UnsafeCell<Condvar>,
+    initialized: UnsafeCell<bool>,
     state: UnsafeCell<State>,
 }
 
@@ -26,15 +27,34 @@ unsafe impl Sync for RWLock {}
 // the future.
 
 impl RWLock {
+    #[cfg(target_os = "espidf")]
     pub const fn new() -> RWLock {
-        RWLock { lock: Mutex::new(), cond: Condvar::new(), state: UnsafeCell::new(State::Unlocked) }
+        // NOTE: ESP-IDF's PTHREAD_COND_INITIALIZER support is not released yet
+        // So on that platform we need to manually initialize
+        RWLock {
+            lock: Mutex::new(),
+            cond: UnsafeCell::new(Condvar::new()),
+            initialized: UnsafeCell::new(false),
+            state: UnsafeCell::new(State::Unlocked),
+        }
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    pub const fn new() -> RWLock {
+        RWLock {
+            lock: Mutex::new(),
+            cond: UnsafeCell::new(Condvar::new()),
+            initialized: UnsafeCell::new(true),
+            state: UnsafeCell::new(State::Unlocked),
+        }
     }
 
     #[inline]
     pub unsafe fn read(&self) {
         self.lock.lock();
+        self.initialize();
         while !(*self.state.get()).inc_readers() {
-            self.cond.wait(&self.lock);
+            (*self.cond.get()).wait(&self.lock);
         }
         self.lock.unlock();
     }
@@ -50,8 +70,9 @@ impl RWLock {
     #[inline]
     pub unsafe fn write(&self) {
         self.lock.lock();
+        self.initialize();
         while !(*self.state.get()).inc_writers() {
-            self.cond.wait(&self.lock);
+            (*self.cond.get()).wait(&self.lock);
         }
         self.lock.unlock();
     }
@@ -67,27 +88,42 @@ impl RWLock {
     #[inline]
     pub unsafe fn read_unlock(&self) {
         self.lock.lock();
+        self.initialize();
         let notify = (*self.state.get()).dec_readers();
         self.lock.unlock();
         if notify {
             // FIXME: should only wake up one of these some of the time
-            self.cond.notify_all();
+            (*self.cond.get()).notify_all();
         }
     }
 
     #[inline]
     pub unsafe fn write_unlock(&self) {
         self.lock.lock();
+        self.initialize();
         (*self.state.get()).dec_writers();
         self.lock.unlock();
         // FIXME: should only wake up one of these some of the time
-        self.cond.notify_all();
+        (*self.cond.get()).notify_all();
     }
 
     #[inline]
     pub unsafe fn destroy(&self) {
+        self.lock.lock();
+        if (*self.initialized.get()) {
+            (*self.cond.get()).destroy();
+            *self.initialized.get() = false;
+        }
+        self.lock.unlock();
         self.lock.destroy();
-        self.cond.destroy();
+    }
+
+    #[inline]
+    unsafe fn initialize(&self) {
+        if (!*self.initialized.get()) {
+            (*self.cond.get()).init();
+            *self.initialized.get() = true;
+        }
     }
 }
 

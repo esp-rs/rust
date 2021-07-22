@@ -20,11 +20,18 @@ use crate::slice;
 use crate::str;
 use crate::sys::cvt;
 use crate::sys::fd;
-use crate::sys::rwlock::{RWLockReadGuard, StaticRWLock};
+#[cfg(not(target_os = "espidf"))]
+use crate::sys::rwlock::{RWLockReadGuard, RWLockWriteGuard, StaticRWLock};
+#[cfg(target_os = "espidf")] // No RW locks in ESP-IDF yet
 use crate::sys_common::mutex::{StaticMutex, StaticMutexGuard};
 use crate::vec;
 
 use libc::{c_char, c_int, c_void};
+
+#[cfg(target_os = "espidf")]
+#[path = "../unsupported/common.rs"]
+#[deny(unsafe_op_in_unsafe_fn)]
+mod unsupported;
 
 const TMPBUF_SZ: usize = 128;
 
@@ -126,6 +133,12 @@ pub fn error_string(errno: i32) -> String {
     }
 }
 
+#[cfg(target_os = "espidf")]
+pub fn getcwd() -> io::Result<PathBuf> {
+    Ok(PathBuf::from("/"))
+}
+
+#[cfg(not(target_os = "espidf"))]
 pub fn getcwd() -> io::Result<PathBuf> {
     let mut buf = Vec::with_capacity(512);
     loop {
@@ -152,6 +165,12 @@ pub fn getcwd() -> io::Result<PathBuf> {
     }
 }
 
+#[cfg(target_os = "espidf")]
+pub fn chdir(p: &path::Path) -> io::Result<()> {
+    Err(unsupported::unsupported_err())
+}
+
+#[cfg(not(target_os = "espidf"))]
 pub fn chdir(p: &path::Path) -> io::Result<()> {
     let p: &OsStr = p.as_ref();
     let p = CString::new(p.as_bytes())?;
@@ -457,6 +476,11 @@ pub fn current_exe() -> io::Result<PathBuf> {
     path.canonicalize()
 }
 
+#[cfg(target_os = "espidf")]
+pub fn current_exe() -> io::Result<PathBuf> {
+    unsupported::unsupported()
+}
+
 pub struct Env {
     iter: vec::IntoIter<(OsString, OsString)>,
 }
@@ -490,10 +514,30 @@ pub unsafe fn environ() -> *mut *const *const c_char {
     ptr::addr_of_mut!(environ)
 }
 
+#[cfg(not(target_os = "espidf"))]
 static ENV_LOCK: StaticRWLock = StaticRWLock::new();
 
+#[cfg(not(target_os = "espidf"))]
+pub fn env_write_lock() -> RWLockWriteGuard {
+    ENV_LOCK.write_with_guard()
+}
+
+#[cfg(not(target_os = "espidf"))]
 pub fn env_read_lock() -> RWLockReadGuard {
     ENV_LOCK.read_with_guard()
+}
+
+#[cfg(target_os = "espidf")]
+static ENV_LOCK: StaticMutex = StaticMutex::new();
+
+#[cfg(target_os = "espidf")]
+pub unsafe fn env_write_lock() -> StaticMutexGuard {
+    ENV_LOCK.lock()
+}
+
+#[cfg(target_os = "espidf")]
+pub unsafe fn env_read_lock() -> StaticMutexGuard {
+    ENV_LOCK.lock()
 }
 
 /// Returns a vector of (variable, value) byte-vector pairs for all the
@@ -553,7 +597,7 @@ pub fn setenv(k: &OsStr, v: &OsStr) -> io::Result<()> {
     let v = CString::new(v.as_bytes())?;
 
     unsafe {
-        let _guard = ENV_LOCK.write_with_guard();
+        let _guard = env_write_lock();
         cvt(libc::setenv(k.as_ptr(), v.as_ptr(), 1)).map(drop)
     }
 }
@@ -562,13 +606,19 @@ pub fn unsetenv(n: &OsStr) -> io::Result<()> {
     let nbuf = CString::new(n.as_bytes())?;
 
     unsafe {
-        let _guard = ENV_LOCK.write_with_guard();
+        let _guard = env_write_lock();
         cvt(libc::unsetenv(nbuf.as_ptr())).map(drop)
     }
 }
 
+#[cfg(not(target_os = "espidf"))]
 pub fn page_size() -> usize {
     unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+}
+
+#[cfg(target_os = "espidf")]
+pub fn page_size() -> usize {
+    32
 }
 
 pub fn temp_dir() -> PathBuf {
@@ -585,6 +635,7 @@ pub fn home_dir() -> Option<PathBuf> {
     return crate::env::var_os("HOME").or_else(|| unsafe { fallback() }).map(PathBuf::from);
 
     #[cfg(any(
+        target_os = "espidf",
         target_os = "android",
         target_os = "ios",
         target_os = "emscripten",
@@ -595,6 +646,7 @@ pub fn home_dir() -> Option<PathBuf> {
         None
     }
     #[cfg(not(any(
+        target_os = "espidf",
         target_os = "android",
         target_os = "ios",
         target_os = "emscripten",

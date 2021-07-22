@@ -40,6 +40,8 @@ cfg_if::cfg_if! {
         use crate::os::dragonfly as platform;
         #[cfg(target_os = "emscripten")]
         use crate::os::emscripten as platform;
+        #[cfg(target_os = "espidf")]
+        use crate::os::espidf as platform;
         #[cfg(target_os = "freebsd")]
         use crate::os::freebsd as platform;
         #[cfg(target_os = "fuchsia")]

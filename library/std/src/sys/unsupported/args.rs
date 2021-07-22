@@ -34,3 +34,6 @@ impl DoubleEndedIterator for Args {
         None
     }
 }
+
+/// One-time global cleanup.
+pub unsafe fn cleanup() {}

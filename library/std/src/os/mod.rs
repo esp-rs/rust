@@ -52,6 +52,8 @@ pub mod android;
 pub mod dragonfly;
 #[cfg(target_os = "emscripten")]
 pub mod emscripten;
+#[cfg(target_os = "espidf")]
+pub mod espidf;
 #[cfg(all(target_vendor = "fortanix", target_env = "sgx"))]
 pub mod fortanix_sgx;
 #[cfg(target_os = "freebsd")]
