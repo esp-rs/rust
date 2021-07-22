@@ -1,27 +1,95 @@
-# The Rust Programming Language For Xtensa processors
+# The Rust Programming Language for Espressif chips
 
-This fork enables projects to be built for the ESP32 and ESP8266 using [espressif's llvm fork](https://github.com/espressif/llvm-project). The [esp-rs](https://github.com/esp-rs) organization has been formed to develop runtime, pac and hal crates for the esp32 and eventually esp8266.
+This fork enables projects to be built for the Xtensa-based ESP32, ESP32-SXX and ESP8266 using [Espressif's llvm fork](https://github.com/espressif/llvm-project). (RiscV chips like ESP32-CXX are already supported in stock Rust.)
 
-Join in on the discussion: https://matrix.to/#/#esp-rs:matrix.org!
+Moreover, this fork enables Rust STD support (networking, threads, and filesystem) for all chips in the ESP32 family (Xtensa and RiscV), by optionally linking with the ESP-IDF framework.
 
-## Using this fork
+The [esp-rs](https://github.com/esp-rs) organization has been formed to develop runtime, pac and hal crates for the Espressif chips (bare-metal as well as ESP-IDF based).
 
-The [quickstart repo](https://github.com/MabezDev/xtensa-rust-quickstart) has more information on how to build this fork and use it to build xtensa compatible code.
+## Installation
 
-This is the main source code repository for [Rust]. It contains the compiler,
-standard library, and documentation. 
+Espressif offers [pre-built binaries of this fork](https://github.com/espressif/rust-esp32-example/blob/main/docs/rust-on-xtensa.md). Follow the instructions for your operating system.
 
-To build this fork and have xtensa support, you need to make sure you pass in the --experimental-targets=Xtensa to configure as follows:
+## Building
+Install [Rustup](https://rustup.rs/).
+
+Build using these steps:
 ```sh
 $ git clone https://github.com/esp-rs/rust
 $ cd rust
+$ git checkout esp
 $ ./configure --experimental-targets=Xtensa
 $ ./x.py build --stage 2
 ```
 
+* **NOTE 1**: Building might take **close to an hour**
+* **NOTE 2**: Make sure you are using the `esp` GIT branch of the fork (the default)
+* **NOTE 3**: Do NOT rename the directory ('rust') where you've cloned the Rust fork. It must be 'rust' or you might have strange issues later on when using it. You can however place it anywhere in your file tree
+
+### Fix toolchain vendor/ directory, so that building STD with Cargo does work
+
+(Assuming you are still in the rust/ directory):
+
+```sh
+$ mkdir vendor
+$ cd vendor
+$ ln -s ../library/rustc-std-workspace-alloc/ rustc-std-workspace-alloc
+$ ln -s ../library/rustc-std-workspace-core/ rustc-std-workspace-core
+$ ln -s ../library/rustc-std-workspace-std/ rustc-std-workspace-std
+```
+
+Make Rustup aware of the newly built compiler:
+
+```sh
+$ rustup toolchain link esp ~/<...>/rust/build/x86_64-unknown-linux-gnu/stage2
+```
+
+Switch to the new compiler in Rustup:
+
+```sh
+$ rustup default esp
+```
+
+Check the compiler:
+```sh
+$ rustc --print target-list
+```
+
+At the end of the printed list of targets you should see:
+```
+...
+xtensa-esp32-none-elf
+xtensa-esp8266-none-elf
+xtensa-none-elf
+```
+
+## Building LLVM clang
+
+You'll need the custom LLVM clang based on the Espressif LLVM fork for Rust STD support. Build as follows:
+```sh
+$ git clone https://github.com/espressif/llvm-project
+$ cd llvm-project
+$ mkdir build
+$ cd build
+$ cmake -G Ninja -DLLVM_ENABLE_PROJECTS='clang' -DCMAKE_BUILD_TYPE=Release ../llvm
+$ cmake --build .
+$ export PATH=`pwd`/bin:$PATH
+```
+
+Check that you have the custom clang on your path:
+```sh
+$ which clang
+$ which llvm-config
+```
+
+The above should output locations pointing at your custom-built clang toolchain.
+
+* **NOTE 1**: Building LLVM clang might take **even longer** time than building the Rustc toolchain
+* **NOTE 2**: You might want to make the PATH modification step from above permanent. Please make sure that the custom Clang compiler is the first on your PATH so that it takes precedence over any clang compiler you might have installed using your distro / OS
+
 ## Updating this fork
 
-The patch set can be found [here](https://github.com/MabezDev/rust-xtensa-patches). Checkout from upstream/master, apply the patches on at a time using `git am -3 < path/to/patch.patch`, fixing any conflicts if necessary (remember to PR the changes back to the patches [repo]((https://github.com/MabezDev/rust-xtensa-patches))). Once it builds submit a PR against this repo with the branch name `esp-update-$DATE`. 
+The patch set can be found [here](https://github.com/MabezDev/rust-xtensa-patches). Checkout from upstream/master, apply the patches on at a time using `git am -3 < path/to/patch.patch`, fixing any conflicts if necessary (remember to PR the changes back to the patches [repo]((https://github.com/MabezDev/rust-xtensa-patches))). Once it builds submit a PR against this repo with the branch name `esp-update-$DATE`.
 
 If the llvm submodule needs to be updated, the following should work:
 
