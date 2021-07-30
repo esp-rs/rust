@@ -15,7 +15,7 @@ doc = false
 [dependencies]
 alloc = { path = "../alloc" }
 core = { path = "../core" }
-libc = { git = "https://github.com/ivmarkov/libc.git", default-features = false }
+libc = { git = "https://github.com/rust-lang/libc.git", default-features = false }
 unwind = { path = "../unwind" }
 compiler_builtins = "0.1.0"
 cfg-if = "0.1.8"

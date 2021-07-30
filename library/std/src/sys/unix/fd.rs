@@ -1,5 +1,8 @@
 #![unstable(reason = "not public", issue = "none", feature = "fd")]
 
+#[cfg(target_os = "espidf")]
+use crate::{collections::HashMap, lazy::SyncLazy, sync::Mutex};
+
 #[cfg(test)]
 mod tests;
 
@@ -66,6 +69,10 @@ const fn max_iov() -> usize {
     16 // The minimum value required by POSIX.
 }
 
+// ESP-IDF does not (yet) support duplication of file descriptors, so we are emulating it here
+#[cfg(target_os = "espidf")]
+static MAP: SyncLazy<Mutex<HashMap<c_int, u32>>> = SyncLazy::new(|| Mutex::new(HashMap::new()));
+
 impl FileDesc {
     pub fn new(fd: c_int) -> FileDesc {
         assert_ne!(fd, -1i32);
@@ -79,6 +86,7 @@ impl FileDesc {
 
     /// Extracts the actual file descriptor without closing it.
     pub fn into_raw(self) -> c_int {
+        self.forget();
         let fd = self.fd;
         mem::forget(self);
         fd
@@ -91,6 +99,7 @@ impl FileDesc {
         Ok(ret as usize)
     }
 
+    #[cfg(not(target_os = "espidf"))]
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         let ret = cvt(unsafe {
             libc::readv(
@@ -102,9 +111,14 @@ impl FileDesc {
         Ok(ret as usize)
     }
 
+    #[cfg(target_os = "espidf")]
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        return crate::io::default_read_vectored(|b| self.read(b), bufs);
+    }
+
     #[inline]
     pub fn is_read_vectored(&self) -> bool {
-        true
+        cfg!(not(target_os = "espidf"))
     }
 
     pub fn read_to_end(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -148,6 +162,7 @@ impl FileDesc {
         Ok(ret as usize)
     }
 
+    #[cfg(not(target_os = "espidf"))]
     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         let ret = cvt(unsafe {
             libc::writev(
@@ -159,9 +174,14 @@ impl FileDesc {
         Ok(ret as usize)
     }
 
+    #[cfg(target_os = "espidf")]
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        return crate::io::default_write_vectored(|b| self.write(b), bufs);
+    }
+
     #[inline]
     pub fn is_write_vectored(&self) -> bool {
-        true
+        cfg!(not(target_os = "espidf"))
     }
 
     pub fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<usize> {
@@ -217,7 +237,7 @@ impl FileDesc {
         }
     }
     #[cfg(any(
-        target_env = "newlib",
+        all(target_env = "newlib", not(target_os = "espidf")),
         target_os = "solaris",
         target_os = "illumos",
         target_os = "emscripten",
@@ -237,6 +257,10 @@ impl FileDesc {
             }
             Ok(())
         }
+    }
+    #[cfg(target_os = "espidf")]
+    pub fn set_cloexec(&self) -> io::Result<()> {
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
@@ -264,12 +288,60 @@ impl FileDesc {
         }
     }
 
+    #[cfg(target_os = "espidf")]
+    pub fn duplicate(&self) -> io::Result<FileDesc> {
+        self.add_ref();
+        Ok(FileDesc::new(self.fd))
+    }
+
+    #[cfg(not(target_os = "espidf"))]
     pub fn duplicate(&self) -> io::Result<FileDesc> {
         // We want to atomically duplicate this file descriptor and set the
         // CLOEXEC flag, and currently that's done via F_DUPFD_CLOEXEC. This
         // is a POSIX flag that was added to Linux in 2.6.24.
         let fd = cvt(unsafe { libc::fcntl(self.raw(), libc::F_DUPFD_CLOEXEC, 0) })?;
         Ok(FileDesc::new(fd))
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn add_ref(&self) {
+        let mut map = MAP.lock().unwrap();
+        match map.get_mut(&self.fd) {
+            Some(refcnt) => {
+                *refcnt = *refcnt + 1;
+            }
+            None => {
+                map.insert(self.fd, 2);
+            }
+        };
+    }
+
+    fn remove_ref(&self) -> bool {
+        #[cfg(target_os = "espidf")]
+        {
+            let mut map = MAP.lock().unwrap();
+            match map.get_mut(&self.fd) {
+                Some(refcnt) => {
+                    *refcnt = *refcnt - 1;
+                    let close = *refcnt == 1;
+                    if close {
+                        map.remove(&self.fd);
+                    }
+                    close
+                }
+                None => true,
+            }
+        }
+
+        #[cfg(not(target_os = "espidf"))]
+        true
+    }
+
+    fn forget(&self) {
+        #[cfg(target_os = "espidf")]
+        {
+            MAP.lock().unwrap().remove(&self.fd);
+        }
     }
 }
 
@@ -297,6 +369,8 @@ impl Drop for FileDesc {
         // the file descriptor was closed or not, and if we retried (for
         // something like EINTR), we might close another valid file descriptor
         // opened after we closed ours.
-        let _ = unsafe { libc::close(self.fd) };
+        if self.remove_ref() {
+            let _ = unsafe { libc::close(self.fd) };
+        }
     }
 }

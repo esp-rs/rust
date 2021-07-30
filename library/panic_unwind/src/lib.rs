@@ -46,7 +46,7 @@ cfg_if::cfg_if! {
     } else if #[cfg(any(
         all(target_family = "windows", target_env = "gnu"),
         target_os = "psp",
-        target_family = "unix",
+        all(target_family = "unix", not(target_os = "espidf")),
         all(target_vendor = "fortanix", target_env = "sgx"),
     ))] {
         // Rust runtime's startup objects depend on these symbols, so make them public.
@@ -59,6 +59,7 @@ cfg_if::cfg_if! {
         // - arch=wasm32
         // - os=none ("bare metal" targets)
         // - os=uefi
+        // - os=espidf
         // - nvptx64-nvidia-cuda
         // - arch=avr
         #[path = "dummy.rs"]
