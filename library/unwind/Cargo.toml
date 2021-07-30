@@ -16,7 +16,7 @@ doc = false
 
 [dependencies]
 core = { path = "../core" }
-libc = { git = "https://github.com/ivmarkov/libc.git", features = ['rustc-dep-of-std'], default-features = false }
+libc = { git = "https://github.com/rust-lang/libc.git", features = ['rustc-dep-of-std'], default-features = false }
 compiler_builtins = "0.1.0"
 cfg-if = "0.1.8"
 

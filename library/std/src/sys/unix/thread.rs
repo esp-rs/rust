@@ -6,12 +6,14 @@ use crate::ptr;
 use crate::sys::{os, stack_overflow};
 use crate::time::Duration;
 
-#[cfg(not(any(target_os = "l4re", target_os = "vxworks")))]
+#[cfg(not(any(target_os = "l4re", target_os = "vxworks", target_os = "espidf")))]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
 #[cfg(target_os = "l4re")]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
 #[cfg(target_os = "vxworks")]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 256 * 1024;
+#[cfg(target_os = "espidf")]
+pub const DEFAULT_MIN_STACK_SIZE: usize = 0; // 0 indicates that the stack size configured in the ESP-IDF menuconfig system should be used
 
 pub struct Thread {
     id: libc::pthread_t,
@@ -30,22 +32,30 @@ impl Thread {
         let mut attr: libc::pthread_attr_t = mem::zeroed();
         assert_eq!(libc::pthread_attr_init(&mut attr), 0);
 
-        let stack_size = cmp::max(stack, min_stack_size(&attr));
+        #[cfg(target_os = "espidf")]
+        let set_stack_size = stack > 0;
 
-        match libc::pthread_attr_setstacksize(&mut attr, stack_size) {
-            0 => {}
-            n => {
-                assert_eq!(n, libc::EINVAL);
-                // EINVAL means |stack_size| is either too small or not a
-                // multiple of the system page size.  Because it's definitely
-                // >= PTHREAD_STACK_MIN, it must be an alignment issue.
-                // Round up to the nearest page and try again.
-                let page_size = os::page_size();
-                let stack_size =
-                    (stack_size + page_size - 1) & (-(page_size as isize - 1) as usize - 1);
-                assert_eq!(libc::pthread_attr_setstacksize(&mut attr, stack_size), 0);
-            }
-        };
+        #[cfg(not(target_os = "espidf"))]
+        let set_stack_size = true;
+
+        if set_stack_size {
+            let stack_size = cmp::max(stack, min_stack_size(&attr));
+
+            match libc::pthread_attr_setstacksize(&mut attr, stack_size) {
+                0 => {}
+                n => {
+                    assert_eq!(n, libc::EINVAL);
+                    // EINVAL means |stack_size| is either too small or not a
+                    // multiple of the system page size.  Because it's definitely
+                    // >= PTHREAD_STACK_MIN, it must be an alignment issue.
+                    // Round up to the nearest page and try again.
+                    let page_size = os::page_size();
+                    let stack_size =
+                        (stack_size + page_size - 1) & (-(page_size as isize - 1) as usize - 1);
+                    assert_eq!(libc::pthread_attr_setstacksize(&mut attr, stack_size), 0);
+                }
+            };
+        }
 
         let ret = libc::pthread_create(&mut native, &attr, thread_start, p as *mut _);
         // Note: if the thread creation fails and this assert fails, then p will
@@ -147,6 +157,7 @@ impl Thread {
         // FIXME: determine whether Fuchsia has a way to set a thread name.
     }
 
+    #[cfg(not(target_os = "espidf"))]
     pub fn sleep(dur: Duration) {
         let mut secs = dur.as_secs();
         let mut nsecs = dur.subsec_nanos() as _;
@@ -168,6 +179,19 @@ impl Thread {
                 } else {
                     nsecs = 0;
                 }
+            }
+        }
+    }
+
+    #[cfg(target_os = "espidf")]
+    pub fn sleep(dur: Duration) {
+        let mut micros = dur.as_micros();
+        unsafe {
+            while micros > 0 {
+                let st = if micros > u32::MAX as u128 { u32::MAX } else { micros as u32 };
+                libc::usleep(st);
+
+                micros -= st as u128;
             }
         }
     }

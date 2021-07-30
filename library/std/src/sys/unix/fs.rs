@@ -297,7 +297,7 @@ impl FileAttr {
 
 #[cfg(not(target_os = "netbsd"))]
 impl FileAttr {
-    #[cfg(not(target_os = "vxworks"))]
+    #[cfg(all(not(target_os = "vxworks"), not(target_os = "espidf")))]
     pub fn modified(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_mtime as libc::time_t,
@@ -305,7 +305,7 @@ impl FileAttr {
         }))
     }
 
-    #[cfg(target_os = "vxworks")]
+    #[cfg(any(target_os = "vxworks", target_os = "espidf"))]
     pub fn modified(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_mtime as libc::time_t,
@@ -313,7 +313,7 @@ impl FileAttr {
         }))
     }
 
-    #[cfg(not(target_os = "vxworks"))]
+    #[cfg(all(not(target_os = "vxworks"), not(target_os = "espidf")))]
     pub fn accessed(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_atime as libc::time_t,
@@ -321,7 +321,7 @@ impl FileAttr {
         }))
     }
 
-    #[cfg(target_os = "vxworks")]
+    #[cfg(any(target_os = "vxworks", target_os = "espidf"))]
     pub fn accessed(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_atime as libc::time_t,
@@ -594,7 +594,8 @@ impl DirEntry {
         target_os = "l4re",
         target_os = "fuchsia",
         target_os = "redox",
-        target_os = "vxworks"
+        target_os = "vxworks",
+        target_os = "espidf"
     ))]
     pub fn ino(&self) -> u64 {
         self.entry.d_ino as u64
@@ -633,7 +634,8 @@ impl DirEntry {
         target_os = "emscripten",
         target_os = "l4re",
         target_os = "haiku",
-        target_os = "vxworks"
+        target_os = "vxworks",
+        target_os = "espidf"
     ))]
     fn name_bytes(&self) -> &[u8] {
         unsafe { CStr::from_ptr(self.entry.d_name.as_ptr()).to_bytes() }
@@ -1082,8 +1084,8 @@ pub fn link(original: &Path, link: &Path) -> io::Result<()> {
     let original = cstr(original)?;
     let link = cstr(link)?;
     cfg_if::cfg_if! {
-        if #[cfg(any(target_os = "vxworks", target_os = "redox", target_os = "android"))] {
-            // VxWorks, Redox, and old versions of Android lack `linkat`, so use
+        if #[cfg(any(target_os = "vxworks", target_os = "redox", target_os = "android", target_os = "espidf"))] {
+            // VxWorks, Redox, ESP-IDF and old versions of Android lack `linkat`, so use
             // `link` instead. POSIX leaves it implementation-defined whether
             // `link` follows symlinks, so rely on the `symlink_hard_link` test
             // in library/std/src/fs/tests.rs to check the behavior.
@@ -1162,6 +1164,18 @@ fn open_from(from: &Path) -> io::Result<(crate::fs::File, crate::fs::Metadata)> 
     Ok((reader, metadata))
 }
 
+#[cfg(target_os = "espidf")]
+fn open_to_and_set_permissions(
+    to: &Path,
+    reader_metadata: crate::fs::Metadata,
+) -> io::Result<(crate::fs::File, crate::fs::Metadata)> {
+    use crate::fs::OpenOptions;
+    let writer = OpenOptions::new().open(to)?;
+    let writer_metadata = writer.metadata()?;
+    Ok((writer, writer_metadata))
+}
+
+#[cfg(not(target_os = "espidf"))]
 fn open_to_and_set_permissions(
     to: &Path,
     reader_metadata: crate::fs::Metadata,

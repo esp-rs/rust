@@ -125,6 +125,12 @@ pub fn error_string(errno: i32) -> String {
     }
 }
 
+#[cfg(target_os = "espidf")]
+pub fn getcwd() -> io::Result<PathBuf> {
+    Ok(PathBuf::from("/"))
+}
+
+#[cfg(not(target_os = "espidf"))]
 pub fn getcwd() -> io::Result<PathBuf> {
     let mut buf = Vec::with_capacity(512);
     loop {
@@ -151,6 +157,12 @@ pub fn getcwd() -> io::Result<PathBuf> {
     }
 }
 
+#[cfg(target_os = "espidf")]
+pub fn chdir(p: &path::Path) -> io::Result<()> {
+    super::unsupported::unsupported()
+}
+
+#[cfg(not(target_os = "espidf"))]
 pub fn chdir(p: &path::Path) -> io::Result<()> {
     let p: &OsStr = p.as_ref();
     let p = CString::new(p.as_bytes())?;
@@ -454,6 +466,11 @@ pub fn current_exe() -> io::Result<PathBuf> {
     path.canonicalize()
 }
 
+#[cfg(target_os = "espidf")]
+pub fn current_exe() -> io::Result<PathBuf> {
+    super::unsupported::unsupported()
+}
+
 pub struct Env {
     iter: vec::IntoIter<(OsString, OsString)>,
 }
@@ -564,8 +581,14 @@ pub fn unsetenv(n: &OsStr) -> io::Result<()> {
     }
 }
 
+#[cfg(not(target_os = "espidf"))]
 pub fn page_size() -> usize {
     unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+}
+
+#[cfg(target_os = "espidf")]
+pub fn page_size() -> usize {
+    32
 }
 
 pub fn temp_dir() -> PathBuf {
@@ -586,7 +609,8 @@ pub fn home_dir() -> Option<PathBuf> {
         target_os = "ios",
         target_os = "emscripten",
         target_os = "redox",
-        target_os = "vxworks"
+        target_os = "vxworks",
+        target_os = "espidf"
     ))]
     unsafe fn fallback() -> Option<OsString> {
         None
@@ -596,7 +620,8 @@ pub fn home_dir() -> Option<PathBuf> {
         target_os = "ios",
         target_os = "emscripten",
         target_os = "redox",
-        target_os = "vxworks"
+        target_os = "vxworks",
+        target_os = "espidf"
     )))]
     unsafe fn fallback() -> Option<OsString> {
         let amt = match libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) {
