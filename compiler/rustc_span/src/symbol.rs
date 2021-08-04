@@ -332,6 +332,7 @@ symbols! {
         braced_empty_structs,
         branch,
         breakpoint,
+        breg,
         bridge,
         bswap,
         c_str,

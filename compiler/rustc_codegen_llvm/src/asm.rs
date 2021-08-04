@@ -288,6 +288,7 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                 InlineAsmArch::Mips | InlineAsmArch::Mips64 => {}
                 InlineAsmArch::SpirV => {}
                 InlineAsmArch::Wasm32 => {}
+                InlineAsmArch::Xtensa => {}
                 InlineAsmArch::Bpf => {}
             }
         }
@@ -594,6 +595,9 @@ fn reg_to_llvm(reg: InlineAsmRegOrRegClass, layout: Option<&TyAndLayout<'tcx>>) 
             InlineAsmRegClass::X86(X86InlineAsmRegClass::zmm_reg) => "v",
             InlineAsmRegClass::X86(X86InlineAsmRegClass::kreg) => "^Yk",
             InlineAsmRegClass::Wasm(WasmInlineAsmRegClass::local) => "r",
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => "r",
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => "f",
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::breg) => "b",
             InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::reg) => "r",
             InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::wreg) => "w",
             InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
@@ -637,6 +641,7 @@ fn modifier_to_llvm(
         InlineAsmRegClass::Mips(_) => None,
         InlineAsmRegClass::Nvptx(_) => None,
         InlineAsmRegClass::PowerPC(_) => None,
+        InlineAsmRegClass::Xtensa(_) => None,
         InlineAsmRegClass::RiscV(RiscVInlineAsmRegClass::reg)
         | InlineAsmRegClass::RiscV(RiscVInlineAsmRegClass::freg) => None,
         InlineAsmRegClass::X86(X86InlineAsmRegClass::reg)
@@ -712,6 +717,9 @@ fn dummy_output_type(cx: &CodegenCx<'ll, 'tcx>, reg: InlineAsmRegClass) -> &'ll 
         | InlineAsmRegClass::X86(X86InlineAsmRegClass::zmm_reg) => cx.type_f32(),
         InlineAsmRegClass::X86(X86InlineAsmRegClass::kreg) => cx.type_i16(),
         InlineAsmRegClass::Wasm(WasmInlineAsmRegClass::local) => cx.type_i32(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => cx.type_i32(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => cx.type_f32(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::breg) => cx.type_i1(),
         InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::reg) => cx.type_i64(),
         InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::wreg) => cx.type_i32(),
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
