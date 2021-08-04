@@ -289,6 +289,7 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                 InlineAsmArch::SpirV => {}
                 InlineAsmArch::Wasm32 => {}
                 InlineAsmArch::Bpf => {}
+                InlineAsmArch::Xtensa => {}
             }
         }
         if !options.contains(InlineAsmOptions::NOMEM) {
@@ -599,6 +600,9 @@ fn reg_to_llvm(reg: InlineAsmRegOrRegClass, layout: Option<&TyAndLayout<'tcx>>) 
             InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
                 bug!("LLVM backend does not support SPIR-V")
             }
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => "r",
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg_bool) => "b",
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => "f",
             InlineAsmRegClass::Err => unreachable!(),
         }
         .to_string(),
@@ -668,6 +672,7 @@ fn modifier_to_llvm(
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("LLVM backend does not support SPIR-V")
         }
+        InlineAsmRegClass::Xtensa(_) => None,
         InlineAsmRegClass::Err => unreachable!(),
     }
 }
@@ -717,6 +722,9 @@ fn dummy_output_type(cx: &CodegenCx<'ll, 'tcx>, reg: InlineAsmRegClass) -> &'ll 
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("LLVM backend does not support SPIR-V")
         }
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => cx.type_i32(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg_bool) => cx.type_i1(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => cx.type_f32(),
         InlineAsmRegClass::Err => unreachable!(),
     }
 }

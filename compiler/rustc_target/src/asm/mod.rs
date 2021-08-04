@@ -157,6 +157,7 @@ mod riscv;
 mod spirv;
 mod wasm;
 mod x86;
+mod xtensa;
 
 pub use aarch64::{AArch64InlineAsmReg, AArch64InlineAsmRegClass};
 pub use arm::{ArmInlineAsmReg, ArmInlineAsmRegClass};
@@ -169,6 +170,7 @@ pub use riscv::{RiscVInlineAsmReg, RiscVInlineAsmRegClass};
 pub use spirv::{SpirVInlineAsmReg, SpirVInlineAsmRegClass};
 pub use wasm::{WasmInlineAsmReg, WasmInlineAsmRegClass};
 pub use x86::{X86InlineAsmReg, X86InlineAsmRegClass};
+pub use xtensa::{XtensaInlineAsmReg, XtensaInlineAsmRegClass};
 
 #[derive(Copy, Clone, Encodable, Decodable, Debug, Eq, PartialEq, Hash)]
 pub enum InlineAsmArch {
@@ -187,6 +189,7 @@ pub enum InlineAsmArch {
     SpirV,
     Wasm32,
     Bpf,
+    Xtensa,
 }
 
 impl FromStr for InlineAsmArch {
@@ -209,6 +212,7 @@ impl FromStr for InlineAsmArch {
             "spirv" => Ok(Self::SpirV),
             "wasm32" => Ok(Self::Wasm32),
             "bpf" => Ok(Self::Bpf),
+            "xtensa" => Ok(Self::Xtensa),
             _ => Err(()),
         }
     }
@@ -238,6 +242,7 @@ pub enum InlineAsmReg {
     SpirV(SpirVInlineAsmReg),
     Wasm(WasmInlineAsmReg),
     Bpf(BpfInlineAsmReg),
+    Xtensa(XtensaInlineAsmReg),
     // Placeholder for invalid register constraints for the current target
     Err,
 }
@@ -253,6 +258,7 @@ impl InlineAsmReg {
             Self::Hexagon(r) => r.name(),
             Self::Mips(r) => r.name(),
             Self::Bpf(r) => r.name(),
+            Self::Xtensa(r) => r.name(),
             Self::Err => "<reg>",
         }
     }
@@ -267,6 +273,7 @@ impl InlineAsmReg {
             Self::Hexagon(r) => InlineAsmRegClass::Hexagon(r.reg_class()),
             Self::Mips(r) => InlineAsmRegClass::Mips(r.reg_class()),
             Self::Bpf(r) => InlineAsmRegClass::Bpf(r.reg_class()),
+            Self::Xtensa(r) => InlineAsmRegClass::Xtensa(r.reg_class()),
             Self::Err => InlineAsmRegClass::Err,
         }
     }
@@ -314,6 +321,9 @@ impl InlineAsmReg {
             InlineAsmArch::Bpf => {
                 Self::Bpf(BpfInlineAsmReg::parse(arch, has_feature, target, &name)?)
             }
+            InlineAsmArch::Xtensa => {
+                Self::Xtensa(XtensaInlineAsmReg::parse(arch, has_feature, target, &name)?)
+            }
         })
     }
 
@@ -334,6 +344,7 @@ impl InlineAsmReg {
             Self::Hexagon(r) => r.emit(out, arch, modifier),
             Self::Mips(r) => r.emit(out, arch, modifier),
             Self::Bpf(r) => r.emit(out, arch, modifier),
+            Self::Xtensa(r) => r.emit(out, arch, modifier),
             Self::Err => unreachable!("Use of InlineAsmReg::Err"),
         }
     }
@@ -348,6 +359,7 @@ impl InlineAsmReg {
             Self::Hexagon(r) => r.overlapping_regs(|r| cb(Self::Hexagon(r))),
             Self::Mips(_) => cb(self),
             Self::Bpf(r) => r.overlapping_regs(|r| cb(Self::Bpf(r))),
+            Self::Xtensa(r) => r.overlapping_regs(|r| cb(Self::Xtensa(r))),
             Self::Err => unreachable!("Use of InlineAsmReg::Err"),
         }
     }
@@ -377,6 +389,7 @@ pub enum InlineAsmRegClass {
     SpirV(SpirVInlineAsmRegClass),
     Wasm(WasmInlineAsmRegClass),
     Bpf(BpfInlineAsmRegClass),
+    Xtensa(XtensaInlineAsmRegClass),
     // Placeholder for invalid register constraints for the current target
     Err,
 }
@@ -395,6 +408,7 @@ impl InlineAsmRegClass {
             Self::SpirV(r) => r.name(),
             Self::Wasm(r) => r.name(),
             Self::Bpf(r) => r.name(),
+            Self::Xtensa(r) => r.name(),
             Self::Err => rustc_span::symbol::sym::reg,
         }
     }
@@ -415,6 +429,7 @@ impl InlineAsmRegClass {
             Self::SpirV(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::SpirV),
             Self::Wasm(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::Wasm),
             Self::Bpf(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::Bpf),
+            Self::Xtensa(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::Xtensa),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -442,6 +457,7 @@ impl InlineAsmRegClass {
             Self::SpirV(r) => r.suggest_modifier(arch, ty),
             Self::Wasm(r) => r.suggest_modifier(arch, ty),
             Self::Bpf(r) => r.suggest_modifier(arch, ty),
+            Self::Xtensa(r) => r.suggest_modifier(arch, ty),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -465,6 +481,7 @@ impl InlineAsmRegClass {
             Self::SpirV(r) => r.default_modifier(arch),
             Self::Wasm(r) => r.default_modifier(arch),
             Self::Bpf(r) => r.default_modifier(arch),
+            Self::Xtensa(r) => r.default_modifier(arch),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -487,6 +504,7 @@ impl InlineAsmRegClass {
             Self::SpirV(r) => r.supported_types(arch),
             Self::Wasm(r) => r.supported_types(arch),
             Self::Bpf(r) => r.supported_types(arch),
+            Self::Xtensa(r) => r.supported_types(arch),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -512,6 +530,7 @@ impl InlineAsmRegClass {
             InlineAsmArch::SpirV => Self::SpirV(SpirVInlineAsmRegClass::parse(arch, name)?),
             InlineAsmArch::Wasm32 => Self::Wasm(WasmInlineAsmRegClass::parse(arch, name)?),
             InlineAsmArch::Bpf => Self::Bpf(BpfInlineAsmRegClass::parse(arch, name)?),
+            InlineAsmArch::Xtensa => Self::Xtensa(XtensaInlineAsmRegClass::parse(arch, name)?),
         })
     }
 
@@ -530,6 +549,7 @@ impl InlineAsmRegClass {
             Self::SpirV(r) => r.valid_modifiers(arch),
             Self::Wasm(r) => r.valid_modifiers(arch),
             Self::Bpf(r) => r.valid_modifiers(arch),
+            Self::Xtensa(r) => r.valid_modifiers(arch),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -702,6 +722,11 @@ pub fn allocatable_registers(
         InlineAsmArch::Bpf => {
             let mut map = bpf::regclass_map();
             bpf::fill_reg_map(arch, has_feature, target, &mut map);
+            map
+        }
+        InlineAsmArch::Xtensa => {
+            let mut map = xtensa::regclass_map();
+            xtensa::fill_reg_map(arch, has_feature, target, &mut map);
             map
         }
     }

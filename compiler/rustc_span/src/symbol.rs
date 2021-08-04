@@ -952,6 +952,7 @@ symbols! {
         reg32,
         reg64,
         reg_abcd,
+        reg_bool,
         reg_byte,
         reg_nonzero,
         reg_thumb,
