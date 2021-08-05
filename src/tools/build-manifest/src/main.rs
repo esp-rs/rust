@@ -116,7 +116,9 @@ static TARGETS: &[&str] = &[
     "powerpc64le-unknown-linux-gnu",
     "riscv32i-unknown-none-elf",
     "riscv32imc-unknown-none-elf",
+    "riscv32imc-esp-espidf",
     "riscv32imac-unknown-none-elf",
+    "riscv32imac-esp-espidf",
     "riscv32gc-unknown-linux-gnu",
     "riscv64imac-unknown-none-elf",
     "riscv64gc-unknown-none-elf",
@@ -151,6 +153,11 @@ static TARGETS: &[&str] = &[
     "x86_64-unknown-netbsd",
     "x86_64-unknown-redox",
     "x86_64-unknown-hermit",
+    "xtensa-esp32-none-elf",
+    "xtensa-esp32-espidf",
+    "xtensa-esp32s2-none-elf",
+    "xtensa-esp32s2-espidf",
+    "xtensa-esp8266-none-elf",
 ];
 
 static DOCS_TARGETS: &[&str] = &[
