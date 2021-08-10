@@ -30,6 +30,7 @@ Inline assembly is currently supported on the following architectures:
 - Hexagon
 - MIPS32r2 and MIPS64r2
 - wasm32
+- Xtensa
 - BPF
 
 ## Basic usage
@@ -461,7 +462,7 @@ options := "options(" option *["," option] [","] ")"
 asm := "asm!(" format_string *("," format_string) *("," [ident "="] operand) ["," options] [","] ")"
 ```
 
-The macro will initially be supported only on ARM, AArch64, Hexagon, PowerPC, x86, x86-64 and RISC-V targets. Support for more targets may be added in the future. The compiler will emit an error if `asm!` is used on an unsupported target.
+The macro will initially be supported only on ARM, AArch64, Hexagon, PowerPC, Xtensa, x86, x86-64 and RISC-V targets. Support for more targets may be added in the future. The compiler will emit an error if `asm!` is used on an unsupported target.
 
 [format-syntax]: https://doc.rust-lang.org/std/fmt/#syntax
 
@@ -571,6 +572,9 @@ Here is the list of currently supported register classes:
 | PowerPC | `reg_nonzero` | | `r[1-31]` | `b` |
 | PowerPC | `freg` | `f[0-31]` | `f` |
 | wasm32 | `local` | None\* | `r` |
+| Xtensa | `reg` | `a[0-15]` | `r` |
+| Xtensa | `freg` | `f[0-15]` | `f` |
+| Xtensa | `breg` | `b[0-15]` | `b` |
 | BPF | `reg` | `r[0-10]` | `r` |
 | BPF | `wreg` | `w[0-10]` | `w` |
 
@@ -620,6 +624,20 @@ Each register class has constraints on which value types they can be used with. 
 | wasm32 | `local` | None | `i8` `i16` `i32` `i64` `f32` `f64` |
 | BPF | `reg` | None | `i8` `i16` `i32` `i64` |
 | BPF | `wreg` | `alu32` | `i8` `i16` `i32` |
+| Xtensa | `reg` | `a[0-15]`, `lbeg`, `lend`, `lcount` | `r` |
+| Xtensa | `reg` | `sar`, `br`, `litbase`, `scompare1` | `r` |
+| Xtensa | `reg` | `acclo`, `acchi`, `m0`, `m1`, `m2`, `m3` | `r` |
+| Xtensa | `reg` | `windowbase`, `windowstart`, `ibreakenable`, `memctl`, `atomctl`, `ddr` | `r` |
+| Xtensa | `reg` | `ibreaka0`, `ibreaka1`, `dbreaka0`, `dbreaka1`, `dbreakc0`, `dbreakc1`, `configid[0-1]` | `r` |
+| Xtensa | `reg` | `epc[1-7]`, `depc`, `eps[2-7]` | `r` |
+| Xtensa | `reg` | `excsave[1-7]`, `cpenable`, `interrupt`, `intclear`, `intenable` | `r` |
+| Xtensa | `reg` | `ps`, `vecbase`, `exccause`, `debugcause`, `ccount` | `r` |
+| Xtensa | `reg` | `prid`, `icount`, `icountlevel`, `excvaddr`, `ccompare[0-2]` | `r` |
+| Xtensa | `reg` | `excsave[1-7]`, `cpenable`, `interrupt`, `intclear`, `intenable` | `r` |
+| Xtensa | `reg` | `misc[0-3]`, `gpio_out`, `expstate`, `threadptr` | `r` |
+| Xtensa | `reg` | `fcr`, `fsr`, `f64r_lo`, `f64r_hi`, `f64s` | `r` |
+| Xtensa | `breg` | `b[0-15]` | `b` |
+| Xtensa | `freg` | `f[0-15]` | `f` |
 
 > **Note**: For the purposes of the above table pointers, function pointers and `isize`/`usize` are treated as the equivalent integer type (`i16`/`i32`/`i64` depending on the target).
 
@@ -760,6 +778,9 @@ The supported modifiers are a subset of LLVM's (and GCC's) [asm template argumen
 | PowerPC | `reg` | None | `0` | None |
 | PowerPC | `reg_nonzero` | None | `3` | `b` |
 | PowerPC | `freg` | None | `0` | None |
+| Xtensa | `reg` | None | `i8`, `i16`, `i32` |
+| Xtensa | `breg` | None | `i8`, `i16`, `i32` |
+| Xtensa | `freg` | None | `f32` |
 
 > Notes:
 > - on ARM `e` / `f`: this prints the low or high doubleword register name of a NEON quad (128-bit) register.
