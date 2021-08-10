@@ -593,6 +593,7 @@ impl fmt::Display for InlineAsmRegOrRegClass {
 /// Set of types which can be used with a particular register class.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum InlineAsmType {
+    I1,
     I8,
     I16,
     I32,
@@ -616,6 +617,7 @@ impl InlineAsmType {
 
     pub fn size(self) -> Size {
         Size::from_bytes(match self {
+            Self::I1 => return Size::from_bits(1),
             Self::I8 => 1,
             Self::I16 => 2,
             Self::I32 => 4,
@@ -637,6 +639,7 @@ impl InlineAsmType {
 impl fmt::Display for InlineAsmType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            Self::I1 => f.write_str("i1"),
             Self::I8 => f.write_str("i8"),
             Self::I16 => f.write_str("i16"),
             Self::I32 => f.write_str("i32"),
