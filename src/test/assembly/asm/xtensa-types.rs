@@ -155,12 +155,6 @@ check_explicit_reg!(a5_ptr ptr "a5" "mov");
 // CHECK: #NO_APP
 check_explicit_reg!(f0_f32 f32 "f0" "mov.s");
 
-// CHECK-LABEL: f0_f64:
-// CHECK: #APP
-// CHECK: fmv.d f0, f0
-// CHECK: #NO_APP
-// check_reg!(f0_f64 f64 "f0" "mov.d");    // TODO The ISA doc that I have doesn't have any F64 info
-
 macro_rules! check_general_breg {
     ($func:ident $ty:ident $class:ident $mov:literal) => {
         #[no_mangle]
@@ -205,22 +199,3 @@ macro_rules! check_explicit_breg {
         }
     };
 }
-
-// CHECK-LABEL: b0_i8:
-// CHECK: #APP
-// CHECK: movt a{{[0-9]+}}, a{{[0-9]+}}, b{{[0-9]+}}
-// CHECK: #NO_APP
-check_explicit_breg!(b0_i8 i8 "b0" "movt");
-
-// CHECK-LABEL: b0_i16:
-// CHECK: #APP
-// CHECK: movt a{{[0-9]+}}, a{{[0-9]+}}, b{{[0-9]+}}
-// CHECK: #NO_APP
-check_explicit_breg!(b0_i16 i16 "b0" "movt");
-
-// CHECK-LABEL: b0_i32:
-// CHECK: #APP
-// CHECK: movt a{{[0-9]+}}, a{{[0-9]+}}, b{{[0-9]+}}
-// CHECK: #NO_APP
-// check_breg!(b0_i32 i32 "a0" "b0" "movt");
-check_explicit_breg!(b0_i32 i32 "b0" "movt");
