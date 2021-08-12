@@ -303,6 +303,35 @@ const WASM_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
     // tidy-alphabetical-end
 ];
 
+const XTENSA_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
+    ("fp", Some(sym::xtensa_target_feature)),
+    ("windowed", Some(sym::xtensa_target_feature)),
+    ("bool", Some(sym::xtensa_target_feature)),
+    ("loop", Some(sym::xtensa_target_feature)),
+    ("sext", Some(sym::xtensa_target_feature)),
+    ("nsa", Some(sym::xtensa_target_feature)),
+    ("mul32", Some(sym::xtensa_target_feature)),
+    ("mul32high", Some(sym::xtensa_target_feature)),
+    ("div32", Some(sym::xtensa_target_feature)),
+    ("mac16", Some(sym::xtensa_target_feature)),
+    ("dfpaccel", Some(sym::xtensa_target_feature)),
+    ("s32c1i", Some(sym::xtensa_target_feature)),
+    ("threadptr", Some(sym::xtensa_target_feature)),
+    ("extendedl32r", Some(sym::xtensa_target_feature)),
+    ("atomctl", Some(sym::xtensa_target_feature)),
+    ("memctl", Some(sym::xtensa_target_feature)),
+    ("debug", Some(sym::xtensa_target_feature)),
+    ("exception", Some(sym::xtensa_target_feature)),
+    ("highpriinterrupts", Some(sym::xtensa_target_feature)),
+    ("coprocessor", Some(sym::xtensa_target_feature)),
+    ("interrupt", Some(sym::xtensa_target_feature)),
+    ("rvector", Some(sym::xtensa_target_feature)),
+    ("timerint", Some(sym::xtensa_target_feature)),
+    ("prid", Some(sym::xtensa_target_feature)),
+    ("regprotect", Some(sym::xtensa_target_feature)),
+    ("miscsr", Some(sym::xtensa_target_feature)),
+];
+
 const BPF_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[("alu32", Some(sym::bpf_target_feature))];
 
 const CSKY_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
@@ -378,6 +407,7 @@ pub fn all_known_features() -> impl Iterator<Item = (&'static str, Option<Symbol
         .chain(MIPS_ALLOWED_FEATURES.iter())
         .chain(RISCV_ALLOWED_FEATURES.iter())
         .chain(WASM_ALLOWED_FEATURES.iter())
+        .chain(XTENSA_ALLOWED_FEATURES.iter())
         .chain(BPF_ALLOWED_FEATURES.iter())
         .chain(CSKY_ALLOWED_FEATURES)
         .chain(LOONGARCH_ALLOWED_FEATURES)
@@ -394,6 +424,7 @@ pub fn supported_target_features(sess: &Session) -> &'static [(&'static str, Opt
         "powerpc" | "powerpc64" => POWERPC_ALLOWED_FEATURES,
         "riscv32" | "riscv64" => RISCV_ALLOWED_FEATURES,
         "wasm32" | "wasm64" => WASM_ALLOWED_FEATURES,
+        "xtensa" => XTENSA_ALLOWED_FEATURES,
         "bpf" => BPF_ALLOWED_FEATURES,
         "csky" => CSKY_ALLOWED_FEATURES,
         "loongarch64" => LOONGARCH_ALLOWED_FEATURES,
