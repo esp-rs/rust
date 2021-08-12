@@ -804,6 +804,36 @@ const M68K_FEATURES: &[(&str, StabilityUncomputed, ImpliedFeatures)] = &[
     // tidy-alphabetical-end
 ];
 
+// TODO fill out implied features
+const XTENSA_FEATURES: &[(&str, StabilityUncomputed, ImpliedFeatures)] = &[
+    ("fp", unstable(sym::xtensa_target_feature), &[]),
+    ("windowed", unstable(sym::xtensa_target_feature), &[]),
+    ("bool", unstable(sym::xtensa_target_feature), &[]),
+    ("loop", unstable(sym::xtensa_target_feature), &[]),
+    ("sext", unstable(sym::xtensa_target_feature), &[]),
+    ("nsa", unstable(sym::xtensa_target_feature), &[]),
+    ("mul32", unstable(sym::xtensa_target_feature), &[]),
+    ("mul32high", unstable(sym::xtensa_target_feature), &[]),
+    ("div32", unstable(sym::xtensa_target_feature), &[]),
+    ("mac16", unstable(sym::xtensa_target_feature), &[]),
+    ("dfpaccel", unstable(sym::xtensa_target_feature), &[]),
+    ("s32c1i", unstable(sym::xtensa_target_feature), &[]),
+    ("threadptr", unstable(sym::xtensa_target_feature), &[]),
+    ("extendedl32r", unstable(sym::xtensa_target_feature), &[]),
+    ("atomctl", unstable(sym::xtensa_target_feature), &[]),
+    ("memctl", unstable(sym::xtensa_target_feature), &[]),
+    ("debug", unstable(sym::xtensa_target_feature), &[]),
+    ("exception", unstable(sym::xtensa_target_feature), &[]),
+    ("highpriinterrupts", unstable(sym::xtensa_target_feature), &[]),
+    ("coprocessor", unstable(sym::xtensa_target_feature), &[]),
+    ("interrupt", unstable(sym::xtensa_target_feature), &[]),
+    ("rvector", unstable(sym::xtensa_target_feature), &[]),
+    ("timerint", unstable(sym::xtensa_target_feature), &[]),
+    ("prid", unstable(sym::xtensa_target_feature), &[]),
+    ("regprotect", unstable(sym::xtensa_target_feature), &[]),
+    ("miscsr", unstable(sym::xtensa_target_feature), &[]),
+];
+
 /// When rustdoc is running, provide a list of all known features so that all their respective
 /// primitives may be documented.
 ///
@@ -819,6 +849,7 @@ pub fn all_rust_features() -> impl Iterator<Item = (&'static str, StabilityUncom
         .chain(RISCV_FEATURES.iter())
         .chain(WASM_FEATURES.iter())
         .chain(BPF_FEATURES.iter())
+        .chain(XTENSA_FEATURES.iter())
         .chain(CSKY_FEATURES)
         .chain(LOONGARCH_FEATURES)
         .chain(IBMZ_FEATURES)
@@ -872,6 +903,7 @@ impl Target {
             "s390x" => IBMZ_FEATURES,
             "sparc" | "sparc64" => SPARC_FEATURES,
             "m68k" => M68K_FEATURES,
+            "xtensa" => XTENSA_FEATURES,
             _ => &[],
         }
     }
