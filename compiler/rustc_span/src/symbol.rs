@@ -385,6 +385,7 @@ symbols! {
         braced_empty_structs,
         branch,
         breakpoint,
+        breg,
         bridge,
         bswap,
         c_str,
@@ -1453,6 +1454,7 @@ symbols! {
         x87_reg,
         xer,
         xmm_reg,
+        xtensa_target_feature,
         ymm_reg,
         zmm_reg,
     }
