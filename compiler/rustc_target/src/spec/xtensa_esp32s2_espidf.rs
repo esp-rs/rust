@@ -1,9 +1,9 @@
-use crate::spec::{abi::Abi, LinkerFlavor, PanicStrategy, Target, TargetOptions, RelocModel};
+use crate::spec::{LinkerFlavor, PanicStrategy, Target, TargetOptions, RelocModel};
 use crate::abi::Endian;
 
 pub fn target() -> Target {
     Target {
-        llvm_target: "xtensa-none-elf".to_string(),
+        llvm_target: "xtensa".to_string(),
         pointer_width: 32,
         data_layout: "e-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32".to_string(),
         arch: "xtensa".to_string(),
@@ -45,17 +45,7 @@ pub fn target() -> Target {
 
             emit_debug_gdb_scripts: false,
 
-            unsupported_abis: vec![
-                Abi::Stdcall { unwind: false },
-                Abi::Stdcall { unwind: true },
-                Abi::Fastcall,
-                Abi::Vectorcall,
-                Abi::Thiscall { unwind: false },
-                Abi::Thiscall { unwind: true },
-                Abi::Win64,
-                Abi::SysV64,
-            ],
-
+            unsupported_abis: super::xtensa_base::unsupported_abis(),
             ..Default::default()
         },
     }
