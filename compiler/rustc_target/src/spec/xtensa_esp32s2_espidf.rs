@@ -24,6 +24,7 @@ pub fn target() -> Target {
             // However, for now we simultaneously claim "max_atomic_width: Some(32)" **and** atomic_cas: true,
             // which should force the compiler to generate libcalls to functions that emulate atomics
             // and which are already implemented in the ESP-IDF main branch anyway.
+            max_atomic_width: Some(32),
             atomic_cas: true,
             ..super::xtensa_base::opts()
         },

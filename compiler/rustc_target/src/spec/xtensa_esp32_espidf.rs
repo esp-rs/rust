@@ -14,6 +14,8 @@ pub fn target() -> Target {
             env: "newlib".to_string(),
             vendor: "espressif".to_string(),
             families: vec!["unix".to_string()],
+            max_atomic_width: Some(32),
+            atomic_cas: true,
             ..super::xtensa_base::opts()
         },
     }

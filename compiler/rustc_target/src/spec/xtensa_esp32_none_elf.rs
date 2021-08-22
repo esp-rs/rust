@@ -10,6 +10,8 @@ pub fn target() -> Target {
         options: TargetOptions {
             cpu: "esp32".to_string(),
             linker: Some("xtensa-esp32-elf-gcc".to_string()),
+            max_atomic_width: Some(32),
+            atomic_cas: true,
             ..super::xtensa_base::opts()
         },
     }
