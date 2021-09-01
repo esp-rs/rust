@@ -85,6 +85,7 @@ mod windows_gnu_base;
 mod windows_msvc_base;
 mod windows_uwp_gnu_base;
 mod windows_uwp_msvc_base;
+mod xtensa_base;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LinkerFlavor {
