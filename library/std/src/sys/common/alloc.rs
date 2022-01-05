@@ -14,8 +14,8 @@ use crate::ptr;
     target_arch = "asmjs",
     target_arch = "wasm32",
     target_arch = "hexagon",
-    target_arch = "riscv32",
-    target_arch = "xtensa"
+    all(target_arch = "riscv32", not(target_os = "espidf")),
+    all(target_arch = "xtensa", not(target_os = "espidf")),
 )))]
 pub const MIN_ALIGN: usize = 8;
 #[cfg(all(any(
@@ -27,6 +27,13 @@ pub const MIN_ALIGN: usize = 8;
     target_arch = "riscv64"
 )))]
 pub const MIN_ALIGN: usize = 16;
+// By default, the allocator on the esp-idf platform guarentees no specific alignment.
+// This can be changed, but not though libc API's so we set the MIN_ALIGN here to 1.
+#[cfg(all(any(
+    all(target_arch = "riscv32", target_os = "espidf"),
+    all(target_arch = "xtensa", target_os = "espidf"),
+)))]
+pub const MIN_ALIGN: usize = 1;
 
 pub unsafe fn realloc_fallback(
     alloc: &System,
