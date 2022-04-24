@@ -46,10 +46,10 @@ Make Rustup aware of the newly built compiler:
 $ rustup toolchain link esp ~/<...>/rust/build/x86_64-unknown-linux-gnu/stage2
 ```
 
-Switch to the new compiler in Rustup:
+Enable the new compiler in Rustup:
 
 ```sh
-$ rustup default esp
+$ rustup target add esp
 ```
 
 Check the compiler:
