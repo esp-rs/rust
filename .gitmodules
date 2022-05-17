@@ -33,8 +33,8 @@
 	url = https://github.com/rust-lang/edition-guide.git
 [submodule "src/llvm-project"]
 	path = src/llvm-project
-	url = https://github.com/rust-lang/llvm-project.git
-	branch = rustc/14.0-2022-03-22
+	url = https://github.com/espressif/llvm-project
+	branch = xtensa_release_14.0.0
 [submodule "src/doc/embedded-book"]
 	path = src/doc/embedded-book
 	url = https://github.com/rust-embedded/book.git
