@@ -5,112 +5,99 @@ use crate::abi::{Abi, HasDataLayout, Size, TyAbiInterface};
 use crate::spec::HasTargetSpec;
 
 const NUM_ARG_GPRS: u64 = 6;
-const MAX_ARG_IN_REGS_SIZE: u64 = 4 * 32;
-const MAX_RET_IN_REGS_SIZE: u64 = 2 * 32;
+const NUM_RET_ARG_GPRS: u64 = 4;
 
-fn classify_ret_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>, xlen: u64)
+fn classify_ret_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>)
 where
     Ty: TyAbiInterface<'a, C> + Copy,
 {
-    if arg.is_ignore() {
-        return;
+    let mut arg_gprs_left = NUM_RET_ARG_GPRS;
+    classify_arg_ty(arg, &mut arg_gprs_left, NUM_RET_ARG_GPRS);
+    
+    // classify_arg_ty can make the arg indirect by value which is not valid for ret args
+    match arg.mode {
+        super::PassMode::Indirect { attrs: _, extra_attrs: _, ref mut on_stack } => *on_stack = false,
+        _ => {}
     }
-
-    // The rules for return and argument types are the same,
-    // so defer to `classify_arg_ty`.
-    let mut arg_gprs_left = 2;
-    let fixed = true;
-    classify_arg_ty(arg, xlen, fixed, &mut arg_gprs_left);
 }
 
-fn classify_arg_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>, xlen: u64, fixed: bool, arg_gprs_left: &mut u64)
+fn classify_arg_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>, arg_gprs_left: &mut u64, num_gprs: u64)
 where
     Ty: TyAbiInterface<'a, C> + Copy,
 {
-    assert!(*arg_gprs_left <= NUM_ARG_GPRS, "Arg GPR tracking underflow");
+    assert!(*arg_gprs_left <= num_gprs, "Arg GPR tracking underflow");
 
-    // Ignore empty structs/unions.
     if arg.layout.is_zst() {
-        return;
+        return; // ignore args that take no size
     }
+
+    // TODO check is arg has non-trvial constructor
 
     let size = arg.layout.size.bits();
-    let needed_align = arg.layout.align.abi.bits();
+    let align = arg.layout.align.abi.bits();
     let mut must_use_stack = false;
 
-    // Determine the number of GPRs needed to pass the current argument
-    // according to the ABI. 2*XLen-aligned varargs are passed in "aligned"
-    // register pairs, so may consume 3 registers.
-    let mut needed_arg_gprs = 1u64;
+    let mut required_gprs = (size + 31) / 32;
 
-    if !fixed && needed_align == 2 * xlen {
-        needed_arg_gprs = 2 + (*arg_gprs_left % 2);
-    } else if size > xlen && size <= MAX_ARG_IN_REGS_SIZE {
-        needed_arg_gprs = (size + xlen - 1) / xlen;
+    if align == 64 {
+        required_gprs += *arg_gprs_left % 2;
     }
 
-    if needed_arg_gprs > *arg_gprs_left {
+    // Put on stack objects which are not fit to 6 registers,
+    // also on stack object which alignment more then 16 bytes and
+    // object with 16-byte alignment if it isn't the first argument.
+    if required_gprs > *arg_gprs_left || align > 128 || *arg_gprs_left < 6 && align == 128 {
         must_use_stack = true;
-        needed_arg_gprs = *arg_gprs_left;
+        required_gprs = *arg_gprs_left;
     }
-    *arg_gprs_left -= needed_arg_gprs;
+    *arg_gprs_left -= required_gprs;
 
-    if !arg.layout.is_aggregate() && !matches!(arg.layout.abi, Abi::Vector { .. }) {
-        // All integral types are promoted to `xlen`
-        // width, unless passed on the stack.
-        if size < xlen && !must_use_stack {
-            arg.extend_integer_width_to(xlen);
-            return;
+    if arg.layout.is_aggregate() && !matches!(arg.layout.abi, Abi::Vector { element: _ , count: _ }) && !must_use_stack {
+        if size < 32 && !must_use_stack {
+            arg.extend_integer_width_to(32);
+        } else if size == 64 {
+            arg.cast_to(Reg::i64());
+        } else {
+            arg.cast_to(Reg::i32());
         }
-
         return;
     }
 
-    // Aggregates which are <= 4 * 32 will be passed in
-    // registers if possible, so coerce to integers.
-    if size as u64 <= MAX_ARG_IN_REGS_SIZE {
-        let alignment = arg.layout.align.abi.bits();
-
-        // Use a single `xlen` int if possible, 2 * `xlen` if 2 * `xlen` alignment
-        // is required, and a 2-element `xlen` array if only `xlen` alignment is
-        // required.
-        if size <= xlen {
-            arg.cast_to(Reg::i32());
-            return;
-        } else if alignment == 2 * xlen {
-            arg.cast_to(Reg::i64());
-            return;
+    // Aggregates which are <= 6*32 will be passed in registers if possible,
+    // so coerce to integers.
+    if size <= (num_gprs * 32) && !must_use_stack {
+        if size <= 32 {
+            arg.cast_to(Reg::i32())
+        } else if align == 64 {
+            arg.cast_to(Uniform { unit: Reg::i64(), total: Size::from_bits((required_gprs / 2) * 32) });
         } else {
-            let total = Size::from_bits(((size + xlen - 1) / xlen) * xlen);
-            arg.cast_to(Uniform { unit: Reg::i32(), total });
-            return;
+            arg.cast_to(Uniform { unit: Reg::i32(), total: Size::from_bits(required_gprs * 32) });
         }
+        return;
     }
 
-    arg.make_indirect();
+    arg.make_indirect_byval()
 }
 
-pub fn compute_abi_info<'a, Ty, C>(cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
+pub fn compute_abi_info<'a, Ty, C>(_cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
 where
     Ty: TyAbiInterface<'a, C> + Copy,
     C: HasDataLayout + HasTargetSpec,
 {
-    let xlen = cx.data_layout().pointer_size.bits();
-
     if !fn_abi.ret.is_ignore() {
-        classify_ret_ty(&mut fn_abi.ret, xlen);
+        classify_ret_ty(&mut fn_abi.ret);
     }
+    
+    let mut avail_gprs = NUM_ARG_GPRS;
 
-    let is_ret_indirect =
-        fn_abi.ret.is_indirect() || fn_abi.ret.layout.size.bits() > MAX_RET_IN_REGS_SIZE;
-
-    let mut arg_gprs_left = if is_ret_indirect { NUM_ARG_GPRS - 1 } else { NUM_ARG_GPRS };
-
-    for arg in &mut fn_abi.args {
+    for arg in fn_abi.args.iter_mut(){
         if arg.is_ignore() {
             continue;
         }
-        let fixed = true;
-        classify_arg_ty(arg, xlen, fixed, &mut arg_gprs_left);
+        classify_arg_ty(
+            arg,
+            &mut avail_gprs,
+            NUM_ARG_GPRS
+        );
     }
 }
