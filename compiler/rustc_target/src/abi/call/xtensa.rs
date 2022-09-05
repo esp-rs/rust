@@ -1,15 +1,16 @@
 // reference: https://github.com/espressif/llvm-project/blob/e9f57cdbcf3e0a63f395e683ccfaf7c4e6e1b093/clang/lib/CodeGen/TargetInfo.cpp#L11241
 
 use crate::abi::call::{ArgAbi, FnAbi, Reg, Uniform};
-use crate::abi::{Abi, Align, FieldsShape, HasDataLayout, Size, TyAbiInterface};
+use crate::abi::{Align, FieldsShape, HasDataLayout, Size, TyAbiInterface};
 use crate::spec::HasTargetSpec;
 
 const NUM_ARG_GPRS: u64 = 6;
 const NUM_RET_ARG_GPRS: u64 = 4;
 
-fn classify_ret_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>)
+fn classify_ret_ty<'a, Ty, C>(cx: &C, arg: &mut ArgAbi<'_, Ty>)
 where
     Ty: TyAbiInterface<'a, C> + Copy,
+    C: HasDataLayout + HasTargetSpec,
 {
     let mut arg_gprs_left = NUM_RET_ARG_GPRS;
 
@@ -18,7 +19,7 @@ where
     // The rules for return and argument with type size more then 4 bytes
     // are the same, so defer to classifyArgumentType.
     if size.bits() > 32 {
-        classify_arg_ty(arg, &mut arg_gprs_left, NUM_RET_ARG_GPRS);
+        classify_arg_ty(cx, arg, &mut arg_gprs_left, NUM_RET_ARG_GPRS);
 
         // classify_arg_ty can make the arg indirect by value which is not valid for ret args
         match arg.mode {
@@ -28,18 +29,21 @@ where
             _ => {}
         }
     } else {
-        // LLVM DefaultABIInfo::classifyReturnType
+        // Based on LLVM DefaultABIInfo::classifyReturnType
         if arg.layout.is_aggregate() {
-            arg.make_indirect()
+            arg.make_indirect();
+        } else if matches!(arg.layout.fields, FieldsShape::Primitive) {
+            arg.extend_integer_width_to(32);
         } else {
-            arg.extend_integer_width_to(32)
+            arg.cast_to(Reg::i32());
         }
     }
 }
 
-fn classify_arg_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>, arg_gprs_left: &mut u64, num_gprs: u64)
+fn classify_arg_ty<'a, Ty, C>(cx: &C, arg: &mut ArgAbi<'_, Ty>, arg_gprs_left: &mut u64, num_gprs: u64)
 where
     Ty: TyAbiInterface<'a, C> + Copy,
+    C: HasDataLayout + HasTargetSpec,
 {
     assert!(*arg_gprs_left <= num_gprs, "GPR tracking underflow");
 
@@ -69,48 +73,36 @@ where
     if must_use_stack {
         arg.make_indirect_byval();
     } else {
-        if arg.layout.is_aggregate()
-            && !matches!(arg.layout.abi, Abi::Vector { element: _, count: _ })
-        {
-            if size < 32 && matches!(arg.layout.fields, FieldsShape::Primitive) {
-                arg.extend_integer_width_to(32);
-            } else if size == 64 {
-                arg.cast_to(Reg::i64());
-            } else {
-                arg.cast_to(Uniform {
-                    unit: Reg::i32(),
-                    total: Size::from_bits(required_gprs * 32),
-                });
-            }
-        } else if size <= num_gprs * 32 {
-            // Aggregates which are <= num_gprs*32 will be passed in registers if possible,
-            // so coerce to integers.
-            if size <= 32 {
-                arg.cast_to(Reg::i32())
-            } else if align == 64 {
-                arg.cast_to(Uniform {
-                    unit: Reg::i64(),
-                    total: Size::from_bits((required_gprs / 2) * 64),
-                });
-            } else {
-                arg.cast_to(Uniform {
-                    unit: Reg::i32(),
-                    total: Size::from_bits(required_gprs * 32),
-                });
-            }
+        if size < 32 && matches!(arg.layout.fields, FieldsShape::Primitive) {
+            arg.extend_integer_width_to(32); // ints should be extended
+        } else if size <= 32 {
+            arg.cast_to(Reg::i32()); // else cast to a single register
         } else {
-            panic!("unhandled GPR")
+            // finally, cast large primitives and aggregates to array keeping proper alignment in mind
+            let reg = if align >= 64 {
+                if size != required_gprs * 32 {
+                    assert!(align >= 64, "{}bit align needs different padding", align);
+                    arg.pad_with(Reg::i32());
+                }
+                Reg::i64()
+            } else {
+                Reg::i32()
+            };
+
+            let array = Uniform { unit: reg, total: Size::from_bits(size) };
+            assert_eq!(array.align(cx).bits(), align, "alignment incorrect for type with size = {size}");
+            arg.cast_to(array);
         }
     }
 }
 
-pub fn compute_abi_info<'a, Ty, C>(_cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
+pub fn compute_abi_info<'a, Ty, C>(cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
 where
     Ty: TyAbiInterface<'a, C> + Copy,
     C: HasDataLayout + HasTargetSpec,
 {
     if !fn_abi.ret.is_ignore() {
-        classify_ret_ty(&mut fn_abi.ret);
+        classify_ret_ty(cx, &mut fn_abi.ret);
     }
 
     let mut avail_gprs = NUM_ARG_GPRS;
@@ -119,6 +111,6 @@ where
         if arg.is_ignore() {
             continue;
         }
-        classify_arg_ty(arg, &mut avail_gprs, NUM_ARG_GPRS);
+        classify_arg_ty(cx, arg, &mut avail_gprs, NUM_ARG_GPRS);
     }
 }
