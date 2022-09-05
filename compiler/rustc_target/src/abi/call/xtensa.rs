@@ -1,7 +1,7 @@
 // reference: https://github.com/espressif/llvm-project/blob/e9f57cdbcf3e0a63f395e683ccfaf7c4e6e1b093/clang/lib/CodeGen/TargetInfo.cpp#L11241
 
 use crate::abi::call::{ArgAbi, FnAbi, Reg, Uniform};
-use crate::abi::{HasDataLayout, Size, TyAbiInterface, Abi};
+use crate::abi::{Abi, HasDataLayout, Size, TyAbiInterface};
 use crate::spec::HasTargetSpec;
 
 const NUM_ARG_GPRS: u64 = 6;
@@ -53,7 +53,6 @@ where
 
     let size = arg.layout.size.bits();
     let align = arg.layout.align.abi.bits();
-    let mut must_use_stack = false;
 
     let mut required_gprs = (size + 31) / 32;
 
@@ -65,27 +64,34 @@ where
     // also on stack object which alignment more then 16 bytes and
     // object with 16-byte alignment if it isn't the first argument.
     if required_gprs > *arg_gprs_left || align > 128 || *arg_gprs_left < num_gprs && align == 128 {
-        must_use_stack = true;
-        required_gprs = *arg_gprs_left;
+        *arg_gprs_left -= 1;
+        arg.make_indirect();
+        return;
     }
     *arg_gprs_left -= required_gprs;
 
-    if must_use_stack {
-        arg.make_indirect_byval();
+    assert!(!arg.is_indirect());
+    assert!(required_gprs <= num_gprs);
+    if size < 32 && (!arg.layout.is_aggregate() && !matches!(arg.layout.abi, Abi::Vector { .. })) {
+        arg.extend_integer_width_to(32);
+    } else if align == 64 {
+        if required_gprs * 32 != size {
+            println!("Padding argument: size = {size}");
+            arg.pad_with(Reg::i32()); // pad argument to get correct alignment
+        }
+        if size == 64 {
+            arg.cast_to(Reg::i64());
+        } else if size == 128 {
+            arg.cast_to(Reg::i128());
+        } else {
+            arg.cast_to(Uniform { unit: Reg::i32(), total: Size::from_bits(size) });
+        }
     } else {
-        assert!(!arg.is_indirect());
-        assert!(required_gprs <= num_gprs);
-        if size < 32 && (!arg.layout.is_aggregate() && !matches!(arg.layout.abi, Abi::Vector { .. })) {
-            arg.extend_integer_width_to(32);
-        } else if align == 64 {
-            if required_gprs * 32 != size {
-                arg.pad_with(Reg::i32()); // pad argument to get correct alignment
-            }
-            arg.cast_to(Uniform { unit: Reg::i64(), total: Size::from_bits(size) });
+        assert!(align < 64);
+        if size == 32 {
+            arg.cast_to(Reg::i32());
         } else {
             println!("size = {size}, align = {align}, num gprs req = {required_gprs}");
-            assert!(align < 64);
-            // this also handles where size == 32 bits
             arg.cast_to(Uniform { unit: Reg::i32(), total: Size::from_bits(size) });
         }
     }
@@ -96,11 +102,11 @@ where
     Ty: TyAbiInterface<'a, C> + Copy,
     C: HasDataLayout + HasTargetSpec,
 {
+    let mut avail_gprs = NUM_ARG_GPRS;
+
     if !fn_abi.ret.is_ignore() {
         classify_ret_ty(&mut fn_abi.ret);
     }
-
-    let mut avail_gprs = NUM_ARG_GPRS;
 
     for arg in fn_abi.args.iter_mut() {
         if arg.is_ignore() {
