@@ -1,7 +1,7 @@
 // reference: https://github.com/espressif/llvm-project/blob/e9f57cdbcf3e0a63f395e683ccfaf7c4e6e1b093/clang/lib/CodeGen/TargetInfo.cpp#L11241
 
 use crate::abi::call::{ArgAbi, FnAbi, Reg, Uniform};
-use crate::abi::{Align, HasDataLayout, Size, TyAbiInterface, Abi, Scalar, Primitive};
+use crate::abi::{Abi, Align, HasDataLayout, Size, TyAbiInterface};
 use crate::spec::HasTargetSpec;
 
 const NUM_ARG_GPRS: u64 = 6;
@@ -32,7 +32,7 @@ where
         // Based on LLVM DefaultABIInfo::classifyReturnType
         if arg.layout.is_aggregate() {
             arg.make_indirect();
-        } else if matches!(arg.layout.abi, Abi::Scalar(Scalar::Initialized{ value: Primitive::Int(_, _), valid_range: _ })) {
+        } else if !is_xtensa_aggregate(arg) {
             arg.extend_integer_width_to(32);
         } else {
             arg.cast_to(Reg::i32());
@@ -40,8 +40,12 @@ where
     }
 }
 
-fn classify_arg_ty<'a, Ty, C>(cx: &C, arg: &mut ArgAbi<'_, Ty>, arg_gprs_left: &mut u64, num_gprs: u64)
-where
+fn classify_arg_ty<'a, Ty, C>(
+    cx: &C,
+    arg: &mut ArgAbi<'_, Ty>,
+    arg_gprs_left: &mut u64,
+    num_gprs: u64,
+) where
     Ty: TyAbiInterface<'a, C> + Copy,
     C: HasDataLayout + HasTargetSpec,
 {
@@ -73,7 +77,7 @@ where
     if must_use_stack {
         arg.make_indirect_byval();
     } else {
-        if size < 32 && matches!(arg.layout.abi, Abi::Scalar(Scalar::Initialized{ value: Primitive::Int(_, _), valid_range: _ })) {
+        if size < 32 && !is_xtensa_aggregate(arg) {
             arg.extend_integer_width_to(32); // ints should be extended
         } else if size <= 32 {
             arg.cast_to(Reg::i32()); // else cast to a single register
@@ -89,12 +93,19 @@ where
                 Reg::i32()
             };
 
-            // aggregates must be cast to an array
-            if is_xtensa_aggregate(arg) {
-                let array = Uniform { unit: reg, total: Size::from_bits(size) };
-                assert_eq!(array.align(cx).bits(), align, "alignment incorrect for type with size = {size}");
-                arg.cast_to(array);
-            }
+            match size {
+                64 => arg.cast_to(Reg::i64()),
+                128 => arg.cast_to(Reg::i128()),
+                _ => {
+                    let array = Uniform { unit: reg, total: Size::from_bits(size) };
+                    assert_eq!(
+                        array.align(cx).bits(),
+                        align,
+                        "alignment incorrect for type with size = {size}"
+                    );
+                    arg.cast_to(array)
+                }
+            };
         }
     }
 }
@@ -117,7 +128,6 @@ where
         classify_arg_ty(cx, arg, &mut avail_gprs, NUM_ARG_GPRS);
     }
 }
-
 
 fn is_xtensa_aggregate<'a, Ty>(arg: &ArgAbi<'a, Ty>) -> bool {
     match arg.layout.abi {
