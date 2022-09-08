@@ -6,10 +6,10 @@ use crate::spec::HasTargetSpec;
 
 const NUM_ARG_GPRS: u64 = 6;
 const NUM_RET_GPRS: u64 = 4;
-const MAX_ARG_IN_REGS_SIZE: u64 = 6 * 32;
-const MAX_RET_IN_REGS_SIZE: u64 = 4 * 32;
+const MAX_ARG_IN_REGS_SIZE: u64 = NUM_ARG_GPRS * 32;
+const MAX_RET_IN_REGS_SIZE: u64 = NUM_RET_GPRS * 32;
 
-fn classify_ret_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>, xlen: u64)
+fn classify_ret_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>)
 where
     Ty: TyAbiInterface<'a, C> + Copy,
 {
@@ -20,15 +20,11 @@ where
     // The rules for return and argument types are the same,
     // so defer to `classify_arg_ty`.
     let mut arg_gprs_left = NUM_RET_GPRS;
-    classify_arg_ty(arg, xlen, &mut arg_gprs_left, MAX_RET_IN_REGS_SIZE);
+    classify_arg_ty(arg, &mut arg_gprs_left, MAX_RET_IN_REGS_SIZE);
 }
 
-fn classify_arg_ty<'a, Ty, C>(
-    arg: &mut ArgAbi<'_, Ty>,
-    xlen: u64,
-    arg_gprs_left: &mut u64,
-    max_size: u64,
-) where
+fn classify_arg_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>, arg_gprs_left: &mut u64, max_size: u64)
+where
     Ty: TyAbiInterface<'a, C> + Copy,
 {
     assert!(*arg_gprs_left <= NUM_ARG_GPRS, "Arg GPR tracking underflow");
@@ -47,10 +43,10 @@ fn classify_arg_ty<'a, Ty, C>(
     // register pairs, so may consume 3 registers.
     let mut needed_arg_gprs = 1u64;
 
-    if needed_align == 2 * xlen {
+    if needed_align == 2 * 32 {
         needed_arg_gprs = 2 + (*arg_gprs_left % 2);
-    } else if size > xlen && size <= max_size {
-        needed_arg_gprs = (size + xlen - 1) / xlen;
+    } else if size > 32 && size <= max_size {
+        needed_arg_gprs = (size + 32 - 1) / 32;
     }
 
     if needed_arg_gprs > *arg_gprs_left
@@ -72,11 +68,11 @@ fn classify_arg_ty<'a, Ty, C>(
             // Use a single `xlen` int if possible, 2 * `xlen` if 2 * `xlen` alignment
             // is required, and a 2-element `xlen` array if only `xlen` alignment is
             // required.
-            if size <= xlen {
+            if size <= 32 {
                 arg.cast_to(Reg::i32());
             } else {
-                let reg = if needed_align == 2 * xlen { Reg::i64() } else { Reg::i32() };
-                let total = Size::from_bits(((size + xlen - 1) / xlen) * xlen);
+                let reg = if needed_align == 2 * 32 { Reg::i64() } else { Reg::i32() };
+                let total = Size::from_bits(((size + 32 - 1) / 32) * 32);
                 arg.cast_to(Uniform { unit: reg, total });
             }
         } else {
@@ -84,22 +80,20 @@ fn classify_arg_ty<'a, Ty, C>(
             // width.
             //
             // We let the LLVM backend handle integral types >= xlen.
-            if size < xlen {
-                arg.extend_integer_width_to(xlen);
+            if size < 32 {
+                arg.extend_integer_width_to(32);
             }
         }
     }
 }
 
-pub fn compute_abi_info<'a, Ty, C>(cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
+pub fn compute_abi_info<'a, Ty, C>(_cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
 where
     Ty: TyAbiInterface<'a, C> + Copy,
     C: HasDataLayout + HasTargetSpec,
 {
-    let xlen = cx.data_layout().pointer_size.bits();
-
     if !fn_abi.ret.is_ignore() {
-        classify_ret_ty(&mut fn_abi.ret, xlen);
+        classify_ret_ty(&mut fn_abi.ret);
     }
 
     let mut arg_gprs_left = NUM_ARG_GPRS;
@@ -108,7 +102,7 @@ where
         if arg.is_ignore() {
             continue;
         }
-        classify_arg_ty(arg, xlen, &mut arg_gprs_left, MAX_ARG_IN_REGS_SIZE);
+        classify_arg_ty(arg, &mut arg_gprs_left, MAX_ARG_IN_REGS_SIZE);
     }
 }
 
