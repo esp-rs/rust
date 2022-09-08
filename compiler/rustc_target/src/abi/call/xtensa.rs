@@ -23,8 +23,12 @@ where
     classify_arg_ty(arg, xlen, &mut arg_gprs_left, MAX_RET_IN_REGS_SIZE);
 }
 
-fn classify_arg_ty<'a, Ty, C>(arg: &mut ArgAbi<'_, Ty>, xlen: u64, arg_gprs_left: &mut u64, max_size: u64)
-where
+fn classify_arg_ty<'a, Ty, C>(
+    arg: &mut ArgAbi<'_, Ty>,
+    xlen: u64,
+    arg_gprs_left: &mut u64,
+    max_size: u64,
+) where
     Ty: TyAbiInterface<'a, C> + Copy,
 {
     assert!(*arg_gprs_left <= NUM_ARG_GPRS, "Arg GPR tracking underflow");
@@ -49,47 +53,42 @@ where
         needed_arg_gprs = (size + xlen - 1) / xlen;
     }
 
-    if needed_arg_gprs > *arg_gprs_left {
+    if needed_arg_gprs > *arg_gprs_left
+        || needed_align > 128
+        || *arg_gprs_left < (max_size / 32) && needed_align == 128
+    {
         must_use_stack = true;
         needed_arg_gprs = *arg_gprs_left;
     }
     *arg_gprs_left -= needed_arg_gprs;
 
-    if !arg.layout.is_aggregate() && !matches!(arg.layout.abi, Abi::Vector { .. }) {
-        // All integral types are promoted to `xlen`
-        // width, unless passed on the stack.
-        if size < xlen && !must_use_stack {
-            arg.extend_integer_width_to(xlen);
-            return;
-        }
+    if must_use_stack {
+        arg.make_indirect_byval();
+    } else {
+        if is_xtensa_aggregate(arg) {
+            // Aggregates which are <= max_size will be passed in
+            // registers if possible, so coerce to integers.
 
-        return; // let LLVM backend handle integral types >= xlen
-    }
-
-    // Aggregates which are <= max_size will be passed in
-    // registers if possible, so coerce to integers.
-    if needed_arg_gprs * 32 <= max_size && !must_use_stack {
-        let alignment = arg.layout.align.abi.bits();
-
-        // Use a single `xlen` int if possible, 2 * `xlen` if 2 * `xlen` alignment
-        // is required, and a 2-element `xlen` array if only `xlen` alignment is
-        // required.
-        if size <= xlen {
-            arg.cast_to(Reg::i32());
-            return;
-        } else {
-            let reg = if alignment == 2 * xlen {
-                Reg::i64()
+            // Use a single `xlen` int if possible, 2 * `xlen` if 2 * `xlen` alignment
+            // is required, and a 2-element `xlen` array if only `xlen` alignment is
+            // required.
+            if size <= xlen {
+                arg.cast_to(Reg::i32());
             } else {
-                Reg::i32()
-            };
-            let total = Size::from_bits(((size + xlen - 1) / xlen) * xlen);
-            arg.cast_to(Uniform { unit: reg, total });
-            return;
+                let reg = if needed_align == 2 * xlen { Reg::i64() } else { Reg::i32() };
+                let total = Size::from_bits(((size + xlen - 1) / xlen) * xlen);
+                arg.cast_to(Uniform { unit: reg, total });
+            }
+        } else {
+            // All integral types are promoted to `xlen`
+            // width.
+            //
+            // We let the LLVM backend handle integral types >= xlen.
+            if size < xlen {
+                arg.extend_integer_width_to(xlen);
+            }
         }
     }
-
-    arg.make_indirect_byval();
 }
 
 pub fn compute_abi_info<'a, Ty, C>(cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
@@ -103,15 +102,19 @@ where
         classify_ret_ty(&mut fn_abi.ret, xlen);
     }
 
-    let is_ret_indirect =
-        fn_abi.ret.is_indirect() || fn_abi.ret.layout.size.bits() > MAX_RET_IN_REGS_SIZE;
-
-    let mut arg_gprs_left = if is_ret_indirect { NUM_ARG_GPRS - 1 } else { NUM_ARG_GPRS };
+    let mut arg_gprs_left = NUM_ARG_GPRS;
 
     for arg in &mut fn_abi.args {
         if arg.is_ignore() {
             continue;
         }
         classify_arg_ty(arg, xlen, &mut arg_gprs_left, MAX_ARG_IN_REGS_SIZE);
+    }
+}
+
+fn is_xtensa_aggregate<'a, Ty>(arg: &ArgAbi<'a, Ty>) -> bool {
+    match arg.layout.abi {
+        Abi::Vector { .. } => true,
+        _ => arg.layout.is_aggregate(),
     }
 }
