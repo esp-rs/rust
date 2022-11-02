@@ -208,6 +208,7 @@ pub(crate) fn create_object_file(sess: &Session) -> Option<write::Object<'static
         "avr" => Architecture::Avr,
         "msp430" => Architecture::Msp430,
         "hexagon" => Architecture::Hexagon,
+        "xtensa" => Architecture::Xtensa,
         "bpf" => Architecture::Bpf,
         "loongarch64" => Architecture::LoongArch64,
         "csky" => Architecture::Csky,
