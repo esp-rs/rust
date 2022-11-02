@@ -217,6 +217,7 @@ pub(crate) fn create_object_file(sess: &Session) -> Option<write::Object<'static
         "loongarch64" => (Architecture::LoongArch64, None),
         "csky" => (Architecture::Csky, None),
         "arm64ec" => (Architecture::Aarch64, Some(SubArchitecture::Arm64EC)),
+        "xtensa" => (Architecture::Xtensa, None),
         // Unsupported architecture.
         _ => return None,
     };
