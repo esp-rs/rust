@@ -682,6 +682,9 @@ fn reg_to_gcc(reg: InlineAsmRegOrRegClass) -> ConstraintOrRegister {
             InlineAsmRegClass::S390x(S390xInlineAsmRegClass::reg) => "r",
             InlineAsmRegClass::S390x(S390xInlineAsmRegClass::reg_addr) => "a",
             InlineAsmRegClass::S390x(S390xInlineAsmRegClass::freg) => "f",
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => unimplemented!(),
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => unimplemented!(),
+            InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::breg) => unimplemented!(),
             InlineAsmRegClass::Err => unreachable!(),
         },
     };
@@ -765,7 +768,10 @@ fn dummy_output_type<'gcc, 'tcx>(cx: &CodegenCx<'gcc, 'tcx>, reg: InlineAsmRegCl
         InlineAsmRegClass::CSKY(CSKYInlineAsmRegClass::freg) => cx.type_f32(),
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("GCC backend does not support SPIR-V")
-        }
+        },
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => cx.type_i32(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => cx.type_f32(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::breg) => cx.type_i8(), // FIXME: should this be i1?
         InlineAsmRegClass::Err => unreachable!(),
     }
 }
@@ -941,7 +947,10 @@ fn modifier_to_gcc(
         InlineAsmRegClass::CSKY(_) => None,
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("LLVM backend does not support SPIR-V")
-        }
+        },
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => unimplemented!(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => unimplemented!(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::breg) => unimplemented!(),
         InlineAsmRegClass::Err => unreachable!(),
     }
 }
