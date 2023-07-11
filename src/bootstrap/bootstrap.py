@@ -226,13 +226,16 @@ def format_build_time(duration):
 
 def default_build_triple(verbose):
     """Build triple as in LLVM"""
-    # If we're on Windows and have an existing `rustc` toolchain, use `rustc --version --verbose`
-    # to find our host target triple. This fixes an issue with Windows builds being detected
-    # as GNU instead of MSVC.
-    # Otherwise, detect it via `uname`
+    # If the user already has a host build triple with an existing `rustc`
+    # install, use their preference. This fixes most issues with Windows builds
+    # being detected as GNU instead of MSVC.
     default_encoding = sys.getdefaultencoding()
 
-    if platform_is_win32():
+    if sys.platform == 'darwin':
+        if verbose:
+            print("not using rustc detection as it is unreliable on macOS", file=sys.stderr)
+            print("falling back to auto-detect", file=sys.stderr)
+    else:
         try:
             version = subprocess.check_output(["rustc", "--version", "--verbose"],
                     stderr=subprocess.DEVNULL)
@@ -250,17 +253,19 @@ def default_build_triple(verbose):
                 print("falling back to auto-detect", file=sys.stderr)
 
     required = not platform_is_win32()
-    uname = require(["uname", "-smp"], exit=required)
+    ostype = require(["uname", "-s"], exit=required)
+    cputype = require(['uname', '-m'], exit=required)
 
     # If we do not have `uname`, assume Windows.
-    if uname is None:
+    if ostype is None or cputype is None:
         return 'x86_64-pc-windows-msvc'
 
-    kernel, cputype, processor = uname.decode(default_encoding).split()
+    ostype = ostype.decode(default_encoding)
+    cputype = cputype.decode(default_encoding)
 
     # The goal here is to come up with the same triple as LLVM would,
     # at least for the subset of platforms we're willing to target.
-    kerneltype_mapper = {
+    ostype_mapper = {
         'Darwin': 'apple-darwin',
         'DragonFly': 'unknown-dragonfly',
         'FreeBSD': 'unknown-freebsd',
@@ -270,18 +275,17 @@ def default_build_triple(verbose):
     }
 
     # Consider the direct transformation first and then the special cases
-    if kernel in kerneltype_mapper:
-        kernel = kerneltype_mapper[kernel]
-    elif kernel == 'Linux':
-        # Apple doesn't support `-o` so this can't be used in the combined
-        # uname invocation above
-        ostype = require(["uname", "-o"], exit=required).decode(default_encoding)
-        if ostype == 'Android':
-            kernel = 'linux-android'
+    if ostype in ostype_mapper:
+        ostype = ostype_mapper[ostype]
+    elif ostype == 'Linux':
+        os_from_sp = subprocess.check_output(
+            ['uname', '-o']).strip().decode(default_encoding)
+        if os_from_sp == 'Android':
+            ostype = 'linux-android'
         else:
-            kernel = 'unknown-linux-gnu'
-    elif kernel == 'SunOS':
-        kernel = 'pc-solaris'
+            ostype = 'unknown-linux-gnu'
+    elif ostype == 'SunOS':
+        ostype = 'pc-solaris'
         # On Solaris, uname -m will return a machine classification instead
         # of a cpu type, so uname -p is recommended instead.  However, the
         # output from that option is too generic for our purposes (it will
@@ -290,34 +294,34 @@ def default_build_triple(verbose):
         cputype = require(['isainfo', '-k']).decode(default_encoding)
         # sparc cpus have sun as a target vendor
         if 'sparc' in cputype:
-            kernel = 'sun-solaris'
-    elif kernel.startswith('MINGW'):
+            ostype = 'sun-solaris'
+    elif ostype.startswith('MINGW'):
         # msys' `uname` does not print gcc configuration, but prints msys
         # configuration. so we cannot believe `uname -m`:
         # msys1 is always i686 and msys2 is always x86_64.
         # instead, msys defines $MSYSTEM which is MINGW32 on i686 and
         # MINGW64 on x86_64.
-        kernel = 'pc-windows-gnu'
+        ostype = 'pc-windows-gnu'
         cputype = 'i686'
         if os.environ.get('MSYSTEM') == 'MINGW64':
             cputype = 'x86_64'
-    elif kernel.startswith('MSYS'):
-        kernel = 'pc-windows-gnu'
-    elif kernel.startswith('CYGWIN_NT'):
+    elif ostype.startswith('MSYS'):
+        ostype = 'pc-windows-gnu'
+    elif ostype.startswith('CYGWIN_NT'):
         cputype = 'i686'
-        if kernel.endswith('WOW64'):
+        if ostype.endswith('WOW64'):
             cputype = 'x86_64'
-        kernel = 'pc-windows-gnu'
-    elif platform_is_win32():
+        ostype = 'pc-windows-gnu'
+    elif sys.platform == 'win32':
         # Some Windows platforms might have a `uname` command that returns a
         # non-standard string (e.g. gnuwin32 tools returns `windows32`). In
         # these cases, fall back to using sys.platform.
         return 'x86_64-pc-windows-msvc'
     else:
-        err = "unknown OS type: {}".format(kernel)
+        err = "unknown OS type: {}".format(ostype)
         sys.exit(err)
 
-    if cputype in ['powerpc', 'riscv'] and kernel == 'unknown-freebsd':
+    if cputype in ['powerpc', 'riscv'] and ostype == 'unknown-freebsd':
         cputype = subprocess.check_output(
               ['uname', '-p']).strip().decode(default_encoding)
     cputype_mapper = {
@@ -350,23 +354,24 @@ def default_build_triple(verbose):
         cputype = cputype_mapper[cputype]
     elif cputype in {'xscale', 'arm'}:
         cputype = 'arm'
-        if kernel == 'linux-android':
-            kernel = 'linux-androideabi'
-        elif kernel == 'unknown-freebsd':
-            cputype = processor
-            kernel = 'unknown-freebsd'
+        if ostype == 'linux-android':
+            ostype = 'linux-androideabi'
+        elif ostype == 'unknown-freebsd':
+            cputype = subprocess.check_output(
+                ['uname', '-p']).strip().decode(default_encoding)
+            ostype = 'unknown-freebsd'
     elif cputype == 'armv6l':
         cputype = 'arm'
-        if kernel == 'linux-android':
-            kernel = 'linux-androideabi'
+        if ostype == 'linux-android':
+            ostype = 'linux-androideabi'
         else:
-            kernel += 'eabihf'
+            ostype += 'eabihf'
     elif cputype in {'armv7l', 'armv8l'}:
         cputype = 'armv7'
-        if kernel == 'linux-android':
-            kernel = 'linux-androideabi'
+        if ostype == 'linux-android':
+            ostype = 'linux-androideabi'
         else:
-            kernel += 'eabihf'
+            ostype += 'eabihf'
     elif cputype == 'mips':
         if sys.byteorder == 'big':
             cputype = 'mips'
@@ -382,14 +387,14 @@ def default_build_triple(verbose):
         else:
             raise ValueError('unknown byteorder: {}'.format(sys.byteorder))
         # only the n64 ABI is supported, indicate it
-        kernel += 'abi64'
+        ostype += 'abi64'
     elif cputype == 'sparc' or cputype == 'sparcv9' or cputype == 'sparc64':
         pass
     else:
         err = "unknown cpu type: {}".format(cputype)
         sys.exit(err)
 
-    return "{}-{}".format(cputype, kernel)
+    return "{}-{}".format(cputype, ostype)
 
 
 @contextlib.contextmanager
