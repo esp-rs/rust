@@ -20,9 +20,8 @@ pub fn target() -> Target {
             cpu: "esp32".into(),
             linker: Some("xtensa-esp32-elf-gcc".into()),
 
-            // The esp32 only supports native 32bit atomics. However, esp-idf will emulate 64bit atomics 
-            // so we claim a max atomic width of 64 here.
-            max_atomic_width: Some(64),
+            // esp-idf can emulate 64-bit atomics, but Rust eschews non-hardware atomics
+            max_atomic_width: Some(32),
             atomic_cas: true,
 
             ..super::xtensa_base::opts()
