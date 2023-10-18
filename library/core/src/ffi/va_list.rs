@@ -119,12 +119,6 @@ pub struct VaListImpl<'f> {
 #[cfg(target_arch = "xtensa")]
 #[repr(C)]
 #[derive(Debug)]
-#[unstable(
-    feature = "c_variadic",
-    reason = "the `c_variadic` feature has not been properly tested on \
-              all supported platforms",
-    issue = "44930"
-)]
 #[lang = "va_list"]
 pub struct VaListImpl<'f> {
     stk: *mut i32,
