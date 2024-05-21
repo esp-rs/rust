@@ -1,6 +1,5 @@
-use super::{InlineAsmArch, InlineAsmType};
-use crate::spec::{Target, RelocModel};
-use rustc_macros::HashStable_Generic;
+use super::{InlineAsmArch, InlineAsmType, ModifierInfo};
+use crate::spec::{RelocModel, Target};
 use rustc_data_structures::fx::FxIndexSet;
 use rustc_span::{sym, Symbol};
 use std::fmt;
@@ -26,11 +25,11 @@ impl XtensaInlineAsmRegClass {
         self,
         _arch: InlineAsmArch,
         _ty: InlineAsmType,
-    ) -> Option<(char, &'static str)> {
+    ) -> Option<ModifierInfo> {
         None
     }
 
-    pub fn default_modifier(self, _arch: InlineAsmArch) -> Option<(char, &'static str)> {
+    pub fn default_modifier(self, _arch: InlineAsmArch) -> Option<ModifierInfo> {
         None
     }
 
@@ -95,7 +94,7 @@ fn has_expstate(
 ) -> Result<(), &'static str> {
     match target.cpu.as_ref() {
         "esp32" => Ok(()),
-        _ => Err("target does not support expstate registers")
+        _ => Err("target does not support expstate registers"),
     }
 }
 fn has_gpio_out(
@@ -107,7 +106,7 @@ fn has_gpio_out(
 ) -> Result<(), &'static str> {
     match target.cpu.as_ref() {
         "esp32-s2" => Ok(()),
-        _ => Err("target does not support gpio_out registers")
+        _ => Err("target does not support gpio_out registers"),
     }
 }
 
@@ -167,7 +166,7 @@ def_regs! {
         a14: reg = ["a14"],
         a15: reg = ["a15"] % frame_pointer_a15,
         sar: reg = ["sar"],
-        configid0: reg = ["configid0"], 
+        configid0: reg = ["configid0"],
         configid1: reg = ["configid1"],
         lbeg: reg = ["lbeg"] % has_xloop,
         lend: reg = ["lend"] % has_xloop,
@@ -276,7 +275,7 @@ def_regs! {
         // Custom TIE extensions - https://en.wikipedia.org/wiki/Tensilica_Instruction_Extension
         gpio_out: reg = ["gpio_out"] % has_gpio_out,
         expstate: reg = ["expstate"] % has_expstate,
-        
+
         #error = ["a0"] => "a0 is used internally by LLVM and cannot be used as an operand for inline asm",
         #error = ["sp", "a1"] => "sp is used internally by LLVM and cannot be used as an operand for inline asm",
     }

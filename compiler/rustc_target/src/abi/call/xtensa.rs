@@ -82,7 +82,7 @@ where
             } else {
                 let reg = if needed_align == 2 * 32 { Reg::i64() } else { Reg::i32() };
                 let total = Size::from_bits(((size + 32 - 1) / 32) * 32);
-                arg.cast_to(Uniform { unit: reg, total });
+                arg.cast_to(Uniform::new(reg, total));
             }
         } else {
             // All integral types are promoted to `xlen`
