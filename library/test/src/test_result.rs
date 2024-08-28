@@ -93,13 +93,14 @@ pub fn get_result_from_exit_code(
     time_opts: &Option<time::TestTimeOptions>,
     exec_time: &Option<time::TestExecTime>,
 ) -> TestResult {
+    let _sigabrt = libc::SIGABRT as i32;
     let result = match status.code() {
         Some(TR_OK) => TestResult::TrOk,
         #[cfg(windows)]
         Some(STATUS_ABORTED) => TestResult::TrFailed,
         #[cfg(unix)]
         None => match status.signal() {
-            Some(libc::SIGABRT) => TestResult::TrFailed,
+            Some(_sigabrt) => TestResult::TrFailed,
             Some(signal) => {
                 TestResult::TrFailedMsg(format!("child process exited with signal {signal}"))
             }
