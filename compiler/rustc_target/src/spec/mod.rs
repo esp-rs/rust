@@ -1794,6 +1794,7 @@ supported_targets! {
     ("xtensa-esp32s2-espidf", xtensa_esp32s2_espidf),
     ("xtensa-esp32s3-none-elf", xtensa_esp32s3_none_elf),
     ("xtensa-esp32s3-espidf", xtensa_esp32s3_espidf),
+    ("xtensa-esp8266-none-elf", xtensa_esp8266_none_elf),
 
     ("i686-wrs-vxworks", i686_wrs_vxworks),
     ("x86_64-wrs-vxworks", x86_64_wrs_vxworks),
