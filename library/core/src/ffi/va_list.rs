@@ -153,6 +153,7 @@ pub struct VaList<'a, 'f: 'a> {
             target_arch = "s390x",
             target_arch = "x86_64"
         ),
+        not(target_arch = "xtensa"),
         any(not(target_arch = "aarch64"), not(target_vendor = "apple")),
         not(target_family = "wasm"),
         not(target_os = "uefi"),
