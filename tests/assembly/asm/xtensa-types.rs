@@ -1,9 +1,8 @@
-// min-llvm-version: 10.0.1
-// assembly-output: emit-asm
-// compile-flags: --target xtensa-esp32-none-elf
-// needs-llvm-components: xtensa
+//@ assembly-output: emit-asm
+//@ compile-flags: --target xtensa-esp32-none-elf
+//@ needs-llvm-components: xtensa
 
-#![feature(no_core, lang_items, rustc_attrs, repr_simd)]
+#![feature(no_core, lang_items, rustc_attrs, repr_simd, asm_experimental_arch)]
 #![crate_type = "rlib"]
 #![no_core]
 #![allow(asm_sub_register, non_camel_case_types)]
@@ -68,25 +67,25 @@ macro_rules! check_general_reg {
 
 // CHECK-LABEL: reg_i8:
 // CHECK: #APP
-// CHECK: mov a{{[0-9]+}}, a{{[0-9]+}}
+// CHECK: or a{{[0-9]+}}, a{{[0-9]+}}, a{{[0-9]+}}
 // CHECK: #NO_APP
 check_general_reg!(reg_i8 i8 reg "mov");
 
 // CHECK-LABEL: reg_i16:
 // CHECK: #APP
-// CHECK: mov a{{[0-9]+}}, a{{[0-9]+}}
+// CHECK: or a{{[0-9]+}}, a{{[0-9]+}}, a{{[0-9]+}}
 // CHECK: #NO_APP
 check_general_reg!(reg_i16 i16 reg "mov");
 
 // CHECK-LABEL: reg_i32:
 // CHECK: #APP
-// CHECK: mov a{{[0-9]+}}, a{{[0-9]+}}
+// CHECK: or a{{[0-9]+}}, a{{[0-9]+}}, a{{[0-9]+}}
 // CHECK: #NO_APP
 check_general_reg!(reg_i32 i32 reg "mov");
 
 // CHECK-LABEL: reg_ptr:
 // CHECK: #APP
-// CHECK: mov a{{[0-9]+}}, a{{[0-9]+}}
+// CHECK: or a{{[0-9]+}}, a{{[0-9]+}}, a{{[0-9]+}}
 // CHECK: #NO_APP
 check_general_reg!(reg_ptr ptr reg "mov");
 
@@ -111,25 +110,25 @@ macro_rules! check_explicit_reg {
 
 // CHECK-LABEL: a5_i8:
 // CHECK: #APP
-// CHECK: mov a5, a5
+// CHECK: or a5, a5, a5
 // CHECK: #NO_APP
 check_explicit_reg!(a5_i8 i8 "a5" "mov");
 
 // CHECK-LABEL: a5_i16:
 // CHECK: #APP
-// CHECK: mov a5, a5
+// CHECK: or a5, a5, a5
 // CHECK: #NO_APP
 check_explicit_reg!(a5_i16 i16 "a5" "mov");
 
-// CHECK-LABEL: a0_i32:
+// CHECK-LABEL: a5_i32:
 // CHECK: #APP
-// CHECK: mov a5, a5
+// CHECK: or a5, a5, a5
 // CHECK: #NO_APP
 check_explicit_reg!(a5_i32 i32 "a5" "mov");
 
 // CHECK-LABEL: a5_ptr:
 // CHECK: #APP
-// CHECK: mov a5, a5
+// CHECK: or a5, a5, a5
 // CHECK: #NO_APP
 check_explicit_reg!(a5_ptr ptr "a5" "mov");
 
