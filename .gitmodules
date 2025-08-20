@@ -28,8 +28,8 @@
 	shallow = true
 [submodule "src/llvm-project"]
 	path = src/llvm-project
-	url = https://github.com/rust-lang/llvm-project.git
-	branch = rustc/20.1-2025-02-13
+	url = https://github.com/espressif/llvm-project
+	branch = release/esp_20.x
 	shallow = true
 [submodule "src/doc/embedded-book"]
 	path = src/doc/embedded-book
