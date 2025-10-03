@@ -910,6 +910,49 @@ static AVR_FEATURES: &[(&str, Stability, ImpliedFeatures)] = &[
     // tidy-alphabetical-end
 ];
 
+const XTENSA_FEATURES: &[(&str, Stability, ImpliedFeatures)] = &[
+    ("bool", Unstable(sym::xtensa_target_feature), &[]),
+    ("clamps", Unstable(sym::xtensa_target_feature), &[]),
+    ("coprocessor", Unstable(sym::xtensa_target_feature), &[]),
+    ("dcache", Unstable(sym::xtensa_target_feature), &[]),
+    ("debug", Unstable(sym::xtensa_target_feature), &["exception"]),
+    ("density", Unstable(sym::xtensa_target_feature), &[]),
+    ("dfpaccel", Unstable(sym::xtensa_target_feature), &[]),
+    ("div32", Unstable(sym::xtensa_target_feature), &[]),
+    ("esp32s2ops", Unstable(sym::xtensa_target_feature), &[]),
+    ("esp32s3ops", Unstable(sym::xtensa_target_feature), &[]),
+    ("exception", Unstable(sym::xtensa_target_feature), &[]),
+    ("expstate", Unstable(sym::xtensa_target_feature), &[]),
+    ("extendedl32r", Unstable(sym::xtensa_target_feature), &[]),
+    ("fp", Unstable(sym::xtensa_target_feature), &["bool", "coprocessor"]),
+    ("hifi3", Unstable(sym::xtensa_target_feature), &[]),
+    ("highpriinterrupts", Unstable(sym::xtensa_target_feature), &["interrupt"]),
+    ("highpriinterrupts-level3", Unstable(sym::xtensa_target_feature), &["highpriinterrupts"]),
+    ("highpriinterrupts-level4", Unstable(sym::xtensa_target_feature), &["highpriinterrupts"]),
+    ("highpriinterrupts-level5", Unstable(sym::xtensa_target_feature), &["highpriinterrupts"]),
+    ("highpriinterrupts-level6", Unstable(sym::xtensa_target_feature), &["highpriinterrupts"]),
+    ("highpriinterrupts-level7", Unstable(sym::xtensa_target_feature), &["highpriinterrupts"]),
+    ("interrupt", Unstable(sym::xtensa_target_feature), &["exception"]),
+    ("loop", Unstable(sym::xtensa_target_feature), &[]),
+    ("mac16", Unstable(sym::xtensa_target_feature), &[]),
+    ("minmax", Unstable(sym::xtensa_target_feature), &[]),
+    ("miscsr", Unstable(sym::xtensa_target_feature), &[]),
+    ("mul16", Unstable(sym::xtensa_target_feature), &[]),
+    ("mul32", Unstable(sym::xtensa_target_feature), &[]),
+    ("mul32high", Unstable(sym::xtensa_target_feature), &["mul32"]),
+    ("nsa", Unstable(sym::xtensa_target_feature), &[]),
+    ("prid", Unstable(sym::xtensa_target_feature), &[]),
+    ("regprotect", Unstable(sym::xtensa_target_feature), &[]),
+    ("rvector", Unstable(sym::xtensa_target_feature), &["exception"]),
+    ("s32c1i", Unstable(sym::xtensa_target_feature), &[]),
+    ("sext", Unstable(sym::xtensa_target_feature), &[]),
+    ("threadptr", Unstable(sym::xtensa_target_feature), &[]),
+    ("timers1", Unstable(sym::xtensa_target_feature), &[]),
+    ("timers2", Unstable(sym::xtensa_target_feature), &[]),
+    ("timers3", Unstable(sym::xtensa_target_feature), &[]),
+    ("windowed", Unstable(sym::xtensa_target_feature), &["exception"]),
+];
+
 /// When rustdoc is running, provide a list of all known features so that all their respective
 /// primitives may be documented.
 ///
@@ -926,6 +969,7 @@ pub fn all_rust_features() -> impl Iterator<Item = (&'static str, Stability)> {
         .chain(RISCV_FEATURES.iter())
         .chain(WASM_FEATURES.iter())
         .chain(BPF_FEATURES.iter())
+        .chain(XTENSA_FEATURES.iter())
         .chain(CSKY_FEATURES)
         .chain(LOONGARCH_FEATURES)
         .chain(IBMZ_FEATURES)
@@ -1013,7 +1057,8 @@ impl Target {
             Arch::Sparc | Arch::Sparc64 => SPARC_FEATURES,
             Arch::M68k => M68K_FEATURES,
             Arch::Avr => AVR_FEATURES,
-            Arch::AmdGpu | Arch::Msp430 | Arch::SpirV | Arch::Xtensa | Arch::Other(_) => &[],
+            Arch::Xtensa => XTENSA_FEATURES,
+            Arch::AmdGpu | Arch::Msp430 | Arch::SpirV | Arch::Other(_) => &[],
         }
     }
 
