@@ -884,6 +884,37 @@ static M68K_FEATURES: &[(&str, Stability, ImpliedFeatures)] = &[
     // tidy-alphabetical-end
 ];
 
+const XTENSA_FEATURES: &[(&str, Stability, ImpliedFeatures)] = &[
+    ("fp", Unstable(sym::xtensa_target_feature), &["coprocessor"]),
+    ("windowed", Unstable(sym::xtensa_target_feature), &[]),
+    ("mac16", Unstable(sym::xtensa_target_feature), &[]),
+    ("loop", Unstable(sym::xtensa_target_feature), &[]),
+    ("sext", Unstable(sym::xtensa_target_feature), &[]),
+    ("nsa", Unstable(sym::xtensa_target_feature), &[]),
+    ("mul32", Unstable(sym::xtensa_target_feature), &[]),
+    ("mul32high", Unstable(sym::xtensa_target_feature), &[]),
+    ("div32", Unstable(sym::xtensa_target_feature), &[]),
+    ("s32c1i", Unstable(sym::xtensa_target_feature), &[]),
+    ("regprotect", Unstable(sym::xtensa_target_feature), &[]),
+    ("rvector", Unstable(sym::xtensa_target_feature), &[]),
+    ("miscsr", Unstable(sym::xtensa_target_feature), &[]),
+    ("extendedl32r", Unstable(sym::xtensa_target_feature), &[]),
+    ("threadptr", Unstable(sym::xtensa_target_feature), &[]),
+    ("highpriinterrupts", Unstable(sym::xtensa_target_feature), &["interrupt"]),
+    ("interrupt", Unstable(sym::xtensa_target_feature), &[]),
+    ("exception", Unstable(sym::xtensa_target_feature), &[]),
+    ("debug", Unstable(sym::xtensa_target_feature), &[]),
+    ("prid", Unstable(sym::xtensa_target_feature), &[]),
+    ("coprocessor", Unstable(sym::xtensa_target_feature), &[]),
+
+    ("density", Unstable(sym::xtensa_target_feature), &[]),
+    ("bool", Unstable(sym::xtensa_target_feature), &[]),
+    ("clamps", Unstable(sym::xtensa_target_feature), &[]),
+    ("minmax", Unstable(sym::xtensa_target_feature), &[]),
+    ("mul16", Unstable(sym::xtensa_target_feature), &[]),
+    // ("dcache", Unstable(sym::xtensa_target_feature), &[]), not supported in LLVM yet, will be in 21.2
+];
+
 /// When rustdoc is running, provide a list of all known features so that all their respective
 /// primitives may be documented.
 ///
@@ -900,6 +931,7 @@ pub fn all_rust_features() -> impl Iterator<Item = (&'static str, Stability)> {
         .chain(RISCV_FEATURES.iter())
         .chain(WASM_FEATURES.iter())
         .chain(BPF_FEATURES.iter())
+        .chain(XTENSA_FEATURES.iter())
         .chain(CSKY_FEATURES)
         .chain(LOONGARCH_FEATURES)
         .chain(IBMZ_FEATURES)
@@ -972,6 +1004,7 @@ impl Target {
             "s390x" => IBMZ_FEATURES,
             "sparc" | "sparc64" => SPARC_FEATURES,
             "m68k" => M68K_FEATURES,
+            "xtensa" => XTENSA_FEATURES,
             _ => &[],
         }
     }
