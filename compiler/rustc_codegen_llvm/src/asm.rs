@@ -684,6 +684,7 @@ fn reg_to_llvm(reg: InlineAsmRegOrRegClass, layout: Option<&TyAndLayout<'_>>) ->
                 | X86InlineAsmRegClass::kreg0
                 | X86InlineAsmRegClass::tmm_reg,
             ) => unreachable!("clobber-only"),
+            Xtensa(XtensaInlineAsmRegClass::qreg) => "p",
             Xtensa(XtensaInlineAsmRegClass::freg) => "f",
             Xtensa(XtensaInlineAsmRegClass::reg) => "r",
             Wasm(WasmInlineAsmRegClass::local) => "r",
@@ -870,6 +871,7 @@ fn dummy_output_type<'ll>(cx: &CodegenCx<'ll, '_>, reg: InlineAsmRegClass) -> &'
         ) => unreachable!("clobber-only"),
         Xtensa(XtensaInlineAsmRegClass::reg) => cx.type_i32(),
         Xtensa(XtensaInlineAsmRegClass::freg) => cx.type_f32(),
+        Xtensa(XtensaInlineAsmRegClass::qreg) => cx.type_vector(cx.type_i8(), 16),
         Wasm(WasmInlineAsmRegClass::local) => cx.type_i32(),
         Bpf(BpfInlineAsmRegClass::reg) => cx.type_i64(),
         Bpf(BpfInlineAsmRegClass::wreg) => cx.type_i32(),
