@@ -10,6 +10,7 @@ def_reg_class! {
     Xtensa XtensaInlineAsmRegClass {
         reg,
         freg,
+        qreg,
     }
 }
 
@@ -41,7 +42,21 @@ impl XtensaInlineAsmRegClass {
         match self {
             Self::reg => types! { _: I8, I16, I32; },
             Self::freg => types! { fp: F32; },
+            Self::qreg => types! { _: VecI8(16), VecI16(8), VecI32(4); },
         }
+    }
+}
+
+fn has_qr(
+    _arch: InlineAsmArch,
+    _reloc_model: RelocModel,
+    _target_features: &FxIndexSet<Symbol>,
+    target: &Target,
+    _is_clobber: bool,
+) -> Result<(), &'static str> {
+    match target.cpu.as_ref() {
+        "esp32-s3" => Ok(()),
+        _ => Err("target does not support 128-bit vector QR registers")
     }
 }
 
@@ -109,6 +124,14 @@ def_regs! {
         f13: freg = ["f13"] % has_fp,
         f14: freg = ["f14"] % has_fp,
         f15: freg = ["f15"] % has_fp,
+        q0: qreg = ["q0"] % has_qr,
+        q1: qreg = ["q1"] % has_qr,
+        q2: qreg = ["q2"] % has_qr,
+        q3: qreg = ["q3"] % has_qr,
+        q4: qreg = ["q4"] % has_qr,
+        q5: qreg = ["q5"] % has_qr,
+        q6: qreg = ["q6"] % has_qr,
+        q7: qreg = ["q7"] % has_qr,
 
         #error = ["a0"] => "a0 is used internally by LLVM and cannot be used as an operand for inline asm",
         #error = ["sp", "a1"] => "sp is used internally by LLVM and cannot be used as an operand for inline asm",

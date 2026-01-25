@@ -742,6 +742,7 @@ fn reg_class_to_gcc(reg_class: InlineAsmRegClass) -> &'static str {
         ) => unreachable!("clobber-only"),
         InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => "r",
         InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => "f",
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::qreg) => "p",
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("GCC backend does not support SPIR-V")
         }
@@ -855,6 +856,7 @@ fn dummy_output_type<'gcc, 'tcx>(cx: &CodegenCx<'gcc, 'tcx>, reg: InlineAsmRegCl
         }
         InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => cx.type_i32(),
         InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => cx.type_f32(),
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::qreg) => cx.type_vector(cx.type_i8(), 16),
         InlineAsmRegClass::Err => unreachable!(),
     }
 }
