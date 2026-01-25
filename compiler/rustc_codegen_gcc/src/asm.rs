@@ -742,7 +742,7 @@ fn reg_class_to_gcc(reg_class: InlineAsmRegClass) -> &'static str {
         ) => unreachable!("clobber-only"),
         InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::reg) => "r",
         InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::freg) => "f",
-        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::qreg) => "v",
+        InlineAsmRegClass::Xtensa(XtensaInlineAsmRegClass::qreg) => "p",
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("GCC backend does not support SPIR-V")
         }
