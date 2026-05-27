@@ -24,8 +24,8 @@
 	shallow = true
 [submodule "src/llvm-project"]
 	path = src/llvm-project
-	url = https://github.com/rust-lang/llvm-project.git
-	branch = rustc/22.1-2026-01-27
+	url = https://github.com/MabezDev/llvm-project
+	branch = esp-21.1.3_20260408-xtensa-r32-fix
 	shallow = true
 [submodule "src/doc/embedded-book"]
 	path = src/doc/embedded-book
