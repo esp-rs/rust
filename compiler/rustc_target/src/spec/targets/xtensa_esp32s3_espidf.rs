@@ -20,7 +20,7 @@ pub(crate) fn target() -> Target {
             vendor: "espressif".into(),
 
             executables: true,
-            cpu: "esp32s3".into(),
+            features: "+density,+fp,+loop,+mac16,+windowed,+bool,+sext,+nsa,+mul16,+mul32,+mul32high,+s32c1i,+threadptr,+div32,+dcache,+debug,+exception,+highpriinterrupts,+highpriinterrupts-level7,+coprocessor,+interrupt,+rvector,+timers3,+prid,+regprotect,+miscsr,+minmax,+clamps".into(),
             linker: Some("xtensa-esp32s3-elf-gcc".into()),
 
             // The esp32s3 only supports native 32bit atomics.

@@ -16,7 +16,7 @@ pub(crate) fn target() -> Target {
 
         options: TargetOptions {
             vendor: "espressif".into(),
-            cpu: "esp32s3".into(),
+            features: "+density,+fp,+loop,+mac16,+windowed,+bool,+sext,+nsa,+mul16,+mul32,+mul32high,+s32c1i,+threadptr,+div32,+dcache,+debug,+exception,+highpriinterrupts,+highpriinterrupts-level7,+coprocessor,+interrupt,+rvector,+timers3,+prid,+regprotect,+miscsr,+minmax,+clamps".into(),
             linker: Some("xtensa-esp32s3-elf-gcc".into()),
             max_atomic_width: Some(32),
             atomic_cas: true,
