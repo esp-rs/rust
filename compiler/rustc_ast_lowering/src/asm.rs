@@ -460,7 +460,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         // operands list.
         let mut clobbered = FxHashSet::default();
         for (abi, (_, abi_span)) in clobber_abis {
-            for &clobber in abi.clobbered_regs() {
+            for clobber in abi.clobbered_regs(&self.tcx.sess.target) {
                 // Don't emit a clobber for a register already clobbered
                 if clobbered.contains(&clobber) {
                     continue;

@@ -461,7 +461,7 @@ impl<'tcx> InlineAssemblyGenerator<'_, 'tcx> {
             sym::C,
         )
         .unwrap()
-        .clobbered_regs();
+        .clobbered_regs(&self.tcx.sess.target);
         for (i, reg) in self.registers.iter().enumerate().filter_map(|(i, r)| r.map(|r| (i, r))) {
             let mut need_save = true;
             // If the register overlaps with a register clobbered by function call, then

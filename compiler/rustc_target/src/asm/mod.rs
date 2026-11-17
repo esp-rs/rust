@@ -1121,19 +1121,19 @@ impl InlineAsmClobberAbi {
     }
 
     /// Returns the set of registers which are clobbered by this ABI.
-    pub fn clobbered_regs(self) -> &'static [InlineAsmReg] {
+    pub fn clobbered_regs(self, target: &crate::spec::Target) -> Vec<InlineAsmReg> {
         macro_rules! clobbered_regs {
             ($arch:ident $arch_reg:ident {
                 $(
                     $reg:ident,
                 )*
             }) => {
-                &[
+                vec![
                     $(InlineAsmReg::$arch($arch_reg::$reg),)*
                 ]
             };
         }
-        match self {
+        let mut regs = match self {
             InlineAsmClobberAbi::X86 => clobbered_regs! {
                 X86 X86InlineAsmReg {
                     ax, cx, dx,
@@ -1461,6 +1461,22 @@ impl InlineAsmClobberAbi {
                     b8, b9, b10, b11, b12, b13, b14, b15,
                 }
             },
+        };
+
+        // QR registers are part of the ESP32-S3's volatile register set, but
+        // do not exist on other Xtensa CPUs.
+        if self == InlineAsmClobberAbi::Xtensa && target.options.cpu == "esp32s3" {
+            regs.extend([
+                InlineAsmReg::Xtensa(XtensaInlineAsmReg::q0),
+                InlineAsmReg::Xtensa(XtensaInlineAsmReg::q1),
+                InlineAsmReg::Xtensa(XtensaInlineAsmReg::q2),
+                InlineAsmReg::Xtensa(XtensaInlineAsmReg::q3),
+                InlineAsmReg::Xtensa(XtensaInlineAsmReg::q4),
+                InlineAsmReg::Xtensa(XtensaInlineAsmReg::q5),
+                InlineAsmReg::Xtensa(XtensaInlineAsmReg::q6),
+                InlineAsmReg::Xtensa(XtensaInlineAsmReg::q7),
+            ]);
         }
+        regs
     }
 }

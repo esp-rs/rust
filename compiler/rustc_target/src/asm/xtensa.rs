@@ -10,6 +10,7 @@ def_reg_class! {
     Xtensa XtensaInlineAsmRegClass {
         reg,
         freg,
+        qreg,
         sreg,
         breg,
     }
@@ -44,6 +45,7 @@ impl XtensaInlineAsmRegClass {
             Self::reg => types! { _: I8, I16, I32; },
             Self::freg => types! { fp: F32; },
             Self::sreg | Self::breg => &[],
+            Self::qreg => types! { _: VecI8(16), VecI16(8), VecI32(4); },
         }
     }
 }
@@ -59,6 +61,20 @@ fn has_fp(
         Ok(())
     } else {
         Err("target does not support floating point registers")
+    }
+}
+
+fn has_esp32s3(
+    _arch: InlineAsmArch,
+    _reloc_model: RelocModel,
+    _target_features: &FxIndexSet<Symbol>,
+    target: &Target,
+    _is_clobber: bool,
+) -> Result<(), &'static str> {
+    if target.options.cpu == "esp32s3" {
+        Ok(())
+    } else {
+        Err("QR registers are only available on the ESP32-S3")
     }
 }
 
@@ -181,6 +197,14 @@ def_regs! {
         f13: freg = ["f13"] % has_fp,
         f14: freg = ["f14"] % has_fp,
         f15: freg = ["f15"] % has_fp,
+        q0: qreg = ["q0"] % has_esp32s3,
+        q1: qreg = ["q1"] % has_esp32s3,
+        q2: qreg = ["q2"] % has_esp32s3,
+        q3: qreg = ["q3"] % has_esp32s3,
+        q4: qreg = ["q4"] % has_esp32s3,
+        q5: qreg = ["q5"] % has_esp32s3,
+        q6: qreg = ["q6"] % has_esp32s3,
+        q7: qreg = ["q7"] % has_esp32s3,
         // Clobber-only special registers (caller-saved per ISA §8.1.7, except
         // LITBASE); needed for `clobber_abi`.
         sar: sreg = ["sar"],
