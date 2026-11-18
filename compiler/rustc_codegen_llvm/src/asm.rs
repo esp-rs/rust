@@ -876,6 +876,7 @@ fn reg_to_llvm(reg: InlineAsmRegOrRegClass, layout: Option<&TyAndLayout<'_>>) ->
             ) => unreachable!("clobber-only"),
             Xtensa(XtensaInlineAsmRegClass::freg) => "f",
             Xtensa(XtensaInlineAsmRegClass::reg) => "r",
+            Xtensa(XtensaInlineAsmRegClass::qreg) => "q",
             Xtensa(XtensaInlineAsmRegClass::sreg | XtensaInlineAsmRegClass::breg) => {
                 unreachable!("clobber-only")
             }
@@ -1106,6 +1107,7 @@ fn dummy_output_type<'ll>(cx: &CodegenCx<'ll, '_>, reg: InlineAsmRegClass) -> &'
         ) => unreachable!("clobber-only"),
         Xtensa(XtensaInlineAsmRegClass::reg) => cx.type_i32(),
         Xtensa(XtensaInlineAsmRegClass::freg) => cx.type_f32(),
+        Xtensa(XtensaInlineAsmRegClass::qreg) => cx.type_vector(cx.type_i8(), 16),
         Xtensa(XtensaInlineAsmRegClass::sreg | XtensaInlineAsmRegClass::breg) => {
             unreachable!("clobber-only")
         }
